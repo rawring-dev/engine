@@ -1,0 +1,194 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\title{Tasks}
+\author{Sofia Langer-Osuna}
+
+\begin{document}
+\maketitle
+
+\section{Scheduling}
+
+Task is to generate and follow an optimal parallelized execution plan. It will take in the following data
+\begin{itemize}
+  \item An acylic digraph detailing where execution order matters
+  \item An undirected graph detailing which systems cannot be run at the same time
+  \item An estimate of the execution time of each system that will be derived from profiling
+\end{itemize}
+\subsection{To Do}
+
+\begin{itemize}
+  \item Analyze/Annotate Relevant Papers
+  \item Draft design doc
+  \item Break design doc up into tasks to put here
+\end{itemize}
+
+\subsection{In Progress}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{In Review}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{Done}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\section{API for Wasm interface}
+
+Task is to produce usable metadata for compilation and expose public functions to wasmtime's linker with a relatively easy to use API on the Rust end of the engine. My thinking for this is that it will most likely come in the form of a series of proc macros and a build script that actually generates all of this.
+
+\subsection{To Do}
+
+\begin{itemize}
+  \item Draft design doc
+  \item Break design doc up into tasks to put here
+\end{itemize}
+
+\subsection{In Progress}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{In Review}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{Done}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\section{Memory Management}
+
+Task is to figure out how to handle allocating the data in the ECS World. Needs to meet the following requirements:
+\begin{itemize}
+  \item memory is stored such that it is optimized for ECS/Data-Oriented Design (i.e. optimal-ish cache locality)
+  \item efficient arena allocation for batched deallocation of scenes as well as allowing scenes to be loaded in the background
+  \item there is a concrete strategy for efficiently handling the transfer of data too and from the GPU for shaders
+    \subitem i.e. determine what should live on the GPU, how and when data should be transferred to and from the GPU, etc.
+\end{itemize}
+
+\subsection{To Do}
+
+\begin{itemize}
+  \item Analyze/Annotate Relevant Papers
+  \item Draft design doc
+  \item Break design doc up into tasks to put here
+\end{itemize}
+
+\subsection{In Progress}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{In Review}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{Done}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\section{ECS Queries}
+
+Task is to enable querying from the ECS in a manner that produces the most efficient canonical implementations of any given problem. Needs to meet the following requirements:
+\begin{itemize}
+  \item Produces useful data on system dependencies
+  \item Have a relatively intutive syntax
+  \item Produces (relatively) optimal query execution plans
+  \item Uses some form of caching to avoid unnecessarily performing the same computation multiple times
+  \item Allows the end-user to query components through multiple data-structures (e.g. Spatial Hashes, Vectors, etc.)
+    \subitem Ideally, the end-user should be able to define said data-structures themselves
+\end{itemize}
+
+\subsection{To Do}
+
+\begin{itemize}
+  \item Analyze/Annotate Relevant Papers
+  \item Draft design doc
+  \item Break design doc up into tasks to put here
+\end{itemize}
+
+\subsection{In Progress}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{In Review}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{Done}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\section{Scripting Language}
+
+Task is to design a scripting language for the end user to be able to write systems and similar in. Requirements are:
+\begin{itemize}
+  \item Needs to be able to compile to Wasm
+  \item A simple borrow checking schema (could possibly do something closer to RAII-style scoped memory management)
+  \item Needs to be able to distinguish mutable and immutable references
+  \item Needs both high and low-level ways of performing various tasks
+  \item Needs to integrate into ECS Queries, Memory Management, etc.
+  \item Needs to be able to link to runtime functions and, ideally, arbitrary dynamic libraries
+  \item Try to prioritize zero-cost abstraction, model semantics off of Rust
+  \item Should have traits
+  \item Ideally in the future should have good metaprogramming support
+\end{itemize}
+
+\subsection{To Do}
+
+\begin{itemize}
+  \item Analyze Philosophy and Design Decisions of related languages (e.g. Rhai, GDScript, etc.)
+  \item Draft design doc
+  \item Break design doc up into tasks to put here
+\end{itemize}
+
+\subsection{In Progress}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{In Review}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+\subsection{Done}
+
+\begin{itemize}
+  \item
+\end{itemize}
+
+
+\end{document}
+

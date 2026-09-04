@@ -1,0 +1,38 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\title{Scripting}
+\author{Sofia Langer-Osuna}
+
+\begin{document}
+\maketitle
+
+\section{Related Languagges}
+
+\subsection{GDScript}
+
+\subsection{Rhai}
+
+\section{Language Design}
+
+\subsection{Syntax}
+
+\subsection{Borrow Checking}
+
+\subsection{Type System}
+
+\section{Compiler Design}
+
+\subsection{Lexing/Parsing}
+
+\subsection{Semantic Analysis}
+
+\subsection{Outputting Wasm}
+
+\end{document}
+
+

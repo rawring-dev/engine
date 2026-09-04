@@ -1,0 +1,24 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\title{ECS Queries}
+\author{Sofia Langer-Osuna}
+
+\begin{document}
+\maketitle
+
+\section{Query Syntax}
+
+\section{Dependency Tracking}
+
+\section{Query Optimization}
+
+\section{Caching Scheme}
+
+\end{document}
+
+
