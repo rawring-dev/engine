@@ -1,0 +1,24 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+
+\title{API}
+\author{Rawring Dev}
+
+\begin{document}
+\maketitle
+
+\section{Design}
+
+\subsection{Metaprogramming}
+
+\subsection{Compilation Data}
+
+\subsection{Linking}
+
+\end{document}
+
+
