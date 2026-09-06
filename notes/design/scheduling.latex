@@ -5,6 +5,8 @@
 \usepackage{amssymb}
 \usepackage{amsthm}
 
+\newcommand{\Tau}{\mathcal{T}}
+
 \title{Scheduling}
 \author{Rawring Dev}
 
@@ -12,6 +14,24 @@
 \maketitle
 
 \section{Existing Literature}
+
+This problem seems to be a subset of RCPSP as defined formally as such:\\
+Where $ \Tau $ is the set of all tasks in the form $ \{ \alpha, \tau_1, \tau_2, ..., \omega \} $ where $ \alpha, \omega $ are tasks of null duration that consume all resources marking the start and end respectively,\\
+$ \delta_\tau $ is the task duration of some task $ \tau\in\Tau $,\\
+$ \sigma(t) $ is a schedule (i.e. a function from the set of tasks to the positive reals),\\
+and $ P $ is the precedence relationship (i.e. an acyclic digraph, in which the elements of $ \Tau $ are its vertices.
+for the purposes of this, it will be represented as a set of edges in the form $ (\tau_1, \tau_2) $ where $ \tau_1, \tau_2 \in\Tau $).\\
+In order to ensure that $ \alpha $ and $ \omega $ are the ends of the schedule, we can state $ \forall \tau\in\Tau, \exists p\ \text{where $ p $ is a dipath from}\ \alpha\ \text{to}\ \tau \land \exists p\ \text{where $ p $ is a dipath from}\ \tau\ \text{to}\ \omega $\\
+For task some task $ \tau $, its resource-demand vector is of the form:\\
+$ r_\tau = (1, r_{\tau,1}, r_{\tau,2}, ..., r_{\tau,q}), r_{\tau, k}\in\{0, 1\} $\\
+With capacities\\
+$ C = (M, 1, 1, ..., 1) $\\
+Therefore, for some schedule $ \sigma(\tau) $ where $ A(\sigma, t) = \{ t\leq\sigma(\tau)\leq t + \delta_\tau: \tau\in\Tau \}$ (i.e. the set of all ongoing tasks), feasibility is\\
+$ F(\sigma) = (\forall \tau_1, \tau_2\in\Tau, (\tau_1, \tau_2)\in P\implies\sigma(\tau_1)+\delta_{\tau_1}\leq\sigma(\tau_2))\land(\lnot\exists t, |A(\sigma, t)| > M \lor\exists k > 1, \tau_1,\tau_2\in A(\sigma, t), r_{\tau_1,k}=r_{\tau_2,k}=1) $\\
+The problem is to find the schedule $ \sigma(\tau) $ that minimizes the makespan $ \sigma(\omega) $\\
+\par
+For this particular problem, all of the best solutions in the literature so far found appear to utilize Graph Neural Networks or some other form of DRL. An example of this is the Wheatley system (arxiv.org/pdf/2511.13214).
+Next step appears to be to evaluate how long it takes for Wheatley as well as the memory constraints.
 
 \section{Design}
 

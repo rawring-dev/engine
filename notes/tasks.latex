@@ -16,13 +16,18 @@
 Task is to generate and follow an optimal parallelized execution plan. It will take in the following data
 \begin{itemize}
   \item An acylic digraph detailing where execution order matters
-  \item An undirected graph detailing which systems cannot be run at the same time
+  \item A graph detailing which systems cannot be run at the same time and/or the data necessary to construct such a graph.
+    \subitem Might make nore sense to never actually construct such a graph, as doing so would have $ O(n^2) $ space and time complexity with respect to the number of systems. As such, not doing so may be asymptotically better
   \item An estimate of the execution time of each system that will be derived from profiling
+    \subitem For the MVP, this will likely just be set to some constant for all systems, but the algorithm should need to be able to account for it for eventual PGO.
+  \item The number of systems that can be evaluated concurrently
+  \item Which procedures have interrupts and an estimate of how long those interrupts are
+    \subitem For the MVP, interrupts will be ignored, but the algorithm should need to be able to account for it for later versions.
 \end{itemize}
 \subsection{To Do}
 
 \begin{itemize}
-  \item Analyze/Annotate Relevant Papers
+  \item Research the topic in order to discern what the best strategy is
   \item Draft design doc
   \item Break design doc up into tasks to put here
 \end{itemize}
@@ -87,7 +92,7 @@ Task is to figure out how to handle allocating the data in the ECS World. Needs 
 \subsection{To Do}
 
 \begin{itemize}
-  \item Analyze/Annotate Relevant Papers
+  \item Research the topic in order to discern what the best strategy is
   \item Draft design doc
   \item Break design doc up into tasks to put here
 \end{itemize}
@@ -125,7 +130,7 @@ Task is to enable querying from the ECS in a manner that produces the most effic
 \subsection{To Do}
 
 \begin{itemize}
-  \item Analyze/Annotate Relevant Papers
+  \item Research the topic in order to discern what the best strategy is
   \item Draft design doc
   \item Break design doc up into tasks to put here
 \end{itemize}
