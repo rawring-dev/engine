@@ -103,6 +103,8 @@ const State = struct {
     /// `e7_engine_camera_update` so e7 needs no float arithmetic.
     camera: renderer.Camera = .{},
     input: InputState = .{},
+    camera_updates: i64 = 0,
+    scene_draws: i64 = 0,
 };
 
 var state: State = .{};
@@ -281,6 +283,8 @@ pub fn reset() void {
     state.last_failure = null;
     state.camera = .{};
     state.input = .{};
+    state.camera_updates = 0;
+    state.scene_draws = 0;
 }
 
 /// Human-readable first failure observed by the engine intrinsics, if any.
@@ -306,6 +310,14 @@ pub fn setCaptureEnabled(enabled: bool) void {
     state.mutex.lock();
     defer state.mutex.unlock();
     state.capture_enabled = enabled;
+}
+
+pub const RenderStats = struct { camera_updates: i64, scene_draws: i64 };
+
+pub fn renderStats() RenderStats {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    return .{ .camera_updates = state.camera_updates, .scene_draws = state.scene_draws };
 }
 
 pub fn frames() i64 {
@@ -482,6 +494,7 @@ pub export fn e7_engine_camera_update(scene: i64, delta_ms: i64) callconv(.c) i6
     defer state.mutex.unlock();
     if (renderer.registry.get(@intCast(scene)) == null) return -1;
     cameraUpdateLocked(scene, delta_ms);
+    state.camera_updates += 1;
     return 0;
 }
 
@@ -584,6 +597,7 @@ pub export fn e7_engine_scene_draw(
         milli(cube_angle_milli_radians),
         .{ milli(light_x_milli), milli(light_y_milli), milli(light_z_milli) },
     ) catch return -1;
+    state.scene_draws += 1;
     return 0;
 }
 

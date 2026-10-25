@@ -41,15 +41,21 @@ pub fn build(b: *std.Build) void {
     runtime.linkSystemLibrary("datachannel", .{});
 
     // Shader assets: `runtime/shaders/assets.zig` embeds the generated SPIR-V
-    // from its own package directory.  `zig build shaders` regenerates the
-    // .spv files from the HLSL-compatible Slang sources.
+    // from its own package directory.  The canonical sources are e7s files in
+    // engine/shaders; `zig build shaders` transpiles them with the e7s CLI and
+    // refreshes the checked-in .spv files here and in engine/shaders.
+    const transpiler_dep = b.dependency("transpiler", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const shader_assets = b.createModule(.{
         .root_source_file = b.path("shaders/assets.zig"),
     });
     runtime.addImport("shader_assets", shader_assets);
 
-    const shader_step = b.step("shaders", "Compile runtime/shaders/*.slang to SPIR-V");
+    const shader_step = b.step("shaders", "Transpile engine/shaders/*.e7 and compile to SPIR-V");
     const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("shaders/build.sh") });
+    shader_build.addArtifactArg(transpiler_dep.artifact("e7s"));
     shader_build.has_side_effects = true;
     shader_step.dependOn(&shader_build.step);
 

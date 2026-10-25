@@ -1,0 +1,50 @@
+# Fragment shader for the engine7 scene renderer: Lambert diffuse point light
+# with distance attenuation plus a constant ambient term.  This is e7s source;
+# engine/shaders/build.sh transpiles it to Slang and compiles the result to
+# cube.frag.spv.
+
+SceneUniform <- struct
+    model_c0: [f32; 4]
+    model_c1: [f32; 4]
+    model_c2: [f32; 4]
+    model_c3: [f32; 4]
+    view_c0: [f32; 4]
+    view_c1: [f32; 4]
+    view_c2: [f32; 4]
+    view_c3: [f32; 4]
+    proj_c0: [f32; 4]
+    proj_c1: [f32; 4]
+    proj_c2: [f32; 4]
+    proj_c3: [f32; 4]
+    camera_pos: [f32; 4]
+    light_pos: [f32; 4]
+    light_color: [f32; 4]
+    params: [f32; 4]
+
+@binding(0, 0)
+scene: SceneUniform
+
+VSOutput <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) world_pos: [f32; 3]
+    @location(1) normal: [f32; 3]
+    @location(2) color: [f32; 3]
+
+@fragment
+main <- (input: VSOutput) -> [f32; 4]:
+    n := normalize(input.normal)
+    to_light := scene.light_pos.xyz - input.world_pos
+    distance_to_light := length(to_light)
+    light_dir := to_light / max(distance_to_light, 1.0e-4)
+    diffuse := max(dot(n, light_dir), 0.0)
+
+    # Inverse-square-ish falloff with a linear term to keep near faces bright.
+    attenuation := 1.0 / (1.0 + 0.15 * distance_to_light +
+                         0.02 * distance_to_light * distance_to_light)
+    # light_color.w carries the light intensity.
+    light := scene.light_color.rgb * (scene.light_color.w * attenuation)
+    # params.rgb * params.w is the ambient colour.
+    ambient := scene.params.rgb * scene.params.w
+
+    lit := input.color * (ambient + light * diffuse)
+    ret [lit.x, lit.y, lit.z, 1.0]

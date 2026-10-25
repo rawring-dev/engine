@@ -18,10 +18,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("compiler");
-    const transpiler = b.dependency("transpiler", .{
+    const transpiler_dep = b.dependency("transpiler", .{
         .target = target,
         .optimize = optimize,
-    }).module("transpiler");
+    });
+    const transpiler = transpiler_dep.module("transpiler");
     const runtime_dep = b.dependency("runtime", .{
         .target = target,
         .optimize = optimize,
@@ -34,11 +35,15 @@ pub fn build(b: *std.Build) void {
     addTests(b, test_step, "runtime", runtime);
     addTests(b, test_step, "transpiler", transpiler);
 
-    // Shader assets for the native scene demo.  Sources live in
-    // runtime/shaders/*.slang; build.sh embeds/regenerates the checked-in
-    // SPIR-V so builds work without slangc installed.
-    const shaders_step = b.step("shaders", "Compile runtime/shaders/*.slang to SPIR-V");
-    const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("runtime/shaders/build.sh") });
+    // Scene shader assets: the canonical sources are e7s files in
+    // engine/shaders/*.e7.  `zig build shaders` transpiles them with the e7s
+    // CLI, compiles the generated Slang to SPIR-V, and publishes the result
+    // into engine/shaders and runtime/shaders (the runtime embeds it).
+    // Checked-in SPIR-V keeps builds working without a shader compiler.
+    const e7s_exe = transpiler_dep.artifact("e7s");
+    const shaders_step = b.step("shaders", "Transpile engine/shaders/*.e7 and compile to SPIR-V");
+    const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("engine/shaders/build.sh") });
+    shader_build.addArtifactArg(e7s_exe);
     shader_build.has_side_effects = true;
     shaders_step.dependOn(&shader_build.step);
 

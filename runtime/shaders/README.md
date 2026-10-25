@@ -1,48 +1,25 @@
 # runtime/shaders
 
-SPIR-V shaders for the engine7 native scene renderer.
+Compiled SPIR-V shader assets embedded by the runtime, plus the compatibility
+entry point for rebuilding them.
 
-| Source | Output | Stage |
+| Asset | Stage | Canonical source |
 | --- | --- | --- |
-| `cube.vert.slang` | `cube.vert.spv` | vertex |
-| `cube.frag.slang` | `cube.frag.spv` | fragment |
+| `cube.vert.spv` | vertex | [`engine/shaders/cube.vert.e7`](../../engine/shaders/cube.vert.e7) |
+| `cube.frag.spv` | fragment | [`engine/shaders/cube.frag.e7`](../../engine/shaders/cube.frag.e7) |
 
-The `.slang` sources are HLSL-compatible Slang (explicit `[[vk::location]]`
-inputs, a single `[[vk::binding(0, 0)]]` constant buffer, `SV_Position` /
-`SV_Target` outputs) so both Slang and the HLSL front ends accept them.
-
-## Building
+The canonical shader sources are e7s files in `engine/shaders/`; they are
+transpiled to Slang by `transpiler/` and compiled with `slangc`.  This
+directory only keeps the generated SPIR-V (`assets.zig` embeds it) and
+`build.sh` as a compatibility wrapper:
 
 ```sh
-zig build shaders          # from the repository root
-# or
-./runtime/shaders/build.sh
+zig build shaders              # workspace root: e7s -> Slang -> SPIR-V
+cd runtime && zig build shaders
+sh runtime/shaders/build.sh    # delegates to engine/shaders/build.sh
 ```
 
-`build.sh` tries `slangc` first, then `glslangValidator -D` (HLSL), then
-`glslc -x hlsl`, and finally falls back to the checked-in `.spv` files with a
-warning.  Setting `SLANGC=/path/to/slangc` forces a particular Slang binary.
-The script also verifies the SPIR-V magic number, so a failed compile cannot
-silently leave a stale/garbage binary behind.
-
-The generated SPIR-V is checked in, which keeps `zig build run-scene` and
-`zig build test` working on machines without a shader compiler.
-
-## Uniform layout
-
-`SceneUniform` is 256 bytes, std140-compatible, and matches
-`renderer.Uniforms`:
-
-| Offset | Field | Meaning |
-| --- | --- | --- |
-| 0 | `model_c0..c3` | model matrix columns (column-major) |
-| 64 | `view_c0..c3` | view matrix columns |
-| 128 | `proj_c0..c3` | projection matrix columns |
-| 192 | `camera_pos` | world-space eye position |
-| 208 | `light_pos` | world-space point light position |
-| 224 | `light_color` | rgb = colour, w = intensity |
-| 240 | `params` | rgb = ambient colour, w = ambient scale |
-
-Matrices are passed as explicit `float4` columns instead of a `float4x4`
-because the HLSL/Slang constant-buffer matrix packing rules differ between
-front ends; explicit columns are unambiguous.
+The checked-in `.spv` files let `zig build run-scene` and the runtime tests
+compile without any shader toolchain.  See
+[`engine/shaders/README.md`](../../engine/shaders/README.md) for the uniform
+layout and toolchain resolution.

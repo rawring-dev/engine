@@ -7,8 +7,9 @@ The runtime is the bridge between generated code and the host. It provides:
 - a stable `e7_*` C ABI (`src/intrinsics.zig`) for windows, Vulkan, the
   filesystem, standard I/O, TCP/UDP, HTTP/HTTPS, QUIC, and WebRTC;
 - the host-side FFI implementations under `src/ffi/`;
-- a basic Vulkan 3D scene renderer (`src/ffi/renderer.zig`) with HLSL-compatible
-  Slang shaders (`shaders/`) and a native demo (`src/scene_demo.zig`).
+- a basic Vulkan 3D scene renderer (`src/ffi/renderer.zig`) with e7s shader
+  sources (`../engine/shaders/`) compiled to embedded SPIR-V (`shaders/`) and a
+  native demo (`src/scene_demo.zig`).
 
 ## Intrinsic ABI
 
@@ -130,13 +131,14 @@ render pass and depth image so its clear/present/capture paths and the scene
 renderer share one target; `beginScene`/`endScenePresent` and
 `beginSceneCapture`/`endSceneCapture` are the recording hooks.
 
-Shaders live in `shaders/` as HLSL-compatible Slang (`cube.vert.slang`,
-`cube.frag.slang`). `zig build shaders` (or `shaders/build.sh`) compiles them
-with `slangc` when installed, otherwise with `glslangValidator -D` or
-`glslc -x hlsl`, and falls back to the checked-in `.spv` files (verified for the
-SPIR-V magic number). Matrices are passed as explicit `float4` columns so the
-constant-buffer layout is identical across those front ends; see
-`shaders/README.md` for the 256-byte layout.
+The canonical shader sources are e7s files in `../engine/shaders`; `zig build
+shaders` (or `shaders/build.sh`, which delegates to the engine build) runs the
+e7s transpiler to produce Slang and compiles it with `slangc`.  This directory
+keeps only the generated SPIR-V (embedded by `assets.zig`) and falls back to
+the checked-in `.spv` files when no shader compiler is installed (verified for
+the SPIR-V magic number).  Matrices are passed as explicit `float4` columns so
+the constant-buffer layout is unambiguous; see `shaders/README.md` and
+`../engine/shaders/README.md` for the 256-byte layout.
 
 The scene ABI is:
 

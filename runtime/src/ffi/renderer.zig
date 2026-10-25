@@ -9,7 +9,7 @@
 //! copies it back for headless validation.
 //!
 //! Matrix convention: matrices are column-major (`Mat4[col][row]`), matching
-//! the explicit `float4` column uniforms in `runtime/shaders/*.slang`.  The
+//! the explicit `float4` column uniforms in `engine/shaders/*.e7`.  The
 //! projection targets Vulkan's [0, 1] clip depth and flips Y so world +Y is up
 //! on screen.
 //!
@@ -38,7 +38,7 @@ pub const default_clear_color = [4]f32{ 0.02, 0.025, 0.04, 1.0 };
 pub const default_clear_depth: f32 = 1.0;
 
 /// Fixed vertex format: position, normal, colour.  Matches the
-/// `[[vk::location(n)]]` inputs in `cube.vert.slang`.
+/// `[[vk::location(n)]]` inputs in `engine/shaders/cube.vert.e7`.
 pub const Vertex = extern struct {
     position: [3]f32,
     normal: [3]f32,
@@ -290,7 +290,7 @@ pub const Scene = struct {
     clear_color: [4]f32 = default_clear_color,
 
     /// Create a scene for a Vulkan-flagged window.  `vert_spv`/`frag_spv` are
-    /// complete SPIR-V modules (see `runtime/shaders/`).
+    /// complete SPIR-V modules (see `engine/shaders/` and `runtime/shaders/`).
     pub fn init(
         allocator: std.mem.Allocator,
         window: *window_mod.Window,

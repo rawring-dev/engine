@@ -1,0 +1,68 @@
+# Vertex shader for the engine7 scene renderer: spinning cube with a point
+# light.  This is e7s source; engine/shaders/build.sh transpiles it to Slang
+# and compiles the result to cube.vert.spv.
+#
+# Uniform layout (std140-compatible, 256 bytes, matching renderer.Uniforms):
+#   model_c0..c3, view_c0..c3, proj_c0..c3, camera_pos, light_pos,
+#   light_color, params
+#
+# Matrices are passed as explicit float4 columns so the constant-buffer layout
+# is unambiguous, and the vertex format is position/normal/colour.
+
+SceneUniform <- struct
+    model_c0: [f32; 4]
+    model_c1: [f32; 4]
+    model_c2: [f32; 4]
+    model_c3: [f32; 4]
+    view_c0: [f32; 4]
+    view_c1: [f32; 4]
+    view_c2: [f32; 4]
+    view_c3: [f32; 4]
+    proj_c0: [f32; 4]
+    proj_c1: [f32; 4]
+    proj_c2: [f32; 4]
+    proj_c3: [f32; 4]
+    camera_pos: [f32; 4]
+    light_pos: [f32; 4]
+    light_color: [f32; 4]
+    params: [f32; 4]
+
+@binding(0, 0)
+scene: SceneUniform
+
+VSInput <- struct
+    @location(0) position: [f32; 3]
+    @location(1) normal: [f32; 3]
+    @location(2) color: [f32; 3]
+
+VSOutput <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) world_pos: [f32; 3]
+    @location(1) normal: [f32; 3]
+    @location(2) color: [f32; 3]
+
+# Column-major multiply: out = c0*v.x + c1*v.y + c2*v.z + c3*v.w.
+transform <- (c0: [f32; 4], c1: [f32; 4], c2: [f32; 4], c3: [f32; 4], v: [f32; 4]) -> [f32; 4]:
+    ret c0 * v.x + c1 * v.y + c2 * v.z + c3 * v.w
+
+@vertex
+main <- (input: VSInput) -> VSOutput:
+    world := transform(
+        scene.model_c0, scene.model_c1, scene.model_c2, scene.model_c3,
+        [input.position.x, input.position.y, input.position.z, 1.0] as [f32; 4])
+    view := transform(
+        scene.view_c0, scene.view_c1, scene.view_c2, scene.view_c3,
+        world)
+    clip := transform(
+        scene.proj_c0, scene.proj_c1, scene.proj_c2, scene.proj_c3,
+        view)
+    # The model matrix is rotation-only, so its upper 3x3 transforms normals.
+    normal := (scene.model_c0.xyz * input.normal.x +
+               scene.model_c1.xyz * input.normal.y +
+               scene.model_c2.xyz * input.normal.z)
+    ret VSOutput{
+        position: clip,
+        world_pos: world.xyz,
+        normal: normal,
+        color: input.color,
+    }

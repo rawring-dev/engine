@@ -145,10 +145,11 @@ zig build test          # 20 end-to-end tests; no external tools required
 The golden tests exercise functions, structs, vectors/matrices, resources,
 entry points, traits/extensions, generics, modules, constants, enums, control
 flow, match, and the main diagnostics.  For real compiler validation, run
-`tools/check-slang.sh` with `SLANGC` pointing at a Slang compiler; it compiles
-every generated file/entry to SPIR-V and fails on any diagnostic.  The
-examples in `examples/` are validated this way during development with Slang
-2026.20 (see `docs/slang-notes.md` for the verified syntax matrix).
+`tools/validate-examples.sh` (or `tools/check-slang.sh` with `SLANGC` pointing
+at a Slang compiler); it transpiles all examples and the canonical
+`engine/shaders/*.e7` scene shaders, compiles every entry to SPIR-V, and fails
+on any diagnostic.  This is done during development with Slang 2026.20 (see
+`docs/slang-notes.md` for the verified syntax matrix).
 
 ## Limitations
 

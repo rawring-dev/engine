@@ -1,32 +1,39 @@
-# runtime/shaders
+# engine/shaders
 
-SPIR-V shaders for the engine7 native scene renderer.
+Scene shaders for the engine7 native renderer, written in **e7s** (the e7
+shading subset).  They are transpiled to Khronos Slang with the repo's
+`transpiler/` package, then compiled to SPIR-V with `slangc`.
 
-| Source | Output | Stage |
-| --- | --- | --- |
-| `cube.vert.slang` | `cube.vert.spv` | vertex |
-| `cube.frag.slang` | `cube.frag.spv` | fragment |
+| Source | Generated Slang | Output | Stage |
+| --- | --- | --- | --- |
+| `cube.vert.e7` | `cube_vert.slang` | `cube.vert.spv` | vertex |
+| `cube.frag.e7` | `cube_frag.slang` | `cube.frag.spv` | fragment |
 
-The `.slang` sources are HLSL-compatible Slang (explicit `[[vk::location]]`
-inputs, a single `[[vk::binding(0, 0)]]` constant buffer, `SV_Position` /
-`SV_Target` outputs) so both Slang and the HLSL front ends accept them.
+The generated Slang intermediate is not checked in: `build.sh` produces
+it in a temporary directory so the e7s file is the single source of truth.
+The generated SPIR-V **is** checked in and copied to `runtime/shaders/`, where
+`assets.zig` embeds it, so builds and the scene demo work on machines without
+the e7s transpiler or `slangc`.
 
 ## Building
 
 ```sh
-zig build shaders          # from the repository root
+zig build shaders          # from the repository root (builds the e7s CLI too)
 # or
-./runtime/shaders/build.sh
+sh engine/shaders/build.sh
+# inspect the generated Slang for one shader:
+./transpiler/zig-out/bin/e7s transpile engine/shaders/cube.vert.e7 -o -
 ```
 
-`build.sh` tries `slangc` first, then `glslangValidator -D` (HLSL), then
-`glslc -x hlsl`, and finally falls back to the checked-in `.spv` files with a
-warning.  Setting `SLANGC=/path/to/slangc` forces a particular Slang binary.
-The script also verifies the SPIR-V magic number, so a failed compile cannot
-silently leave a stale/garbage binary behind.
+`build.sh` resolves the e7s binary from (in order) its first argument, `$E7S`,
+`transpiler/zig-out/bin/e7s`, or `PATH`.  `slangc` is resolved from `$SLANGC`,
+`.tooling/slang/bin/slangc`, or `PATH`; without `slangc` the e7s sources are
+still transpiled (so errors surface) and the checked-in SPIR-V is kept.  The
+generated SPIR-V targets `spirv_1_3` to match the runtime's Vulkan 1.1 device.
 
-The generated SPIR-V is checked in, which keeps `zig build run-scene` and
-`zig build test` working on machines without a shader compiler.
+`runtime/shaders/build.sh` is a compatibility wrapper around this script;
+`cd runtime && zig build shaders` also works and builds the e7s CLI through the
+runtime package's dependency on `transpiler/`.
 
 ## Uniform layout
 
@@ -44,5 +51,6 @@ The generated SPIR-V is checked in, which keeps `zig build run-scene` and
 | 240 | `params` | rgb = ambient colour, w = ambient scale |
 
 Matrices are passed as explicit `float4` columns instead of a `float4x4`
-because the HLSL/Slang constant-buffer matrix packing rules differ between
-front ends; explicit columns are unambiguous.
+because constant-buffer packing rules are unambiguous this way.  The e7s
+source declares the buffer as `@binding(0, 0) scene: SceneUniform`; the
+transpiler emits `[[vk::binding(0, 0)]] ConstantBuffer<SceneUniform> scene;`.

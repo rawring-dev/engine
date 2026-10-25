@@ -132,6 +132,12 @@ pub fn main(init: std.process.Init) !void {
     if (handle == 0) return error.MainTaskFailed;
     _ = task.e7_task_await(handle);
 
+    if (options.verbose) {
+        const stats = engine.renderStats();
+        std.debug.print("run-engine: camera_updates={d} scene_draws={d} frames={d}\n", .{
+            stats.camera_updates, stats.scene_draws, engine.frames(),
+        });
+    }
     if (engine.lastFailure()) |message| {
         std.debug.print("run-engine: engine stopped: {s}\n", .{message});
         if (options.capture_path != null) return error.EngineUnavailable;
