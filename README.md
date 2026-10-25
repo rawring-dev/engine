@@ -474,8 +474,10 @@ window/input and Vulkan scene access are compiler-known intrinsics
 (`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
 [`runtime/src/ecs.zig`](runtime/src/ecs.zig). Camera movement is currently
 applied by the native engine helper (`e7_engine_camera_update`) so e7 avoids
-float arithmetic; reading camera components through queries is available, but
-applying them back to the runtime camera awaits f32 arithmetic lowering.
+float arithmetic. The demo uses an orbit camera: mouse look rotates around the
+target (keeping the cube centered) and WASD moves the target; reading camera
+components through queries is available, but applying them back to the runtime
+camera awaits f32 arithmetic lowering.
 [`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
 depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
 

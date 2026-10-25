@@ -43,9 +43,11 @@ engine/
 - Frame phases: `Init`, `FrameInit`, `PreUpdate`, `Update`, `PostUpdate`,
   `Render`, `DeInit`. `main` loops until `Window.quit_requested`.
 - Native input/camera: `e7_engine_window_pump` drains SDL keyboard/mouse, and
-  `e7_engine_camera_update` applies WASD, Q/E, Shift, and mouse look. This is
-  temporary until f32 arithmetic lands and e7 can update the Camera component
-  itself; query iteration already reads the component fields.
+  `e7_engine_camera_update` applies WASD, Q/E, Shift, and mouse look. The
+  camera orbits its target, so mouse look keeps the cube centered while the
+  view rotates; WASD moves the target on the ground plane. This is temporary
+  until f32 arithmetic lands and e7 can update the Camera component itself;
+  query iteration already reads the component fields.
 
 ## Running
 
