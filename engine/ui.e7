@@ -4,6 +4,19 @@
 # UIRenderable must also implement UIElement. Required method signatures live
 # in the trait body; implementations provide the bodies in `impl` blocks.
 
+Ui <- plugin
+    init <- sys ( # this is run when commands.add_plugin(Ui) is called
+        commands: &mut Commands
+    ):
+        commands.insert_resource(UINode {
+            pos: [0.0, 0.0],
+            scale: [1.0, 1.0],
+            enabled: true,
+            element: nil,
+            children: [],
+        })
+
+@plugin(Ui) # the space for this resource is only allocated by the runtime when the Ui plugin has been added
 @resource
 UINode <- struct
     pos: [f32; 2],
@@ -21,6 +34,7 @@ UIRenderable <- trait : UIElement
 UIInteractable <- trait : UIElement
     interact <- (&mut self, &Input) -> !nil
 
+@plugin(Ui) # system is only run when the Ui plugin is added
 @trigger(PreUpdate)
 ui_interact <- sys (
     ui_root: res &mut UINode,
@@ -28,6 +42,7 @@ ui_interact <- sys (
 ):
     ret # TODO: ui interaction
 
+@plugin(Ui)
 @trigger(Render)
 ui_render <- sys (
     ui_root: res &UINode,

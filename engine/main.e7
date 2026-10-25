@@ -9,6 +9,8 @@
 # Resources: long-lived singletons owned by the world
 # ---------------------------------------------------------------------------
 
+mod ui
+
 @resource
 Window <- struct
     handle: u64
@@ -33,15 +35,6 @@ Time <- struct
     elapsed: f32
 
 @resource
-Camera <- struct
-    position: [f32; 3]
-    yaw: f32
-    pitch: f32
-    fov_y: f32
-    near: f32
-    far: f32
-
-@resource
 Gpu <- struct
     # Native handles returned by the runtime's Vulkan ABI.
     surface: u64
@@ -56,11 +49,11 @@ Gpu <- struct
     cube_vertex_shader: u64
     cube_fragment_shader: u64
 
-@resource
-World <- struct
-    next_entity: u64
-    components: Components
-    ui_root: UINode
+# Runtime command buffer used to mutate the world outside systems (resource
+# insertion, table row insertion, plugin registration).
+Commands <- struct
+    # Opaque runtime handle filled by `await query &mut Commands`.
+    handle: u64
 
 # ---------------------------------------------------------------------------
 # Component traits and components
@@ -71,41 +64,46 @@ World <- struct
 # storage/query source used by `select ... from Components`.
 
 @Components
+Camera <- struct
+    yaw: f32
+    pitch: f32
+    fov_y: f32
+    near: f32
+    far: f32
+
+@Components
 CameraController <- struct
-    entity_id: usize
     move_speed: f32
     look_speed: f32
 
 @Components
 Transform <- struct
-    entity_id: usize
     translation: [f32; 3]
     rotation: [f32; 3]
     scale: [f32; 3]
 
 @Components
 MeshRenderer <- struct
-    entity_id: usize
     mesh: u64
     pipeline: u64
     colour: [f32; 4]
 
 @Components
 PointLight <- struct
-    entity_id: usize
     position: [f32; 3]
     colour: [f32; 3]
     intensity: f32
+
+@Components
+CubeMesh <- struct
+    # TODO: make this actually a thing
 
 # The ECS component table. Each row is an entity; component columns are
 # optional per entity (empty slots mean “component absent”). Systems query it
 # with `select &mut Component from Components`.
 Components <- table
     entity_id: usize,
-    transforms: [Transform],
-    camera_controllers: [CameraController],
-    mesh_renderers: [MeshRenderer],
-    point_lights: [PointLight],
+    ... # automatically collects all types with @Components
 
 # ---------------------------------------------------------------------------
 # GPU wrappers: resources over the runtime's SDL/Vulkan ABI
@@ -159,48 +157,53 @@ CullMode <- enum
 # Overloaded deployment entry points. The runtime ABI exposes the Vulkan calls;
 # these declarations are the e7-facing resource wrappers. The body is filled
 # once the compiler can lower `res &mut` sys parameter bodies.
-gpu_deploy_raster_pipeline <- sys (
-    gpu: res &mut Gpu,
+#
+# All of the gpu_* functions should be methods of the Gpu type
+gpu_deploy_raster_pipeline <- async (
+    gpu: &mut Gpu,
     deploy: ShaderDeploy,
     options: PipelineOptions,
 ) -> u64:
     ret 0
 
-gpu_deploy_compute_pipeline <- sys (
-    gpu: res &mut Gpu,
+gpu_deploy_compute_pipeline <- async (
+    gpu: &mut Gpu,
     shader: ShaderModule,
     workgroup_size: [u32; 3],
 ) -> u64:
     ret 0
 
-gpu_create_mesh <- sys (
-    gpu: res &mut Gpu,
+gpu_create_mesh <- async (
+    gpu: &mut Gpu,
     vertices: [f32],
     indices: [u32],
 ) -> u64:
     ret 0
 
-gpu_set_uniform <- sys (
-    gpu: res &mut Gpu,
+gpu_set_uniform <- async (
+    gpu: &mut Gpu,
     name: str,
     value: [f32; 4],
 ) -> !nil:
     ret
 
-gpu_begin_frame <- sys (gpu: res &mut Gpu) -> !nil:
+gpu_begin_frame <- async (gpu: &mut Gpu) -> !nil:
     ret
 
-gpu_end_frame <- sys (gpu: res &mut Gpu) -> !nil:
+gpu_end_frame <- async (gpu: &mut Gpu) -> !nil:
     ret
 
-gpu_draw_mesh <- sys (
-    gpu: res &mut Gpu,
+gpu_draw_mesh <- async (
+    gpu: &mut Gpu,
     mesh: Mesh,
     transform: Transform,
     camera: &Camera,
     light: &PointLight,
 ) -> !nil:
     ret
+
+Init <- trigger
+DeInit <- trigger
 
 # ---------------------------------------------------------------------------
 # Frame triggers
@@ -211,18 +214,18 @@ PreUpdate <- trigger
 Update <- trigger
 PostUpdate <- trigger
 Render <- trigger
-QuitRequested <- trigger
 
 # ---------------------------------------------------------------------------
 # Systems
 # ---------------------------------------------------------------------------
 
-@trigger(FrameInit)
+@trigger(Init)
 init_window <- sys (
     window: res &mut Window,
     gpu: res &mut Gpu,
-    camera: res &mut Camera,
-    world: res &mut World,
+
+    # Commands is what lets you insert to tables, etc.
+    commands: &mut Commands,
 ):
     # Runtime ABI: e7_window_create(title_ptr, title_len, w, h, flags, driver)
     window.handle = 0
@@ -233,45 +236,48 @@ init_window <- sys (
     gpu.width = window.width
     gpu.height = window.height
 
-    camera.position = [0.0, 1.5, 6.0]
-    camera.yaw = 0.0
-    camera.pitch = 0.0
-    camera.fov_y = 1.0471975512
-    camera.near = 0.1
-    camera.far = 100.0
+    camera_transform := Transform {
+        translation: [0.0, 1.5, 6.0],
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    }
+    camera := Camera {
+        yaw: 0.0
+        pitch: 0.0
+        fov_y: 1.0471975512
+        near: 0.1
+        far: 100.0
+    }
+    controller := CameraController {
+        move_speed: 4.0,
+        look_speed: 0.0025,
+    }
+    commands.add_row(Components, { camera_transform, camera, controller })
 
-    world.next_entity = 2
-
-    cube := Transform {
-        entity_id: 0,
+    cube_transform := Transform {
         translation: [0.0, 0.0, 0.0],
         rotation: [0.0, 0.0, 0.0],
         scale: [1.0, 1.0, 1.0],
     }
-    world.components.transforms = [cube]
+    cube_mesh := CubeMesh
 
-    controller := CameraController {
-        entity_id: 0,
-        move_speed: 4.0,
-        look_speed: 0.0025,
-    }
-    world.components.camera_controllers = [controller]
+    commands.add_row(Components, { cube_transform, cube_mesh })
+
 
     light := PointLight {
-        entity_id: 1,
         position: [2.0, 3.0, 4.0],
         colour: [1.0, 0.9, 0.8],
         intensity: 12.0,
     }
-    world.components.point_lights = [light]
+    commands.add_row(Components, { light })
 
-@trigger(PreUpdate)
+@trigger(FrameInit)
 poll_window <- sys (window: res &mut Window, input: res &mut Input):
     # Pump SDL events through the runtime. Window close sets quit_requested;
     # the main loop treats that as the frame-exit signal.
     window.quit_requested = window.quit_requested
 
-@trigger(PreUpdate)
+@trigger(FrameInit)
 gather_input <- sys (window: res &Window, input: res &mut Input):
     # WASD on the horizontal plane, Q/E vertical, mouse look.
     input.move_forward = false
@@ -285,17 +291,16 @@ gather_input <- sys (window: res &Window, input: res &mut Input):
 
 @trigger(Update)
 move_camera <- sys (
-    camera: res &mut Camera,
     input: &Input,
     time: &Time,
-    controllers: select &mut CameraController from Components,
+    controllers: select &mut Camera, &mut CameraController from Components,
 ):
     # Placeholder until the query body can project mutable component fields.
     ret
 
 @trigger(Update)
 spin_cube <- sys (
-    transforms: select &mut Transform from Components,
+    transforms: select &mut Transform from Components where has CubeMesh,
     time: &Time,
 ):
     ret
@@ -319,7 +324,9 @@ reset_input <- sys (input: res &mut Input):
 render_scene <- sys (
     gpu: res &mut Gpu,
     camera: &Camera,
-    world: &World,
+
+    cubes: select &CubeMesh, &Transform from Components
+    lights: select &PointLight from Components
 ):
     # Draw the spinning cube and point light. The native renderer owns the
     # Vulkan swapchain, depth buffer, and graphics pipeline.
@@ -330,13 +337,17 @@ render_scene <- sys (
 # ---------------------------------------------------------------------------
 
 main <- async () -> i32:
-    window := Window {
+    commands := await query &mut Commands
+
+    commands.add_plugin(Ui)
+
+    commands.insert_resource(Window {
         handle: 0,
         width: 960,
         height: 540,
         quit_requested: false,
-    }
-    input := Input {
+    })
+    commands.insert_resource(Input {
         move_forward: false,
         move_backward: false,
         move_left: false,
@@ -345,17 +356,9 @@ main <- async () -> i32:
         move_down: false,
         look_dx: 0.0,
         look_dy: 0.0,
-    }
-    time := Time { delta: 0.0, elapsed: 0.0 }
-    camera := Camera {
-        position: [0.0, 1.5, 6.0],
-        yaw: 0.0,
-        pitch: 0.0,
-        fov_y: 1.0471975512,
-        near: 0.1,
-        far: 100.0,
-    }
-    gpu := Gpu {
+    })
+    commands.insert_resource(Time { delta: 0.0, elapsed: 0.0 })
+    commands.insert_resource(Gpu {
         surface: 0,
         renderer: 0,
         swapchain_format: 0,
@@ -364,32 +367,21 @@ main <- async () -> i32:
         cube_pipeline: 0,
         cube_vertex_shader: 0,
         cube_fragment_shader: 0,
-    }
-    world := World {
-        next_entity: 2,
-        components: Components {
-            entity_id: 0,
-            transforms: [],
-            camera_controllers: [],
-            mesh_renderers: [],
-            point_lights: [],
-        },
-        ui_root: UINode {
-            pos: [0.0, 0.0],
-            scale: [1.0, 1.0],
-            enabled: true,
-            element: nil,
-            children: [],
-        },
-    }
+    })
 
-    await FrameInit()
+    disown commands
+
+    window := await query &Window
+
+    await Init()
 
     while not window.quit_requested:
+        await FrameInit()
         await PreUpdate()
         await Update()
         await PostUpdate()
         await Render()
 
-    await QuitRequested()
+    await DeInit()
+
     ret 0

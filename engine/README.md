@@ -1,57 +1,97 @@
 # engine7 engine scaffold
 
 This directory is the e7-side of the engine. The goal is that almost all
-engine policy and scene code lives here, while `runtime/` only owns the native
-platform boundary (SDL3 and Vulkan) and the JIT/ecs machinery needed to run
-the scripts.
+engine policy and scene code lives here, while `runtime/` owns the native
+platform boundary (SDL3 and Vulkan) and the machinery needed to run scripts.
 
 ```
 engine/
-├── main.e7        resources, components, systems, frame loop
-├── ui.e7          trait-dependency/UI ECS sample
-└── shaders/       Slang sources compiled to SPIR-V
+├── main.e7        resources, components, systems, plugins, frame loop
+├── ui.e7          Ui plugin, trait dependencies, UI ECS sample
+├── shaders/       Slang sources and checked-in SPIR-V
+└── scene-preview.png
 ```
 
-## Architecture
+## Developer-facing model
 
-- **Resources** (`@resource`) are long-lived singletons: `Window`, `Input`,
-  `Time`, `Camera`, `Gpu`, `World`.
-- **Components** are structs marked `@Components`. They carry an `entity_id`
-  column and are stored in the `Components` table.
-- **Queries** are declared in systems with `select &[mut] Component from
-  Components` (and resource parameters with `res &[mut] Resource`).
-- **Systems** are `sys` functions attached to trigger phases with
-  `@trigger(...)`.
-- **Frame phases** are `FrameInit`, `PreUpdate`, `Update`, `PostUpdate`, and
-  `Render`. `main` runs them in order until `Window.quit_requested` is set by
-  the SDL close request; the final `QuitRequested` trigger is the shutdown
-  signal.
-- **GPU resources** wrap the runtime's Vulkan scene ABI:
-  - `ShaderDeploy` describes Slang-produced vertex/fragment SPIR-V modules.
-  - `RasterPipeline`/`Mesh` are e7 resources over native Vulkan handles.
-  - `gpu_deploy_shader`, `gpu_begin_frame`, `gpu_draw_mesh`, and
-    `gpu_end_frame` are the extension points for shader deployment and draw
-    submission.
+- `mod ui` declares an external module. Plugins are top-level items:
+
+  ```e7
+  Ui <- plugin
+      init <- sys (commands: &mut Commands):
+          commands.insert_resource(UINode { ... })
+  ```
+
+- `@plugin(Ui)` gates a system/resource behind that plugin.
+
+- Resources are long-lived singleton structs tagged `@resource`.
+
+- Components are ordinary structs tagged `@Components`; they do **not** carry an
+  entity id field. The `Components` table is the ECS storage:
+
+  ```e7
+  @Components
+  Camera <- struct
+      yaw: f32
+      pitch: f32
+      fov_y: f32
+      near: f32
+      far: f32
+
+  Components <- table
+      entity_id: usize,
+      ... # auto-collected from @Components types
+  ```
+
+- Systems use `res &[mut] Resource` and `select &[mut] Component ... from
+  Components`, including trait projections and `where has Component` filters.
+  Parameters may be separated by commas or newlines.
+
+- `Commands` is the deferred world-mutation handle:
+  `commands := await query &mut Commands`, then `insert_resource`, `add_row`,
+  `add_plugin`, etc. `disown commands` releases the handle before the frame
+  loop.
+
+- Frame phases are `Init`, `FrameInit`, `PreUpdate`, `Update`, `PostUpdate`,
+  `Render`, and `DeInit`. `main` runs them until `Window.quit_requested` is set
+  by the SDL close request.
+
+- GPU wrappers are resources over the runtime ABI: `Gpu`, `ShaderModule`,
+  `RasterPipeline`, `ComputePipeline`, `Mesh`, `ShaderDeploy`, and
+  `PipelineOptions`. The `gpu_*` functions are the intended async methods for
+  shader/pipeline deployment and draw submission.
 
 ## Shaders
 
-`shaders/*.slang` are Slang sources. At build time they are compiled to
-SPIR-V and embedded/loaded by the native scene renderer. `slangc` is preferred;
-an HLSL-compatible fallback through `glslangValidator` is used when `slangc`
-is not installed.
+`shaders/*.slang` are Slang sources compiled to SPIR-V. The build prefers
+`slangc`; the fallback uses `glslangValidator` on the same HLSL-compatible
+sources, and checked-in `.spv` files keep the demo runnable without a shader
+toolchain.
 
-## Current compiler/runtime boundary
+```sh
+sh engine/shaders/build.sh
+```
 
-The language surface needed by this scaffold is:
+## Native scene demo
 
-- trait dependencies (`Trait <- trait : Parent`) and trait method
-  requirements, including `&self`/`&mut self`;
-- `res &mut T` and `select &mut Trait from Components` system parameters;
-- `@Components` component structs and `Components <- table` storage;
-- `@resource` resource structs.
+```sh
+zig build run-scene
+zig build run-scene -- --frames 120
+zig build run-scene -- --headless --capture /tmp/scene.ppm
+```
 
-The native scene renderer and camera/cube demo are under
-`runtime/src/ffi/renderer.zig` and `runtime/src/scene_demo.zig`; that demo is
-the current executable proof of the Vulkan pipeline while the e7-side systems
-are wired up incrementally. Codegen for mutable query projection and
-resource-parameter bodies is the remaining gap for running `main.e7` directly.
+The native demo is the executable proof of the Vulkan raster pipeline
+(camera, spinning cube, point light). `engine/main.e7` is the target e7-side
+frame loop and resource/ECS layout.
+
+## Compiler boundary
+
+The front end now parses the DX surface above: modules, plugins, `@plugin`,
+`Commands` queries, `disown`, `select ... where has`, row literals, unit
+structs, `@Components`, auto-collected table columns, and newline-separated sys
+parameters.
+
+Full execution still needs ECS/plugin/Commands runtime semantics and codegen
+for mutable query/resource projection. Until then, the native renderer remains
+the executable scene path and `engine/main.e7` is the scaffold for that next
+step.
