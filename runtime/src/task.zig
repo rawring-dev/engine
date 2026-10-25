@@ -9,6 +9,7 @@
 //! injector queue.
 
 const std = @import("std");
+const lease = @import("lease.zig");
 const c = @cImport({
     @cInclude("ucontext.h");
     @cInclude("pthread.h");
@@ -167,34 +168,51 @@ pub const Runtime = struct {
     }
 
     fn complete(self: *Runtime, task: *Task, result: i64) void {
+        // Completion and waiter publication are serialized with `awaitTask`
+        // through the completion mutex; otherwise a fast child could finish
+        // between the parent's state check and its waiter registration.
+        _ = c.pthread_mutex_lock(&self.completion_mutex);
         task.result = result;
         task.state = .done;
-        if (task.waiter) |waiter| {
-            task.waiter = null;
-            self.enqueue(waiter);
-        }
-        _ = c.pthread_mutex_lock(&self.completion_mutex);
+        const waiter = task.waiter;
+        task.waiter = null;
+        if (waiter) |parent| self.enqueue(parent);
         _ = c.pthread_cond_broadcast(&self.completion);
         _ = c.pthread_mutex_unlock(&self.completion_mutex);
     }
 
     fn awaitTask(self: *Runtime, task: *Task) i64 {
-        if (task.state == .done) {
-            const result = task.result;
-            self.destroyTask(task);
-            return result;
-        }
-        if (task.state == .lazy and !task.manual) self.enqueue(task);
         if (current_task) |parent| {
             if (parent == task) return 0;
+            const holder = @intFromPtr(parent);
+            _ = c.pthread_mutex_lock(&self.completion_mutex);
+            if (task.state == .done) {
+                const result = task.result;
+                _ = c.pthread_mutex_unlock(&self.completion_mutex);
+                self.destroyTask(task);
+                return result;
+            }
             parent.state = .waiting;
             task.waiter = parent;
+            // Suspension hands back every external lease the task holds; it is
+            // reacquired below once the scheduler resumes this task.
+            _ = lease.suspendHolder(holder);
+            if (task.state == .lazy and !task.manual) self.enqueue(task);
+            _ = c.pthread_mutex_unlock(&self.completion_mutex);
             yieldCurrent();
+            _ = lease.resumeHolder(holder);
             const result = task.result;
             self.destroyTask(task);
             return result;
         }
         _ = c.pthread_mutex_lock(&self.completion_mutex);
+        if (task.state == .done) {
+            const result = task.result;
+            _ = c.pthread_mutex_unlock(&self.completion_mutex);
+            self.destroyTask(task);
+            return result;
+        }
+        if (task.state == .lazy and !task.manual) self.enqueue(task);
         while (task.state != .done) _ = c.pthread_cond_wait(&self.completion, &self.completion_mutex);
         _ = c.pthread_mutex_unlock(&self.completion_mutex);
         const result = task.result;
@@ -234,18 +252,17 @@ pub const Runtime = struct {
     }
 
     pub fn cancel(self: *Runtime, task: *Task) void {
+        _ = c.pthread_mutex_lock(&self.completion_mutex);
         task.cancel_requested = true;
         if (task.state == .lazy or task.state == .queued) {
             task.state = .done;
             task.result = cancelled_result;
-            if (task.waiter) |waiter| {
-                task.waiter = null;
-                self.enqueue(waiter);
-            }
-            _ = c.pthread_mutex_lock(&self.completion_mutex);
+            const waiter = task.waiter;
+            task.waiter = null;
+            if (waiter) |parent| self.enqueue(parent);
             _ = c.pthread_cond_broadcast(&self.completion);
-            _ = c.pthread_mutex_unlock(&self.completion_mutex);
         }
+        _ = c.pthread_mutex_unlock(&self.completion_mutex);
     }
 
     fn destroyTask(self: *Runtime, task: *Task) void {
@@ -266,13 +283,12 @@ pub const Runtime = struct {
     }
 
     pub fn completeEvent(self: *Runtime, task: *Task) void {
+        _ = c.pthread_mutex_lock(&self.completion_mutex);
         task.result = 0;
         task.state = .done;
-        if (task.waiter) |waiter| {
-            task.waiter = null;
-            self.enqueue(waiter);
-        }
-        _ = c.pthread_mutex_lock(&self.completion_mutex);
+        const waiter = task.waiter;
+        task.waiter = null;
+        if (waiter) |parent| self.enqueue(parent);
         _ = c.pthread_cond_broadcast(&self.completion);
         _ = c.pthread_mutex_unlock(&self.completion_mutex);
     }
@@ -335,9 +351,29 @@ fn completeFollowerList(runtime: *Runtime, list: *std.ArrayList(*Task)) void {
 
 threadlocal var current_task: ?*Task = null;
 threadlocal var current_worker: ?*Worker = null;
+/// Holder token for threads that are not running a task (e.g. the main thread
+/// awaiting a task or calling the lease ABI directly).  Task pointers are
+/// user-space addresses with the high bit clear, so high-bit tokens cannot
+/// collide with them.
+threadlocal var standalone_holder: u64 = 0;
+
+/// Lease-holder token for the code currently running on this thread.  The task
+/// runtime installs this as `lease.holder_provider`, so `e7_lease_*` calls made
+/// from JITed code are attributed to the running task instead of the thread.
+pub fn currentHolderToken() callconv(.c) u64 {
+    if (current_task) |task| return @intCast(@intFromPtr(task));
+    if (standalone_holder == 0) {
+        const thread_id: u64 = @intCast(std.Thread.getCurrentId());
+        standalone_holder = (@as(u64, 1) << 63) | (thread_id & ((@as(u64, 1) << 62) - 1)) | 1;
+    }
+    return standalone_holder;
+}
 
 fn taskEntry(task: *Task) callconv(.c) void {
     const result = callEntry(task.entry, @intCast(@intFromPtr(task)), task.args[0..task.argc]);
+    // A task owns no external leases after its body returns, whether or not it
+    // released them explicitly.
+    _ = lease.endHolder(@intCast(@intFromPtr(task)));
     task.runtime.complete(task, result);
     if (current_worker) |worker| {
         task.state = .done;
@@ -391,6 +427,7 @@ var global_runtime: ?*Runtime = null;
 pub fn ensureGlobal(allocator: std.mem.Allocator) Error!void {
     if (global_runtime != null) return;
     const cpus = std.Thread.getCpuCount() catch 2;
+    lease.setHolderProvider(&currentHolderToken);
     global_runtime = try Runtime.init(allocator, @max(@as(usize, 2), @min(cpus, 8)));
 }
 
@@ -400,6 +437,8 @@ pub fn shutdownGlobal() void {
         runtime.deinit();
         global_runtime = null;
     }
+    lease.clearHolderProvider();
+    lease.reset();
 }
 
 pub export fn e7_task_create(entry: usize, argc: i64, args: [*]const i64) callconv(.c) i64 {
@@ -569,4 +608,42 @@ test "trigger invocations coalesce into one pending invocation" {
     }
     for (tasks) |task| _ = runtime.awaitTask(task);
     try std.testing.expectEqual(@as(usize, 2), Counter.runners.load(.monotonic));
+}
+
+test "task leases release on suspend and reacquire on resume" {
+    try ensureGlobal(std.testing.allocator);
+    defer shutdownGlobal();
+
+    const Child = struct {
+        fn run(task: i64, arg: i64) callconv(.c) i64 {
+            _ = task;
+            _ = arg;
+            // The parent is suspended, so it must not appear to hold its lease.
+            const parent_lease = lease.e7_lease_active(41);
+            // A lease acquired by a task is released when the task ends.
+            _ = lease.e7_lease_acquire(42);
+            return parent_lease;
+        }
+    };
+    const Parent = struct {
+        fn run(task: i64, arg: i64) callconv(.c) i64 {
+            _ = task;
+            _ = arg;
+            const acquired = lease.e7_lease_acquire(41);
+            const before = lease.e7_lease_active(41);
+            var child_arg: i64 = 0;
+            const child = e7_task_create(@intFromPtr(&Child.run), 1, @ptrCast(&child_arg));
+            const child_saw = e7_task_await(child);
+            const after = lease.e7_lease_active(41);
+            const child_cleared = if (lease.e7_lease_active(42) == 0) @as(i64, 1) else 0;
+            const released = lease.e7_lease_release(41);
+            return acquired * 100_000 + before * 10_000 + child_saw * 1_000 +
+                after * 100 + child_cleared * 10 + released;
+        }
+    };
+
+    const task_handle = try global_runtime.?.create(@intFromPtr(&Parent.run), &.{0});
+    global_runtime.?.spawn(task_handle);
+    // acquired=1 before=1 child_saw=0 after=1 child_cleared=1 released=1
+    try std.testing.expectEqual(@as(i64, 110_111), global_runtime.?.awaitTask(task_handle));
 }

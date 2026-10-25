@@ -16,6 +16,7 @@ const std = @import("std");
 const compiler = @import("compiler");
 const bytecode_ir = @import("bytecode_ir.zig");
 const task = @import("task.zig");
+const lease = @import("lease.zig");
 const aggregate = @import("aggregate.zig");
 
 const c = @cImport({
@@ -120,6 +121,8 @@ pub const Jit = struct {
         task.ensureGlobal(std.heap.c_allocator) catch return error.OutOfMemory;
         const task_symbols = task.symbols();
         try self.defineSymbols(&task_symbols);
+        const lease_symbols = lease.symbols();
+        try self.defineSymbols(&lease_symbols);
         const aggregate_symbols = aggregate.symbols();
         try self.defineSymbols(&aggregate_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {

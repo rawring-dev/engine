@@ -11,6 +11,7 @@ pub const compiler = @import("compiler");
 pub const orc = @import("orc.zig");
 pub const bytecode_ir = @import("bytecode_ir.zig");
 pub const task = @import("task.zig");
+pub const lease = @import("lease.zig");
 pub const aggregate = @import("aggregate.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
@@ -836,4 +837,97 @@ test "JIT executes aggregate reference semantics" {
     try std.testing.expectEqual(@as(i64, 12), (try jit.get(Unary, "bump"))(point));
     try std.testing.expectEqual(@as(i64, 12), aggregate.e7_load_i64(point));
     try std.testing.expectEqual(@as(i64, 31), aggregate.e7_load_i64(point + 8));
+}
+
+test "JIT executes normal sys declarations as async tasks" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Bump <- sys(target: &mut S):
+        \\    target.a = target.a + 1
+        \\run <- async () -> i32:
+        \\    s := S { a: 41 }
+        \\    task := Bump(&mut s)
+        \\    await task
+        \\    s.a
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+
+    const serialized = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(serialized);
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(serialized, "async-sys");
+
+    const Run = *const fn () callconv(.c) i64;
+    const run = try jit.get(Run, "run");
+    const handle = run();
+    try std.testing.expect(handle != 0);
+    // The system body receives its normal parameter and mutates through it.
+    try std.testing.expectEqual(@as(i64, 42), task.e7_task_await(handle));
+}
+
+test "JIT executes a source call into a resource-handle system" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Consume <- sys(target: res &mut S):
+        \\    ret
+        \\run <- async () -> i32:
+        \\    s := S { a: 7 }
+        \\    task := Consume(&mut s)
+        \\    await task
+        \\    9
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+
+    const serialized = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(serialized);
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(serialized, "async-sys-resource");
+
+    const Run = *const fn () callconv(.c) i64;
+    const run = try jit.get(Run, "run");
+    try std.testing.expectEqual(@as(i64, 9), task.e7_task_await(run()));
+}
+
+test "JITed IR calls the lease release/reacquire ABI" {
+    lease.reset();
+    defer lease.reset();
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.defineSymbols(&lease.symbols());
+
+    const ir =
+        \\declare i64 @e7_lease_acquire(i64)
+        \\declare i64 @e7_lease_release(i64)
+        \\declare i64 @e7_lease_active(i64)
+        \\define i64 @lease_probe() {
+        \\entry:
+        \\  %a = call i64 @e7_lease_acquire(i64 77)
+        \\  %active = call i64 @e7_lease_active(i64 77)
+        \\  %r = call i64 @e7_lease_release(i64 77)
+        \\  %after = call i64 @e7_lease_active(i64 77)
+        \\  %t = mul i64 %active, 10
+        \\  %u = add i64 %t, %r
+        \\  %v = mul i64 %after, 100
+        \\  %w = add i64 %u, %v
+        \\  ret i64 %w
+        \\}
+    ;
+    try jit.addIr(ir, "lease-abi");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe = try jit.get(Probe, "lease_probe");
+    // acquire=1, active=1 (10), release=1, post-release active=0: 10 + 1 = 11.
+    try std.testing.expectEqual(@as(i64, 11), probe());
 }

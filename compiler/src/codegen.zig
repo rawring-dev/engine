@@ -7,6 +7,13 @@
 //! values and borrows are rejected by `UnsupportedFeature` for now rather than
 //! silently miscompiled.
 //!
+//! `sys` declarations lower like async functions: a constructor returns a
+//! `Task` handle and a body function runs with the task pointer plus the
+//! system's parameters.  Query and resource parameters are opaque i64 handles
+//! in the body; forwarding them as call arguments is supported, while any use
+//! that would need the synthetic query/record layout is rejected with
+//! `OpaqueHandleAccess`.
+//!
 //! This is the compiler's real output path: `pipeline.zig` runs the parser,
 //! semantic analyzer, this lowering pass, and the bytecode fixed-point
 //! optimizer.  The runtime later consumes the bytecode.
@@ -25,6 +32,12 @@ pub const Error = error{
     TooManyLocals,
     UnknownLocal,
     InvalidBytecode,
+    /// A query/resource system parameter is an opaque handle at the async ABI
+    /// boundary.  Handles may only be forwarded as call arguments; projecting
+    /// fields, iterating, borrowing, or computing on one has no defined
+    /// lowering yet, so it is rejected instead of treating the handle as a
+    /// pointer to the synthetic query/record layout.
+    OpaqueHandleAccess,
 };
 
 pub const Config = struct {
@@ -36,6 +49,8 @@ const FunctionInfo = struct {
     decl: *const ast.FunctionDecl,
     constructor_index: u16,
     body_index: ?u16 = null,
+    /// Parameter positions that carry opaque query/resource handles.
+    opaque_params: []const usize = &.{},
 };
 
 const TriggerInfo = struct {
@@ -240,6 +255,27 @@ pub fn lower(
         while (it.next()) |entry| entry.value_ptr.deinit(allocator);
         trigger_system_names.deinit(allocator);
     }
+    // Every `sys` declaration lowers to the same async constructor/body pair
+    // as a source async function, whether or not a trigger invokes it.  A
+    // system's query/resource parameters are opaque i64 handles at this ABI
+    // boundary: the body receives them as handles, and only forwarding them as
+    // call arguments is lowered (see `Builder.lowerCallArg`).  Anything that
+    // needs the synthetic query/record layout is rejected with
+    // `OpaqueHandleAccess` instead of being miscompiled.
+    //
+    // Trigger-attached systems stay restricted to zero parameters because the
+    // generated trigger body does not bind trigger fields into system
+    // parameters.
+    var synthetic_params = std.ArrayList([]ast.Param).empty;
+    defer {
+        for (synthetic_params.items) |params| allocator.free(params);
+        synthetic_params.deinit(allocator);
+    }
+    var opaque_param_lists = std.ArrayList([]const usize).empty;
+    defer {
+        for (opaque_param_lists.items) |indices| allocator.free(indices);
+        opaque_param_lists.deinit(allocator);
+    }
     for (module.items) |item| {
         if (item.kind != .sys) continue;
         const decl = item.kind.sys;
@@ -253,17 +289,27 @@ pub fn lower(
             trigger_name = arg.path.segments[arg.path.segments.len - 1].name;
             break;
         }
-        const trigger = trigger_name orelse continue;
         if (name_map.contains(decl.name)) return error.DuplicateFunction;
-        if (decl.params.len != 0) return error.UnsupportedFeature;
-        const params = try allocator.alloc(ast.Param, decl.params.len);
-        for (decl.params, 0..) |param, i| switch (param) {
-            .normal => |normal| params[i] = normal,
-            .query, .resource => return error.UnsupportedFeature,
-        };
+        if (trigger_name != null and decl.params.len != 0) return error.UnsupportedFeature;
         const unit_ty = try allocator.create(ast.Type);
         unit_ty.* = .{ .tuple = &.{} };
         try synthetic_types.append(allocator, unit_ty);
+        const params = try allocator.alloc(ast.Param, decl.params.len);
+        try synthetic_params.append(allocator, params);
+        var opaque_indices = std.ArrayList(usize).empty;
+        for (decl.params, 0..) |param, i| switch (param) {
+            .normal => |normal| params[i] = normal,
+            .resource => |resource| {
+                params[i] = resource;
+                try opaque_indices.append(allocator, i);
+            },
+            .query => |query| {
+                params[i] = .{ .name = query.name, .ty = unit_ty };
+                try opaque_indices.append(allocator, i);
+            },
+        };
+        const opaque_slice = try opaque_indices.toOwnedSlice(allocator);
+        try opaque_param_lists.append(allocator, opaque_slice);
         const synthetic_decl = try allocator.create(ast.FunctionDecl);
         synthetic_decl.* = .{
             .name = decl.name,
@@ -283,10 +329,13 @@ pub fn lower(
             .decl = synthetic_decl,
             .constructor_index = constructor_index,
             .body_index = body_index,
+            .opaque_params = opaque_slice,
         });
-        const gop = try trigger_system_names.getOrPut(allocator, trigger);
-        if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(allocator, decl.name);
+        if (trigger_name) |trigger| {
+            const gop = try trigger_system_names.getOrPut(allocator, trigger);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(allocator, decl.name);
+        }
     }
 
     if (infos.items.len == 0 and triggers.items.len == 0) return error.NoFunctions;
@@ -367,6 +416,7 @@ pub fn lower(
                 .enums = &enums,
                 .methods = &methods,
                 .mode = .async_body,
+                .opaque_param_indices = info.opaque_params,
             };
             functions[body_index] = try body.finish();
             initialized += 1;
@@ -482,6 +532,12 @@ const Builder = struct {
     name_override: ?[]const u8 = null,
     mode: BuilderMode = .normal,
     body_index: u16 = 0,
+    /// Parameter positions carrying opaque query/resource handles (systems
+    /// only).  Handles may be forwarded as call arguments and nothing else.
+    opaque_param_indices: []const usize = &.{},
+    /// Local slots resolved from `opaque_param_indices` while allocating the
+    /// function's parameters.
+    opaque_locals: std.ArrayList(u16) = .empty,
     code: std.ArrayList(bytecode.Op) = .empty,
     scopes: std.ArrayList(std.StringHashMapUnmanaged(u16)) = .empty,
     next_local: u16 = 0,
@@ -489,6 +545,7 @@ const Builder = struct {
 
     fn finish(self: *Builder) Error!bytecode.Function {
         defer self.code.deinit(self.allocator);
+        defer self.opaque_locals.deinit(self.allocator);
         defer {
             for (self.loops.items) |*loop| {
                 loop.breaks.deinit(self.allocator);
@@ -505,8 +562,9 @@ const Builder = struct {
         if (self.mode == .async_body) {
             _ = try self.allocLocal("<task>");
         }
-        for (self.function.params) |param| {
-            _ = try self.allocLocal(param.name);
+        for (self.function.params, 0..) |param, index| {
+            const slot = try self.allocLocal(param.name);
+            if (self.isOpaqueParam(index)) try self.opaque_locals.append(self.allocator, slot);
         }
 
         switch (self.mode) {
@@ -571,6 +629,35 @@ const Builder = struct {
             if (self.scopes.items[index].get(name)) |slot| return slot;
         }
         return null;
+    }
+
+    fn isOpaqueParam(self: *const Builder, index: usize) bool {
+        for (self.opaque_param_indices) |candidate| {
+            if (candidate == index) return true;
+        }
+        return false;
+    }
+
+    fn isOpaqueSlot(self: *const Builder, slot: u16) bool {
+        for (self.opaque_locals.items) |candidate| {
+            if (candidate == slot) return true;
+        }
+        return false;
+    }
+
+    /// Lower a call argument.  A bare reference to an opaque query/resource
+    /// handle is forwarded by value; everything else goes through the ordinary
+    /// expression lowering (which rejects other handle uses).
+    fn lowerCallArg(self: *Builder, arg: *ast.Expr) Error!void {
+        if (arg.* == .path and arg.path.segments.len == 1) {
+            if (self.local(arg.path.segments[0].name)) |slot| {
+                if (self.isOpaqueSlot(slot)) {
+                    try self.emit(.{ .load_local = slot });
+                    return;
+                }
+            }
+        }
+        try self.lowerExpr(arg);
     }
 
     fn emit(self: *Builder, op: bytecode.Op) Error!void {
@@ -848,6 +935,7 @@ const Builder = struct {
             .path => |path| {
                 if (path.segments.len != 1) return false;
                 const slot = self.local(path.segments[0].name) orelse return false;
+                if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
                 try self.emit(.{ .local_addr = slot });
                 return true;
             },
@@ -1308,6 +1396,7 @@ const Builder = struct {
             .path => |path| {
                 if (path.segments.len == 1) {
                     const slot = self.local(path.segments[0].name) orelse return error.UnsupportedFeature;
+                    if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
                     try self.emit(.{ .load_local = slot });
                     return;
                 }
@@ -1862,7 +1951,7 @@ const Builder = struct {
             try self.push(0);
             return;
         }
-        for (call.args) |arg| try self.lowerExpr(arg);
+        for (call.args) |arg| try self.lowerCallArg(arg);
         try self.emitCall(name, call.args.len);
     }
 };

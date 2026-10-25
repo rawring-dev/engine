@@ -1038,6 +1038,43 @@ test "registers trigger systems and calls triggers" {
     );
 }
 
+test "checks system call parameters" {
+    try expectClean(
+        \\Apply <- sys(x: i32):
+        \\    ret
+        \\run <- async () -> ():
+        \\    task := Apply(1)
+        \\    await task
+    );
+    try expectDiagnostic(
+        \\Apply <- sys(x: i32):
+        \\    ret
+        \\run <- async () -> ():
+        \\    task := Apply("nope")
+        \\    await task
+    , "type mismatch");
+}
+
+test "system query parameters accept only query bindings" {
+    try expectClean(
+        \\S <- struct
+        \\    a: i32
+        \\Consume <- sys(q: select &a from S):
+        \\    ret
+        \\Tick <- sys(q: select &a from S):
+        \\    Consume(q)
+    );
+    try expectDiagnostic(
+        \\S <- struct
+        \\    a: i32
+        \\Tick <- sys(q: select &a from S):
+        \\    ret
+        \\run <- async () -> ():
+        \\    task := Tick(1)
+        \\    await task
+    , "expects a query binding");
+}
+
 test "resolves Task and Cancelled types" {
     try expectClean(
         \\load <- async () -> i32 = 1

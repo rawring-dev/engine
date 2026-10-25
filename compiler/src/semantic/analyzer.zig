@@ -382,13 +382,24 @@ const Checker = struct {
         }
         const unit_type = try self.allocator.create(ast.Type);
         unit_type.* = .{ .tuple = &.{} };
+        // A system is callable from source as an async function.  Normal and
+        // resource parameters keep their declared types; a query parameter is
+        // an opaque handle whose source-level argument must itself be a query
+        // binding, so `instantiateCallable` substitutes an unknown type and
+        // `checkCall` validates the argument kind.
+        const params = try self.allocator.alloc(ast.Param, decl.params.len);
+        for (decl.params, 0..) |param, i| switch (param) {
+            .normal => |p| params[i] = p,
+            .resource => |p| params[i] = p,
+            .query => |q| params[i] = .{ .name = q.name, .ty = unit_type },
+        };
         const callable = try self.allocator.create(Callable);
         callable.* = .{
             .name = decl.name,
             .kind = .sys,
             .is_async = true,
             .generics = decl.generics,
-            .params = &.{},
+            .params = params,
             .result = unit_type,
             .body = .{ .block = decl.body },
             .sys_params = decl.params,
@@ -1737,9 +1748,21 @@ const Checker = struct {
             args[i] = ty;
             try env.put(self.allocator, param.name, ty);
         }
-        const params = try self.allocator.alloc(*types.Type, callable.params.len);
-        for (callable.params, 0..) |param, i| {
-            params[i] = try self.resolveTypeIn(param.ty, &env);
+        const param_count = if (callable.kind == .sys) callable.sys_params.len else callable.params.len;
+        const params = try self.allocator.alloc(*types.Type, param_count);
+        if (callable.kind == .sys) {
+            for (callable.sys_params, 0..) |sys_param, i| {
+                params[i] = switch (sys_param) {
+                    .normal => |p| try self.resolveTypeIn(p.ty, &env),
+                    .resource => |p| try self.resolveTypeIn(p.ty, &env),
+                    // Opaque handle: only a query binding may be forwarded.
+                    .query => try self.store.make(.unknown),
+                };
+            }
+        } else {
+            for (callable.params, 0..) |param, i| {
+                params[i] = try self.resolveTypeIn(param.ty, &env);
+            }
         }
         if (explicit_args) |provided| try self.checkGenericBounds(callable, provided);
         const success = try self.resolveTypeIn(callable.result, &env);
@@ -3213,7 +3236,33 @@ const Checker = struct {
                         function.params.len, call.args.len,
                     });
                 }
+                const sys_params: ?[]ast.SysParam = if (bound_callable) |callable|
+                    (if (callable.kind == .sys) callable.sys_params else null)
+                else
+                    null;
                 for (call.args, 0..) |arg, i| {
+                    if (sys_params) |sys_list| {
+                        if (i < sys_list.len) {
+                            switch (sys_list[i]) {
+                                .query => |query| {
+                                    // The ABI argument is an opaque handle; only
+                                    // a query binding from another system body
+                                    // is a meaningful source-level argument.
+                                    const actual = try self.checkExpr(arg, null);
+                                    const resolved = self.store.resolve(actual);
+                                    if (resolved.* != .query and resolved.* != .unknown) {
+                                        const found = try self.store.typeName(resolved);
+                                        try self.report(
+                                            "query parameter `{s}` expects a query binding, found `{s}`",
+                                            .{ query.name, found },
+                                        );
+                                    }
+                                    continue;
+                                },
+                                else => {},
+                            }
+                        }
+                    }
                     const expected = if (i < function.params.len) function.params[i] else try self.store.make(.unknown);
                     _ = try self.checkMoveExpr(arg, expected);
                 }

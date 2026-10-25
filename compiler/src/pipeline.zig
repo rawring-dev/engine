@@ -436,3 +436,191 @@ test "does not compile unused impl methods" {
     try std.testing.expectEqual(@as(usize, 1), result.bytecode.functions.len);
     try std.testing.expect(result.functionNamed("impl.Point.add") == null);
 }
+
+fn countCallOps(function: *const bytecode.Function) usize {
+    var count: usize = 0;
+    for (function.code) |op| switch (op) {
+        .call => count += 1,
+        else => {},
+    };
+    return count;
+}
+
+test "compiles normal sys declarations as async functions with parameters" {
+    var result = try compile(
+        std.testing.allocator,
+        \\double <- async (x: i32) -> i32 = x * 2
+        \\Apply <- sys(x: i32):
+        \\    await double(x)
+        \\run <- async () -> i32:
+        \\    task := Apply(21)
+        \\    await task
+        \\    7
+    ,
+        .{},
+    );
+    defer result.deinit();
+
+    // double, Apply, run each lower to a constructor/body pair.
+    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
+    try std.testing.expect(result.functionNamed("Apply") != null);
+    try std.testing.expect(result.functionNamed("Apply__body") != null);
+
+    // The constructor forwards its parameter into the task body.
+    const apply_ctor = result.functionNamed("Apply").?;
+    try std.testing.expectEqual(@as(u16, 1), apply_ctor.params);
+    var create_task_argc: ?u16 = null;
+    for (apply_ctor.code) |op| switch (op) {
+        .create_task => |call| create_task_argc = call.argc,
+        else => {},
+    };
+    try std.testing.expectEqual(@as(u16, 1), create_task_argc.?);
+
+    // The body receives the task pointer plus the system's own parameter.
+    const apply_body = result.functionNamed("Apply__body").?;
+    try std.testing.expectEqual(@as(u16, 2), apply_body.params);
+    // `await double(x)` lowers to one constructor call plus `task_await`.
+    try std.testing.expectEqual(@as(usize, 1), countCallOps(apply_body));
+    var awaits_double = false;
+    for (apply_body.code) |op| switch (op) {
+        .task_await => awaits_double = true,
+        else => {},
+    };
+    try std.testing.expect(awaits_double);
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+}
+
+test "forwards query and resource handles between system declarations" {
+    var result = try compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Consume <- sys(q: select &a from S):
+        \\    ret
+        \\Touch <- sys(target: res &mut S):
+        \\    ret
+        \\Apply <- sys(q: select &a from S, target: res &mut S):
+        \\    Consume(q)
+        \\    Touch(target)
+    ,
+        .{},
+    );
+    defer result.deinit();
+
+    // Three systems, each a constructor/body pair.
+    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
+    const apply_body = result.functionNamed("Apply__body").?;
+    try std.testing.expectEqual(@as(u16, 3), apply_body.params); // task + query + resource
+    try std.testing.expectEqual(@as(usize, 2), countCallOps(apply_body));
+
+    // Both forwarded handles are bare parameters loaded from locals.
+    var index: usize = 0;
+    var forwarded: usize = 0;
+    while (index + 1 < apply_body.code.len) : (index += 1) {
+        if (apply_body.code[index] != .load_local) continue;
+        switch (apply_body.code[index + 1]) {
+            .call => |call| {
+                if (call.argc == 1) forwarded += 1;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), forwarded);
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+}
+
+test "rejects query projection, iteration, and resource projection in system bodies" {
+    // Query projection: the synthetic row layout is not exposed to codegen.
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Tick <- sys(q: select &a from S):
+        \\    x := q.a
+        \\    x
+    ,
+        .{},
+    ));
+
+    // Iterating a query is likewise outside the opaque-handle boundary.
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Tick <- sys(q: select &a from S):
+        \\    for row in q:
+        \\        row.a
+    ,
+        .{},
+    ));
+
+    // Resource field access would treat the handle as a pointer: rejected
+    // explicitly instead of being miscompiled.
+    try std.testing.expectError(error.OpaqueHandleAccess, compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Tick <- sys(target: res &mut S):
+        \\    target.a = 1
+    ,
+        .{},
+    ));
+
+    // Borrowing a handle is rejected for the same reason.
+    try std.testing.expectError(error.OpaqueHandleAccess, compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    a: i32
+        \\Tick <- sys(target: res &mut S):
+        \\    p := &target
+        \\    p
+    ,
+        .{},
+    ));
+}
+
+test "keeps zero-parameter trigger systems and rejects parameterized ones" {
+    var result = try compile(
+        std.testing.allocator,
+        \\Update <- trigger
+        \\    amount: i32
+        \\@trigger(Update)
+        \\Apply <- sys():
+        \\    ret
+        \\run <- async () -> ():
+        \\    await Update(1)
+    ,
+        .{},
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
+    const apply_ctor = result.functionNamed("Apply").?;
+    try std.testing.expectEqual(@as(u16, 0), apply_ctor.params);
+    const apply_body = result.functionNamed("Apply__body").?;
+    try std.testing.expectEqual(@as(u16, 1), apply_body.params); // task pointer only
+
+    // The trigger body still spawns and awaits its systems.
+    const trigger_body = result.functionNamed("Update__body").?;
+    var spawned = false;
+    for (trigger_body.code) |op| switch (op) {
+        .task_spawn => spawned = true,
+        else => {},
+    };
+    try std.testing.expect(spawned);
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    // Trigger fields are not yet bound into system parameters.
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\Update <- trigger
+        \\    amount: i32
+        \\@trigger(Update)
+        \\Apply <- sys(amount: i32):
+        \\    ret
+        \\run <- async () -> ():
+        \\    await Update(1)
+    ,
+        .{},
+    ));
+}
