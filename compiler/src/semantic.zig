@@ -1038,40 +1038,41 @@ test "registers trigger systems and calls triggers" {
     );
 }
 
-test "checks system call parameters" {
+test "checks system call arity" {
+    // Systems fetch world parameters themselves; both `await Sys()` and the
+    // explicit-argument compatibility form are accepted.
     try expectClean(
         \\Apply <- sys(x: i32):
         \\    ret
         \\run <- async () -> ():
-        \\    task := Apply(1)
-        \\    await task
+        \\    await Apply()
+        \\    await Apply(1)
     );
     try expectDiagnostic(
         \\Apply <- sys(x: i32):
         \\    ret
         \\run <- async () -> ():
-        \\    task := Apply("nope")
-        \\    await task
-    , "type mismatch");
+        \\    await Apply(1, 2)
+    , "call expects 1 argument(s)");
 }
 
-test "system query parameters accept only query bindings" {
+test "system query parameters require query bindings when forwarded" {
+    // Explicit query arguments must themselves be query bindings.
     try expectClean(
         \\S <- struct
         \\    a: i32
         \\Consume <- sys(q: select &a from S):
         \\    ret
         \\Tick <- sys(q: select &a from S):
-        \\    Consume(q)
+        \\    Consume()
     );
     try expectDiagnostic(
         \\S <- struct
         \\    a: i32
-        \\Tick <- sys(q: select &a from S):
+        \\Consume <- sys(q: select &a from S):
         \\    ret
         \\run <- async () -> ():
-        \\    task := Tick(1)
-        \\    await task
+        \\    await Consume(1)
     , "expects a query binding");
 }
 
@@ -1411,4 +1412,136 @@ test "accepts unit-struct constructor shorthand" {
         \\CubeMesh <- struct
         \\mesh <- () -> CubeMesh = CubeMesh
     );
+}
+
+test "collects ECS resource, component, plugin, and gate metadata" {
+    var result = try analyzeSource(
+        \\@resource
+        \\R <- struct
+        \\    a: i32
+        \\@Components
+        \\C <- struct
+        \\    b: f32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        ret
+        \\@plugin(Ui)
+        \\@resource
+        \\Gated <- struct
+        \\    n: i32
+        \\Update <- trigger
+        \\@plugin(Ui)
+        \\@trigger(Update)
+        \\gated <- sys (g: res &mut Gated):
+        \\    ret
+    );
+    defer result.parsed.deinit();
+    defer result.analysis.deinit();
+    const analysis = &result.analysis;
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |diagnostic| {
+            std.debug.print("semantic error: {s}\n", .{diagnostic.message});
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), analysis.resources.len);
+    try std.testing.expectEqualStrings("R", analysis.resources[0].name);
+    try std.testing.expectEqual(@as(i64, 0), analysis.resources[0].id);
+    try std.testing.expectEqual(@as(usize, 1), analysis.resources[0].slots);
+    try std.testing.expect(analysis.resources[0].plugin_id == null);
+    try std.testing.expectEqualStrings("Gated", analysis.resources[1].name);
+    try std.testing.expectEqual(@as(i64, 1), analysis.resources[1].id);
+    try std.testing.expectEqual(@as(i64, 0), analysis.resources[1].plugin_id.?);
+
+    try std.testing.expectEqual(@as(usize, 1), analysis.components.len);
+    try std.testing.expectEqualStrings("C", analysis.components[0].name);
+    try std.testing.expectEqual(@as(i64, 0), analysis.components[0].id);
+    try std.testing.expectEqual(@as(usize, 1), analysis.components[0].slots);
+
+    try std.testing.expect(analysis.component_table != null);
+    try std.testing.expectEqualStrings("Components", analysis.component_table.?.name);
+    try std.testing.expectEqual(@as(usize, 1), analysis.component_table.?.columns.len);
+    try std.testing.expectEqualStrings("C", analysis.component_table.?.columns[0].name);
+    try std.testing.expectEqual(@as(i64, 0), analysis.component_table.?.columns[0].id);
+
+    try std.testing.expectEqual(@as(usize, 1), analysis.plugins.len);
+    try std.testing.expectEqualStrings("Ui", analysis.plugins[0].name);
+    try std.testing.expectEqual(@as(i64, 0), analysis.plugins[0].id);
+    try std.testing.expectEqualStrings("Ui::init", analysis.plugins[0].init.?);
+    try std.testing.expectEqualStrings("Ui::init", analysis.plugins[0].init.?);
+
+    try std.testing.expectEqual(@as(i64, 0), analysis.systemGate("gated").?);
+
+    // Registry lookups used by codegen.
+    try std.testing.expectEqual(@as(i64, 1), analysis.resource("Gated").?.id);
+    try std.testing.expectEqual(@as(i64, 0), analysis.component("C").?.id);
+    try std.testing.expectEqual(@as(i64, 0), analysis.plugin("Ui").?.id);
+}
+
+test "checks Commands methods and query leases" {
+    try expectClean(
+        \\@resource
+        \\Win <- struct
+        \\    n: i32
+        \\@Components
+        \\Pos <- struct
+        \\    x: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Win { n: 1 })
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.insert_resource(Win { n: 2 })
+        \\    pos := Pos { x: 3 }
+        \\    commands.add_row(Components, { pos })
+        \\    commands.add_plugin(Ui)
+        \\    disown commands
+        \\    0
+    );
+    try expectDiagnostic(
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.insert_resource(1)
+        \\    0
+    , "expects a @resource value");
+    try expectDiagnostic(
+        \\@Components
+        \\Pos <- struct
+        \\    x: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_row(Components, { 1 })
+        \\    0
+    , "not a @Components type");
+    try expectDiagnostic(
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(Missing)
+        \\    0
+    , "unknown plugin");
+    try expectDiagnostic(
+        \\@plugin(Missing)
+        \\@resource
+        \\R <- struct
+        \\    a: i32
+    , "unknown plugin");
+}
+
+test "rejects unknown Commands methods" {
+    try expectDiagnostic(
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.frobnicate()
+        \\    0
+    , "unknown `Commands` method");
 }

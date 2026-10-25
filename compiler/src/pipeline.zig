@@ -29,11 +29,24 @@ pub const CompileResult = struct {
     bytecode: bytecode.Module,
     optimization: bytecode.Stats,
     allocator: std.mem.Allocator,
+    /// Parsed sibling modules loaded by `compileProject` (owned).  The root
+    /// AST references their items, so these outlive analysis/lowering.
+    module_asts: []parser.Ast = &.{},
+    /// Source buffers owned by project loading; AST lexemes point into them.
+    owned_sources: [][]u8 = &.{},
+    /// Paths of loaded project files (owned strings).
+    owned_paths: [][]u8 = &.{},
 
     pub fn deinit(self: *CompileResult) void {
         self.bytecode.deinit();
         self.analysis.deinit();
         self.parsed.deinit();
+        for (self.module_asts) |*tree| tree.deinit();
+        if (self.module_asts.len > 0) self.allocator.free(self.module_asts);
+        for (self.owned_sources) |source| self.allocator.free(source);
+        if (self.owned_sources.len > 0) self.allocator.free(self.owned_sources);
+        for (self.owned_paths) |path| self.allocator.free(path);
+        if (self.owned_paths.len > 0) self.allocator.free(self.owned_paths);
         self.* = undefined;
     }
 
@@ -71,6 +84,191 @@ pub fn compile(
         .bytecode = module,
         .optimization = stats,
         .allocator = allocator,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Project loading
+// ---------------------------------------------------------------------------
+
+pub const ProjectError = error{
+    OutOfMemory,
+    /// A project file could not be read (missing, unreadable, or too large).
+    ProjectIo,
+    /// A project file failed to lex/parse.
+    ProjectParse,
+    /// External `mod` references nest beyond the loader's depth bound.
+    ProjectCycle,
+};
+
+pub const ProjectFile = struct {
+    /// Path exactly as resolved while loading (owned).
+    path: []u8,
+    /// File contents (owned); the parsed AST points into this buffer.
+    source: []u8,
+};
+
+/// A loaded multi-file project: the root AST plus every sibling module.
+pub const Project = struct {
+    allocator: std.mem.Allocator,
+    files: []ProjectFile,
+    root_ast: parser.Ast,
+    module_asts: []parser.Ast,
+
+    pub fn deinit(self: *Project) void {
+        self.root_ast.deinit();
+        for (self.module_asts) |*tree| tree.deinit();
+        self.allocator.free(self.module_asts);
+        for (self.files) |file| {
+            self.allocator.free(file.path);
+            self.allocator.free(file.source);
+        }
+        self.allocator.free(self.files);
+        self.* = undefined;
+    }
+};
+
+const max_project_depth: usize = 16;
+const max_project_file_size: usize = 64 * 1024 * 1024;
+
+fn readProjectFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) ProjectError![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_project_file_size)) catch
+        return error.ProjectIo;
+}
+
+fn parseProjectFile(allocator: std.mem.Allocator, source: []const u8) ProjectError!parser.Ast {
+    const parsed_result = parser.parse(allocator, source) catch return error.OutOfMemory;
+    return switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => error.ProjectParse,
+    };
+}
+
+/// Load `root_path` and recursively inline sibling `<name>.e7` files for every
+/// external `mod <name>` reference, so semantic analysis sees prefixed modules
+/// (`ui::Ui`) exactly as if they had been declared inline.
+pub fn loadProject(allocator: std.mem.Allocator, root_path: []const u8) ProjectError!Project {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var files = std.ArrayList(ProjectFile).empty;
+    errdefer {
+        for (files.items) |file| {
+            allocator.free(file.path);
+            allocator.free(file.source);
+        }
+        files.deinit(allocator);
+    }
+    var module_asts = std.ArrayList(parser.Ast).empty;
+    errdefer {
+        for (module_asts.items) |*tree| tree.deinit();
+        module_asts.deinit(allocator);
+    }
+
+    const root_source = try readProjectFile(allocator, io, root_path);
+    errdefer allocator.free(root_source);
+    const root_path_owned = try allocator.dupe(u8, root_path);
+    errdefer allocator.free(root_path_owned);
+    try files.append(allocator, .{ .path = root_path_owned, .source = root_source });
+    var root_ast = try parseProjectFile(allocator, root_source);
+    errdefer root_ast.deinit();
+
+    const directory = std.fs.path.dirname(root_path) orelse ".";
+    try resolveExternalModules(
+        allocator,
+        io,
+        &root_ast,
+        directory,
+        &files,
+        &module_asts,
+        0,
+    );
+
+    return .{
+        .allocator = allocator,
+        .files = try files.toOwnedSlice(allocator),
+        .root_ast = root_ast,
+        .module_asts = try module_asts.toOwnedSlice(allocator),
+    };
+}
+
+fn resolveExternalModules(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    tree: *parser.Ast,
+    directory: []const u8,
+    files: *std.ArrayList(ProjectFile),
+    module_asts: *std.ArrayList(parser.Ast),
+    depth: usize,
+) ProjectError!void {
+    if (depth > max_project_depth) return error.ProjectCycle;
+    for (tree.module.items) |item| {
+        // Only external `mod name` references (no `{ ... }` body) need loading.
+        switch (item.kind) {
+            .mod => |module| {
+                if (module.items != null) continue;
+                const filename = try std.fmt.allocPrint(allocator, "{s}.e7", .{module.name});
+                defer allocator.free(filename);
+                const path = try std.fs.path.join(allocator, &.{ directory, filename });
+                errdefer allocator.free(path);
+                const source = try readProjectFile(allocator, io, path);
+                errdefer allocator.free(source);
+                try files.append(allocator, .{ .path = path, .source = source });
+                var child = try parseProjectFile(allocator, source);
+                errdefer child.deinit();
+                try resolveExternalModules(allocator, io, &child, directory, files, module_asts, depth + 1);
+                try module_asts.append(allocator, child);
+                const module_decl: *ast.ModDecl = &item.kind.mod;
+                module_decl.items = child.module.items;
+            },
+            else => {},
+        }
+    }
+}
+
+/// Compile every file of a project starting at `root_path`.  Equivalent to
+/// `compile`, but external sibling modules are loaded first.
+pub fn compileProject(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    options: Options,
+) (Error || ProjectError)!CompileResult {
+    var project = try loadProject(allocator, root_path);
+    errdefer project.deinit();
+
+    var analysis = try semantic.analyze(allocator, project.root_ast.module);
+    errdefer analysis.deinit();
+    if (!analysis.ok()) return error.SemanticFailed;
+
+    var module = try codegen.lower(allocator, project.root_ast.module, &analysis, options.codegen);
+    errdefer module.deinit();
+
+    const stats = try bytecode.optimize(allocator, &module, options.optimize);
+    try bytecode.verify(allocator, &module);
+
+    var owned_sources = try allocator.alloc([]u8, project.files.len);
+    var owned_paths = try allocator.alloc([]u8, project.files.len);
+    for (project.files, 0..) |file, index| {
+        owned_sources[index] = file.source;
+        owned_paths[index] = file.path;
+    }
+    // Contents moved into the result; only the bookkeeping slice is freed.
+    allocator.free(project.files);
+
+    return .{
+        .parsed = project.root_ast,
+        .analysis = analysis,
+        .bytecode = module,
+        .optimization = stats,
+        .allocator = allocator,
+        .module_asts = project.module_asts,
+        .owned_sources = owned_sources,
+        .owned_paths = owned_paths,
     };
 }
 
@@ -446,194 +644,32 @@ fn countCallOps(function: *const bytecode.Function) usize {
     return count;
 }
 
-test "compiles normal sys declarations as async functions with parameters" {
+test "compiles systems with resource, query, and Commands prologues" {
     var result = try compile(
         std.testing.allocator,
-        \\double <- async (x: i32) -> i32 = x * 2
-        \\Apply <- sys(x: i32):
-        \\    await double(x)
-        \\run <- async () -> i32:
-        \\    task := Apply(21)
-        \\    await task
-        \\    7
-    ,
-        .{},
-    );
-    defer result.deinit();
-
-    // double, Apply, run each lower to a constructor/body pair.
-    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
-    try std.testing.expect(result.functionNamed("Apply") != null);
-    try std.testing.expect(result.functionNamed("Apply__body") != null);
-
-    // The constructor forwards its parameter into the task body.
-    const apply_ctor = result.functionNamed("Apply").?;
-    try std.testing.expectEqual(@as(u16, 1), apply_ctor.params);
-    var create_task_argc: ?u16 = null;
-    for (apply_ctor.code) |op| switch (op) {
-        .create_task => |call| create_task_argc = call.argc,
-        else => {},
-    };
-    try std.testing.expectEqual(@as(u16, 1), create_task_argc.?);
-
-    // The body receives the task pointer plus the system's own parameter.
-    const apply_body = result.functionNamed("Apply__body").?;
-    try std.testing.expectEqual(@as(u16, 2), apply_body.params);
-    // `await double(x)` lowers to one constructor call plus `task_await`.
-    try std.testing.expectEqual(@as(usize, 1), countCallOps(apply_body));
-    var awaits_double = false;
-    for (apply_body.code) |op| switch (op) {
-        .task_await => awaits_double = true,
-        else => {},
-    };
-    try std.testing.expect(awaits_double);
-    try bytecode.verify(std.testing.allocator, &result.bytecode);
-}
-
-test "forwards query and resource handles between system declarations" {
-    var result = try compile(
-        std.testing.allocator,
+        \\@resource
         \\S <- struct
         \\    a: i32
-        \\Consume <- sys(q: select &a from S):
-        \\    ret
-        \\Touch <- sys(target: res &mut S):
-        \\    ret
-        \\Apply <- sys(q: select &a from S, target: res &mut S):
-        \\    Consume(q)
-        \\    Touch(target)
-    ,
-        .{},
-    );
-    defer result.deinit();
-
-    // Three systems, each a constructor/body pair.
-    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
-    const apply_body = result.functionNamed("Apply__body").?;
-    try std.testing.expectEqual(@as(u16, 3), apply_body.params); // task + query + resource
-    try std.testing.expectEqual(@as(usize, 2), countCallOps(apply_body));
-
-    // Both forwarded handles are bare parameters loaded from locals.
-    var index: usize = 0;
-    var forwarded: usize = 0;
-    while (index + 1 < apply_body.code.len) : (index += 1) {
-        if (apply_body.code[index] != .load_local) continue;
-        switch (apply_body.code[index + 1]) {
-            .call => |call| {
-                if (call.argc == 1) forwarded += 1;
-            },
-            else => {},
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 2), forwarded);
-    try bytecode.verify(std.testing.allocator, &result.bytecode);
-}
-
-test "rejects query projection, iteration, and resource projection in system bodies" {
-    // Query projection: the synthetic row layout is not exposed to codegen.
-    try std.testing.expectError(error.UnsupportedFeature, compile(
-        std.testing.allocator,
-        \\S <- struct
-        \\    a: i32
-        \\Tick <- sys(q: select &a from S):
-        \\    x := q.a
-        \\    x
-    ,
-        .{},
-    ));
-
-    // Iterating a query is likewise outside the opaque-handle boundary.
-    try std.testing.expectError(error.UnsupportedFeature, compile(
-        std.testing.allocator,
-        \\S <- struct
-        \\    a: i32
-        \\Tick <- sys(q: select &a from S):
-        \\    for row in q:
-        \\        row.a
-    ,
-        .{},
-    ));
-
-    // Resource field access would treat the handle as a pointer: rejected
-    // explicitly instead of being miscompiled.
-    try std.testing.expectError(error.OpaqueHandleAccess, compile(
-        std.testing.allocator,
-        \\S <- struct
-        \\    a: i32
-        \\Tick <- sys(target: res &mut S):
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\D <- struct
+        \\    c: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (
+        \\    target: res &mut S,
+        \\    items: select &mut C, &D from Components,
+        \\    commands: &mut Commands,
+        \\):
         \\    target.a = 1
-    ,
-        .{},
-    ));
-
-    // Borrowing a handle is rejected for the same reason.
-    try std.testing.expectError(error.OpaqueHandleAccess, compile(
-        std.testing.allocator,
-        \\S <- struct
-        \\    a: i32
-        \\Tick <- sys(target: res &mut S):
-        \\    p := &target
-        \\    p
-    ,
-        .{},
-    ));
-}
-
-test "keeps zero-parameter trigger systems and rejects parameterized ones" {
-    var result = try compile(
-        std.testing.allocator,
-        \\Update <- trigger
-        \\    amount: i32
-        \\@trigger(Update)
-        \\Apply <- sys():
-        \\    ret
-        \\run <- async () -> ():
-        \\    await Update(1)
-    ,
-        .{},
-    );
-    defer result.deinit();
-
-    try std.testing.expectEqual(@as(usize, 6), result.bytecode.functions.len);
-    const apply_ctor = result.functionNamed("Apply").?;
-    try std.testing.expectEqual(@as(u16, 0), apply_ctor.params);
-    const apply_body = result.functionNamed("Apply__body").?;
-    try std.testing.expectEqual(@as(u16, 1), apply_body.params); // task pointer only
-
-    // The trigger body still spawns and awaits its systems.
-    const trigger_body = result.functionNamed("Update__body").?;
-    var spawned = false;
-    for (trigger_body.code) |op| switch (op) {
-        .task_spawn => spawned = true,
-        else => {},
-    };
-    try std.testing.expect(spawned);
-    try bytecode.verify(std.testing.allocator, &result.bytecode);
-
-    // Trigger fields are not yet bound into system parameters.
-    try std.testing.expectError(error.UnsupportedFeature, compile(
-        std.testing.allocator,
-        \\Update <- trigger
-        \\    amount: i32
-        \\@trigger(Update)
-        \\Apply <- sys(amount: i32):
-        \\    ret
-        \\run <- async () -> ():
-        \\    await Update(1)
-    ,
-        .{},
-    ));
-}
-
-test "compiles disown as a no-op and unit-struct constructors" {
-    var result = try compile(
-        std.testing.allocator,
-        \\CubeMesh <- struct
-        \\make_mesh <- () -> CubeMesh = CubeMesh
-        \\release <- () -> i32:
-        \\    value := 1
-        \\    disown value
-        \\    value
+        \\main <- async () -> i32:
+        \\    window := await query &S
+        \\    _ := window
+        \\    await Tick()
+        \\    7
     ,
         .{},
     );
@@ -641,38 +677,391 @@ test "compiles disown as a no-op and unit-struct constructors" {
     try std.testing.expect(result.analysis.ok());
     try bytecode.verify(std.testing.allocator, &result.bytecode);
 
-    const make = result.functionNamed("make_mesh").?;
-    var saw_alloc = false;
-    for (make.code) |op| switch (op) {
-        .alloc => saw_alloc = true,
+    // The setup function registers the ungated resource and the component.
+    const setup = result.functionNamed("__e7_ecs_setup").?;
+    var registered_resources: usize = 0;
+    var registered_components: usize = 0;
+    for (setup.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_register_resource => registered_resources += 1,
+            .ecs_register_component => registered_components += 1,
+            else => {},
+        },
         else => {},
     };
-    try std.testing.expect(saw_alloc);
-    try std.testing.expect(result.functionNamed("release") != null);
+    try std.testing.expectEqual(@as(usize, 1), registered_resources);
+    try std.testing.expectEqual(@as(usize, 2), registered_components);
+
+    // `main` runs the ECS setup before user code.
+    const run_body = result.functionNamed("main__body").?;
+    var calls_setup = false;
+    for (run_body.code) |op| switch (op) {
+        .call => |call| {
+            if (result.bytecode.functions[call.function].name.len > 0 and
+                std.mem.eql(u8, result.bytecode.functions[call.function].name, "__e7_ecs_setup")) calls_setup = true;
+            if (std.mem.eql(u8, result.bytecode.functions[call.function].name, "Tick")) calls_setup = calls_setup;
+        },
+        else => {},
+    };
+    try std.testing.expect(calls_setup);
+
+    // The system body fetches world handles for its declared parameters.
+    const body = result.functionNamed("Tick__body").?;
+    try std.testing.expectEqual(@as(u16, 4), body.params); // task + 3 system params
+    var saw_resource = false;
+    var saw_query = false;
+    var saw_commands = false;
+    for (body.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_resource => saw_resource = true,
+            .ecs_query_begin => saw_query = true,
+            .ecs_commands => saw_commands = true,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_resource and saw_query and saw_commands);
+    // Projected id/mut arrays are 8-byte slots: writing entry 1 uses offset 8.
+    var saw_slot_offset = false;
+    for (body.code) |op| switch (op) {
+        .push_i64 => |value| {
+            if (value == 8) saw_slot_offset = true;
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_slot_offset);
+
+    // `await query &S` resolves to the resource pointer, not a Task.
+    var lease_fetches: usize = 0;
+    for (run_body.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_resource => lease_fetches += 1,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expect(lease_fetches >= 1);
 }
 
-test "rejects ECS query and row constructs at lowering" {
-    // Query leases are front-end only until the Commands/plugin ECS task.
+test "lowers Commands methods and plugin initialization" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@resource
+        \\Win <- struct
+        \\    n: i32
+        \\@Components
+        \\Pos <- struct
+        \\    x: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Win { n: 1 })
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.insert_resource(Win { n: 2 })
+        \\    pos := Pos { x: 3 }
+        \\    commands.add_row(Components, { pos })
+        \\    commands.add_plugin(Ui)
+        \\    disown commands
+        \\    0
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    try std.testing.expect(result.functionNamed("main") != null);
+    try std.testing.expect(result.functionNamed("main__body") != null);
+    try std.testing.expect(result.functionNamed("Ui::init") != null);
+    try std.testing.expect(result.functionNamed("Ui::init__body") != null);
+
+    const body = result.functionNamed("main__body").?;
+    var insert_count: usize = 0;
+    var row_begin = false;
+    var row_add = false;
+    var row_finish = false;
+    var add_plugin = false;
+    var flush_count: usize = 0;
+    var commands_handles: usize = 0;
+    for (body.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_commands => commands_handles += 1,
+            .ecs_commands_insert_resource => insert_count += 1,
+            .ecs_commands_row_begin => row_begin = true,
+            .ecs_commands_row_add => row_add = true,
+            .ecs_commands_row_finish => row_finish = true,
+            .ecs_commands_add_plugin => add_plugin = true,
+            .ecs_commands_flush => flush_count += 1,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expect(commands_handles >= 1);
+    try std.testing.expectEqual(@as(usize, 1), insert_count);
+    try std.testing.expect(row_begin and row_add and row_finish);
+    try std.testing.expect(add_plugin);
+    // add_plugin flushes before running init; `disown` flushes again.
+    try std.testing.expect(flush_count >= 2);
+
+    // Plugin metadata: Ui owns id 0 and an init function.
+    try std.testing.expectEqual(@as(usize, 1), result.analysis.plugins.len);
+    try std.testing.expectEqual(@as(i64, 0), result.analysis.plugins[0].id);
+    try std.testing.expectEqualStrings("Ui::init", result.analysis.plugins[0].init.?);
+    try std.testing.expectEqual(@as(usize, 1), result.analysis.resources.len);
+    try std.testing.expectEqual(@as(usize, 1), result.analysis.components.len);
+
+    // The gated-resource registration path is exercised by plugin init's
+    // insert_resource; Win itself is ungated and registered in setup.
+    const init_body = result.functionNamed("Ui::init__body").?;
+    var init_insert = false;
+    for (init_body.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_commands_insert_resource => init_insert = true,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expect(init_insert);
+}
+
+test "gates plugin systems and flushes at trigger completion" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@resource
+        \\Win <- struct
+        \\    n: i32
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        ret
+        \\Update <- trigger
+        \\@plugin(Ui)
+        \\@trigger(Update)
+        \\gated <- sys (win: res &mut Win):
+        \\    win.n = 1
+        \\run <- async () -> ():
+        \\    await Update()
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    // Metadata records the system gate.
+    try std.testing.expectEqual(@as(i64, 0), result.analysis.systemGate("gated").?);
+
+    const trigger_body = result.functionNamed("Update__body").?;
+    var saw_gate = false;
+    var saw_flush = false;
+    var spawned = false;
+    for (trigger_body.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_plugin_active => saw_gate = true,
+            .ecs_commands_flush => saw_flush = true,
+            else => {},
+        },
+        .task_spawn => spawned = true,
+        else => {},
+    };
+    try std.testing.expect(saw_gate and saw_flush and spawned);
+}
+
+test "trigger systems may declare world parameters" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@resource
+        \\R <- struct
+        \\    n: i32
+        \\Update <- trigger
+        \\@trigger(Update)
+        \\Tick <- sys (r: res &mut R):
+        \\    r.n = 1
+        \\run <- async () -> ():
+        \\    await Update()
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const trigger_body = result.functionNamed("Update__body").?;
+    var spawned_system = false;
+    for (trigger_body.code) |op| switch (op) {
+        .call => |call| {
+            if (std.mem.endsWith(u8, result.bytecode.functions[call.function].name, "Tick__trigger")) spawned_system = true;
+            try std.testing.expectEqual(@as(u16, 0), call.argc);
+        },
+        else => {},
+    };
+    try std.testing.expect(spawned_system);
+
+    // Plain (non-world) trigger system parameters are not bound from trigger
+    // fields yet: they lower as placeholder zeroes.  This is the documented
+    // trigger-field binding gap, not a hard rejection.
+    var plain = try compile(
+        std.testing.allocator,
+        \\Update <- trigger
+        \\@trigger(Update)
+        \\Tick <- sys (amount: i32):
+        \\    amount
+        \\run <- async () -> ():
+        \\    await Update()
+    ,
+        .{},
+    );
+    defer plain.deinit();
+    try bytecode.verify(std.testing.allocator, &plain.bytecode);
+}
+
+test "rejects query body projection but lowers resource fields" {
+    // Query handles are created but row field projection still needs entity
+    // iteration support; reject instead of miscompiling.
     try std.testing.expectError(error.UnsupportedFeature, compile(
         std.testing.allocator,
-        \\Commands <- struct
-        \\    id: usize
-        \\main <- async () -> i32:
-        \\    commands := (await query &mut Commands)?
-        \\    0
+        \\@Components
+        \\C <- struct
+        \\    a: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (q: select &a from Components):
+        \\    x := q.a
+        \\    x
+    ,
+        .{},
+    ));
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\@Components
+        \\C <- struct
+        \\    a: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (q: select &a from Components):
+        \\    for row in q:
+        \\        row.a
     ,
         .{},
     ));
 
-    // Row literals likewise parse/type-check but have no bytecode yet.
-    try std.testing.expectError(error.UnsupportedFeature, compile(
+    // Resource parameters are real pointers now: field reads/writes lower.
+    var result = try compile(
         std.testing.allocator,
-        \\Components <- table
-        \\    entity_id: usize
-        \\main <- () -> i32:
-        \\    row := { 1, 2 }
-        \\    0
+        \\@resource
+        \\R <- struct
+        \\    n: i32
+        \\Tick <- sys (target: res &mut R):
+        \\    target.n = 1
     ,
         .{},
-    ));
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+}
+
+test "compiles the engine main/ui project from disk" {
+    // The test binary's working directory depends on whether the compiler
+    // package or the workspace build graph is driving the tests.
+    const candidates = [_][]const u8{
+        "engine/main.e7",
+        "../engine/main.e7",
+        "../../engine/main.e7",
+    };
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var root_path: []const u8 = "";
+    for (candidates) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
+        @memcpy(path_buffer[0..absolute.len], absolute);
+        root_path = path_buffer[0..absolute.len];
+        std.testing.allocator.free(absolute);
+        break;
+    }
+    if (root_path.len == 0) return error.SkipZigTest;
+
+    var result = try compileProject(std.testing.allocator, root_path, .{});
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    // Root + ui module were loaded and prefixed.
+    try std.testing.expect(result.owned_sources.len >= 2);
+    try std.testing.expect(result.module_asts.len >= 1);
+    try std.testing.expect(result.functionNamed("main") != null);
+    try std.testing.expect(result.functionNamed("main__body") != null);
+    try std.testing.expect(result.functionNamed("__e7_ecs_setup") != null);
+    try std.testing.expect(result.functionNamed("ui::Ui::init") != null);
+    try std.testing.expect(result.functionNamed("ui::Ui::init__body") != null);
+
+    // ECS metadata comes from both files.
+    try std.testing.expect(result.analysis.plugins.len == 1);
+    try std.testing.expectEqualStrings("ui::Ui", result.analysis.plugins[0].name);
+    try std.testing.expectEqualStrings("ui::Ui::init", result.analysis.plugins[0].init.?);
+    try std.testing.expect(result.analysis.resources.len >= 5);
+    try std.testing.expect(result.analysis.components.len >= 6);
+    try std.testing.expect(result.analysis.component_table != null);
+    try std.testing.expectEqual(@as(usize, 6), result.analysis.component_table.?.columns.len);
+    // `ui_interact`/`ui_render` are gated by the Ui plugin.
+    try std.testing.expect(result.analysis.system_gates.len >= 2);
+
+    const setup = result.functionNamed("__e7_ecs_setup").?;
+    var registered_components: usize = 0;
+    for (setup.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .ecs_register_component => registered_components += 1,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expectEqual(result.analysis.components.len, registered_components);
+}
+
+test "compileProject loads sibling modules and prefixes their items" {
+    const main_source =
+        \\mod ui
+        \\@resource
+        \\Win <- struct
+        \\    n: i32
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(ui::Ui)
+        \\    disown commands
+        \\    0
+    ;
+    const ui_source =
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        ret
+    ;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "main.e7", .data = main_source });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "ui.e7", .data = ui_source });
+    const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.e7", std.testing.allocator);
+    defer std.testing.allocator.free(root_path);
+
+    var result = try compileProject(std.testing.allocator, root_path, .{});
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    // Two files, one external module with its items attached and prefixed.
+    try std.testing.expectEqual(@as(usize, 2), result.owned_sources.len);
+    try std.testing.expectEqual(@as(usize, 1), result.module_asts.len);
+    const module = result.parsed.module.items[0].kind.mod;
+    try std.testing.expect(module.items != null);
+    try std.testing.expectEqual(@as(usize, 1), module.items.?.len);
+
+    try std.testing.expect(result.functionNamed("main") != null);
+    try std.testing.expect(result.functionNamed("ui::Ui::init") != null);
+    try std.testing.expectEqual(@as(usize, 1), result.analysis.plugins.len);
+    try std.testing.expectEqualStrings("ui::Ui", result.analysis.plugins[0].name);
+    try std.testing.expectEqualStrings("ui::Ui::init", result.analysis.plugins[0].init.?);
 }

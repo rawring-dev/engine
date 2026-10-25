@@ -8,11 +8,19 @@
 //! silently miscompiled.
 //!
 //! `sys` declarations lower like async functions: a constructor returns a
-//! `Task` handle and a body function runs with the task pointer plus the
-//! system's parameters.  Query and resource parameters are opaque i64 handles
-//! in the body; forwarding them as call arguments is supported, while any use
-//! that would need the synthetic query/record layout is rejected with
-//! `OpaqueHandleAccess`.
+//! `Task` handle and the body runs with the task pointer plus placeholder
+//! parameters.  The body prologue materializes world handles instead: resource
+//! parameters call `e7_ecs_resource` (guarded by `e7_ecs_has_resource` so
+//! legacy source-level calls still forward caller values), query parameters
+//! call `e7_ecs_query_begin`, and `Commands` parameters call `e7_ecs_commands`.
+//! Trigger bodies spawn a zero-argument constructor for each system and gate
+//! `@plugin` systems on `e7_ecs_plugin_active`.  Query row projection and
+//! iteration still need entity-loop lowering, so they stay rejected with
+//! `UnsupportedFeature`.
+//!
+//! Floats are stored as their f64 bit pattern in the uniform i64 slot
+//! representation; float literal initialization lowers, while float arithmetic
+//! is rejected rather than silently using integer ops.
 //!
 //! This is the compiler's real output path: `pipeline.zig` runs the parser,
 //! semantic analyzer, this lowering pass, and the bytecode fixed-point
@@ -32,12 +40,6 @@ pub const Error = error{
     TooManyLocals,
     UnknownLocal,
     InvalidBytecode,
-    /// A query/resource system parameter is an opaque handle at the async ABI
-    /// boundary.  Handles may only be forwarded as call arguments; projecting
-    /// fields, iterating, borrowing, or computing on one has no defined
-    /// lowering yet, so it is rejected instead of treating the handle as a
-    /// pointer to the synthetic query/record layout.
-    OpaqueHandleAccess,
 };
 
 pub const Config = struct {
@@ -49,8 +51,22 @@ const FunctionInfo = struct {
     decl: *const ast.FunctionDecl,
     constructor_index: u16,
     body_index: ?u16 = null,
-    /// Parameter positions that carry opaque query/resource handles.
-    opaque_params: []const usize = &.{},
+    /// Qualified source name (`main`, `ui::helper`); bytecode symbols use it.
+    qualified_name: []const u8 = "",
+    /// Non-null for `sys` declarations: the body prologue materializes world
+    /// handles (resources, queries, Commands) instead of receiving them.
+    sys_decl: ?*const ast.SysDecl = null,
+    /// Module prefix used to resolve ECS names from this system's parameters.
+    module_prefix: []const u8 = "",
+    /// Zero-argument constructor for a system, used by trigger bodies and
+    /// plugin initialization (source calls may still pass explicit args).
+    trigger_ctor_index: ?u16 = null,
+};
+
+const TriggerSystemInfo = struct {
+    /// Zero-argument system constructor used for trigger spawns.
+    constructor_index: u16,
+    gate: ?i64 = null,
 };
 
 const TriggerInfo = struct {
@@ -58,7 +74,9 @@ const TriggerInfo = struct {
     id: u16,
     constructor_index: u16,
     body_index: u16,
-    systems: [][]const u8,
+    systems: []TriggerSystemInfo,
+    /// Qualified trigger name; bytecode constructor/body symbols derive from it.
+    name: []const u8,
 };
 
 /// Build a bytecode (and LLVM-safe) symbol for an impl method.  Qualified type
@@ -166,6 +184,303 @@ const MethodTable = struct {
     }
 };
 
+/// Append `prefix::name` into a caller-provided buffer.  ECS lookups use this
+/// instead of heap strings so lowering allocates only persistent artifacts.
+fn qualifiedNameBuf(buffer: *[512]u8, prefix: []const u8, name: []const u8) []const u8 {
+    if (prefix.len == 0) return name;
+    return std.fmt.bufPrint(buffer, "{s}::{s}", .{ prefix, name }) catch name;
+}
+
+fn joinPathBuf(buffer: *[512]u8, path: ast.Path) []const u8 {
+    var length: usize = 0;
+    for (path.segments, 0..) |segment, index| {
+        if (index > 0) {
+            if (length + 2 > buffer.len) return path.segments[path.segments.len - 1].name;
+            buffer[length] = ':';
+            buffer[length + 1] = ':';
+            length += 2;
+        }
+        if (length + segment.name.len > buffer.len) return path.segments[path.segments.len - 1].name;
+        @memcpy(buffer[length .. length + segment.name.len], segment.name);
+        length += segment.name.len;
+    }
+    return buffer[0..length];
+}
+
+fn lastSegment(name: []const u8) []const u8 {
+    if (std.mem.lastIndexOf(u8, name, "::")) |index| return name[index + 2 ..];
+    return name;
+}
+
+/// Final path segment of a type in symbol position: `res &mut Gpu` -> `Gpu`,
+/// `&mut Commands` -> `Commands`.  Returns null for non-path types.
+fn typeLastName(ty: *const ast.Type) ?[]const u8 {
+    var current = ty;
+    while (true) {
+        switch (current.*) {
+            .reference => |reference| current = reference.child,
+            .box => |child| current = child,
+            .optional => |child| current = child,
+            .path => |path| {
+                if (path.segments.len == 0) return null;
+                return path.segments[path.segments.len - 1].name;
+            },
+            else => return null,
+        }
+    }
+}
+
+fn qualifiedNameAlloc(
+    allocator: std.mem.Allocator,
+    prefix: []const u8,
+    name: []const u8,
+) Error![]const u8 {
+    if (prefix.len == 0) return allocator.dupe(u8, name);
+    return std.fmt.allocPrint(allocator, "{s}::{s}", .{ prefix, name });
+}
+
+/// Recursive item collection shared by the function/sys/trigger registries.
+const LowerState = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+    analysis: *const semantic.Analysis,
+    structs: *std.StringHashMapUnmanaged(*const ast.StructDecl),
+    tables: *std.StringHashMapUnmanaged(*const ast.TableDecl),
+    enums: *std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    infos: *std.ArrayList(FunctionInfo),
+    triggers: *std.ArrayList(TriggerInfo),
+    synthetic: *std.ArrayList(*ast.FunctionDecl),
+    synthetic_types: *std.ArrayList(*ast.Type),
+    synthetic_params: *std.ArrayList([]ast.Param),
+    name_map: *std.StringHashMapUnmanaged(u16),
+    trigger_systems: *std.StringHashMapUnmanaged(std.ArrayList(TriggerSystemInfo)),
+    owned_names: *std.ArrayList([]const u8),
+    next_index: u16 = 0,
+
+    fn qualified(self: *LowerState, prefix: []const u8, name: []const u8) Error![]const u8 {
+        const owned = try qualifiedNameAlloc(self.allocator, prefix, name);
+        errdefer self.allocator.free(owned);
+        try self.owned_names.append(self.allocator, owned);
+        return owned;
+    }
+
+    fn childPrefix(self: *LowerState, prefix: []const u8, name: []const u8) Error![]const u8 {
+        return self.qualified(prefix, name);
+    }
+
+    fn registerAlias(self: *LowerState, name: []const u8, index: u16) Error!void {
+        if (self.name_map.contains(name)) return;
+        try self.name_map.put(self.allocator, name, index);
+    }
+
+    fn registerFunction(self: *LowerState, decl: *const ast.FunctionDecl, qualified_name: []const u8, async_slots: bool) Error!void {
+        if (self.name_map.contains(qualified_name)) return error.DuplicateFunction;
+        const slots: u16 = if (async_slots) 2 else 1;
+        if (self.next_index + slots < self.next_index) return error.TooManyLocals;
+        const constructor_index = self.next_index;
+        self.next_index += slots;
+        try self.name_map.put(self.allocator, qualified_name, constructor_index);
+        try self.registerAlias(decl.name, constructor_index);
+        try self.infos.append(self.allocator, .{
+            .decl = decl,
+            .constructor_index = constructor_index,
+            .body_index = if (async_slots) constructor_index + 1 else null,
+            .qualified_name = qualified_name,
+        });
+    }
+
+    fn collectItems(self: *LowerState, items: []*ast.Item, prefix: []const u8) Error!void {
+        for (items) |item| {
+            switch (item.kind) {
+                .struct_decl => try self.structs.put(self.allocator, item.kind.struct_decl.name, &item.kind.struct_decl),
+                .table_decl => try self.tables.put(self.allocator, item.kind.table_decl.name, &item.kind.table_decl),
+                .enum_decl => try self.enums.put(self.allocator, item.kind.enum_decl.name, &item.kind.enum_decl),
+                .function => |decl| {
+                    const qualified_name = try self.qualified(prefix, decl.name);
+                    try self.registerFunction(&item.kind.function, qualified_name, decl.is_async);
+                },
+                .binding => |binding| {
+                    if (binding.value.* != .function or !binding.value.function.is_async) continue;
+                    const qualified_name = try self.qualified(prefix, binding.name);
+                    if (self.name_map.contains(qualified_name)) return error.DuplicateFunction;
+                    const function = binding.value.function;
+                    const decl = try self.allocator.create(ast.FunctionDecl);
+                    decl.* = .{
+                        .name = binding.name,
+                        .is_async = true,
+                        .generics = &.{},
+                        .params = function.params,
+                        .result = function.result,
+                        .where_clause = null,
+                        .body = function.body,
+                    };
+                    try self.synthetic.append(self.allocator, decl);
+                    if (self.next_index + 2 < self.next_index) return error.TooManyLocals;
+                    const constructor_index = self.next_index;
+                    self.next_index += 2;
+                    try self.name_map.put(self.allocator, qualified_name, constructor_index);
+                    try self.registerAlias(binding.name, constructor_index);
+                    try self.infos.append(self.allocator, .{
+                        .decl = decl,
+                        .constructor_index = constructor_index,
+                        .body_index = constructor_index + 1,
+                        .qualified_name = qualified_name,
+                    });
+                },
+                .sys => try self.collectSys(item, prefix),
+                .mod => |m| if (m.items) |inner| {
+                    try self.collectItems(inner, try self.childPrefix(prefix, m.name));
+                },
+                .plugin_decl => |plugin| {
+                    try self.collectItems(plugin.items, try self.childPrefix(prefix, plugin.name));
+                },
+                else => {},
+            }
+        }
+    }
+
+    const SysTrigger = struct {
+        constructor_index: u16,
+        body_index: u16,
+        params: u16,
+        gate: ?i64,
+    };
+
+    fn collectSys(self: *LowerState, item: *ast.Item, prefix: []const u8) Error!void {
+        const decl = &item.kind.sys;
+        const qualified_name = try self.qualified(prefix, decl.name);
+        if (self.name_map.contains(qualified_name)) return error.DuplicateFunction;
+        const unit_ty = try self.allocator.create(ast.Type);
+        unit_ty.* = .{ .tuple = &.{} };
+        try self.synthetic_types.append(self.allocator, unit_ty);
+        // Placeholder ABI parameters keep the async body arity stable
+        // (task + declared params); the constructor passes zeroes and the body
+        // prologue binds the real world handles.
+        const params = try self.allocator.alloc(ast.Param, decl.params.len);
+        try self.synthetic_params.append(self.allocator, params);
+        for (params) |*placeholder| {
+            placeholder.* = .{ .name = "<sys_param>", .ty = unit_ty };
+        }
+        const synthetic_decl = try self.allocator.create(ast.FunctionDecl);
+        synthetic_decl.* = .{
+            .name = decl.name,
+            .is_async = true,
+            .generics = decl.generics,
+            .params = params,
+            .result = unit_ty,
+            .where_clause = decl.where_clause,
+            .body = .{ .block = decl.body },
+        };
+        try self.synthetic.append(self.allocator, synthetic_decl);
+        if (self.next_index + 3 < self.next_index) return error.TooManyLocals;
+        const constructor_index = self.next_index;
+        self.next_index += 3;
+        try self.name_map.put(self.allocator, qualified_name, constructor_index);
+        try self.registerAlias(decl.name, constructor_index);
+        try self.infos.append(self.allocator, .{
+            .decl = synthetic_decl,
+            .constructor_index = constructor_index,
+            .body_index = constructor_index + 1,
+            .qualified_name = qualified_name,
+            .sys_decl = decl,
+            .module_prefix = prefix,
+            .trigger_ctor_index = constructor_index + 2,
+        });
+
+        const trigger_key = itemTriggerKey(item);
+        const gate = self.analysis.systemGate(qualified_name);
+        if (trigger_key) |key| {
+            const gop = try self.trigger_systems.getOrPut(self.allocator, key);
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
+            try gop.value_ptr.append(self.allocator, .{
+                .constructor_index = constructor_index + 2,
+                .gate = gate,
+            });
+        }
+    }
+
+    fn collectTriggers(self: *LowerState, items: []*ast.Item, prefix: []const u8) Error!void {
+        for (items) |item| {
+            switch (item.kind) {
+                .trigger_decl => {
+                    const decl = &item.kind.trigger_decl;
+                    const qualified_name = try self.qualified(prefix, decl.name);
+                    if (self.name_map.contains(qualified_name)) return error.DuplicateFunction;
+                    if (self.next_index + 2 < self.next_index) return error.TooManyLocals;
+                    const constructor_index = self.next_index;
+                    self.next_index += 2;
+                    try self.name_map.put(self.allocator, qualified_name, constructor_index);
+                    try self.registerAlias(decl.name, constructor_index);
+                    const systems = if (self.trigger_systems.get(decl.name)) |list|
+                        try self.allocator.dupe(TriggerSystemInfo, list.items)
+                    else
+                        try self.allocator.alloc(TriggerSystemInfo, 0);
+                    try self.triggers.append(self.allocator, .{
+                        .decl = decl,
+                        .id = @intCast(self.triggers.items.len),
+                        .constructor_index = constructor_index,
+                        .body_index = constructor_index + 1,
+                        .systems = systems,
+                        .name = qualified_name,
+                    });
+                },
+                .mod => |m| if (m.items) |inner| {
+                    try self.collectTriggers(inner, try self.childPrefix(prefix, m.name));
+                },
+                .plugin_decl => |plugin| {
+                    try self.collectTriggers(plugin.items, try self.childPrefix(prefix, plugin.name));
+                },
+                else => {},
+            }
+        }
+    }
+};
+
+/// Last path segment of `@trigger(...)`, used to match systems to triggers.
+fn itemTriggerKey(item: *const ast.Item) ?[]const u8 {
+    for (item.attributes) |attribute| {
+        if (attribute.path.segments.len == 0 or attribute.args.len == 0) continue;
+        const attr_name = attribute.path.segments[attribute.path.segments.len - 1].name;
+        if (!std.mem.eql(u8, attr_name, "trigger")) continue;
+        const arg = attribute.args[0];
+        if (arg.* != .path or arg.path.segments.len == 0) return null;
+        return arg.path.segments[arg.path.segments.len - 1].name;
+    }
+    return null;
+}
+
+/// `__e7_ecs_setup`: reset the world and register every ungated resource and
+/// component.  Plugin-gated resources are registered by `add_plugin` lowering
+/// just before their plugin init runs.
+fn buildEcsSetup(allocator: std.mem.Allocator, analysis: *const semantic.Analysis) Error!bytecode.Function {
+    var code = std.ArrayList(bytecode.Op).empty;
+    errdefer code.deinit(allocator);
+    try code.append(allocator, .{ .runtime_call = .{ .function = .ecs_reset, .argc = 0 } });
+    try code.append(allocator, .pop);
+    for (analysis.resources) |info| {
+        if (info.plugin_id != null) continue;
+        try code.append(allocator, .{ .push_i64 = info.id });
+        try code.append(allocator, .{ .push_i64 = @intCast(info.slots) });
+        try code.append(allocator, .{ .runtime_call = .{ .function = .ecs_register_resource, .argc = 2 } });
+        try code.append(allocator, .pop);
+    }
+    for (analysis.components) |info| {
+        try code.append(allocator, .{ .push_i64 = info.id });
+        try code.append(allocator, .{ .push_i64 = @intCast(info.slots) });
+        try code.append(allocator, .{ .runtime_call = .{ .function = .ecs_register_component, .argc = 2 } });
+        try code.append(allocator, .pop);
+    }
+    try code.append(allocator, .{ .push_i64 = 0 });
+    try code.append(allocator, .ret);
+    return .{
+        .name = try allocator.dupe(u8, "__e7_ecs_setup"),
+        .params = 0,
+        .locals = 0,
+        .max_stack = 16,
+        .code = try code.toOwnedSlice(allocator),
+    };
+}
+
 pub fn lower(
     allocator: std.mem.Allocator,
     module: *ast.Module,
@@ -178,14 +493,7 @@ pub fn lower(
     defer structs.deinit(allocator);
     defer tables.deinit(allocator);
     defer enums.deinit(allocator);
-    for (module.items) |item| {
-        switch (item.kind) {
-            .struct_decl => |decl| try structs.put(allocator, decl.name, &item.kind.struct_decl),
-            .table_decl => |decl| try tables.put(allocator, decl.name, &item.kind.table_decl),
-            .enum_decl => |decl| try enums.put(allocator, decl.name, &item.kind.enum_decl),
-            else => {},
-        }
-    }
+
     var infos = std.ArrayList(FunctionInfo).empty;
     defer infos.deinit(allocator);
     var triggers = std.ArrayList(TriggerInfo).empty;
@@ -195,173 +503,76 @@ pub fn lower(
     }
     var synthetic = std.ArrayList(*ast.FunctionDecl).empty;
     var synthetic_types = std.ArrayList(*ast.Type).empty;
+    var synthetic_params = std.ArrayList([]ast.Param).empty;
     defer {
         for (synthetic.items) |decl| allocator.destroy(decl);
         synthetic.deinit(allocator);
         for (synthetic_types.items) |ty| allocator.destroy(ty);
         synthetic_types.deinit(allocator);
-    }
-    var name_map = std.StringHashMapUnmanaged(u16).empty;
-    defer name_map.deinit(allocator);
-    var next_index: u16 = 0;
-    for (module.items) |item| {
-        switch (item.kind) {
-            .function => |decl| {
-                if (name_map.contains(decl.name)) return error.DuplicateFunction;
-                const slots: u16 = if (decl.is_async) 2 else 1;
-                if (next_index + slots < next_index) return error.TooManyLocals;
-                const constructor_index = next_index;
-                const body_index = if (decl.is_async) next_index + 1 else null;
-                next_index += slots;
-                try name_map.put(allocator, decl.name, constructor_index);
-                try infos.append(allocator, .{
-                    .decl = &item.kind.function,
-                    .constructor_index = constructor_index,
-                    .body_index = body_index,
-                });
-            },
-            .binding => |binding| {
-                if (binding.value.* != .function or !binding.value.function.is_async) continue;
-                if (name_map.contains(binding.name)) return error.DuplicateFunction;
-                const function = binding.value.function;
-                const decl = try allocator.create(ast.FunctionDecl);
-                decl.* = .{
-                    .name = binding.name,
-                    .is_async = true,
-                    .generics = &.{},
-                    .params = function.params,
-                    .result = function.result,
-                    .where_clause = null,
-                    .body = function.body,
-                };
-                try synthetic.append(allocator, decl);
-                if (next_index + 2 < next_index) return error.TooManyLocals;
-                const constructor_index = next_index;
-                const body_index = next_index + 1;
-                next_index += 2;
-                try name_map.put(allocator, binding.name, constructor_index);
-                try infos.append(allocator, .{
-                    .decl = decl,
-                    .constructor_index = constructor_index,
-                    .body_index = body_index,
-                });
-            },
-            else => {},
-        }
-    }
-    var trigger_system_names = std.StringHashMapUnmanaged(std.ArrayList([]const u8)).empty;
-    defer {
-        var it = trigger_system_names.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
-        trigger_system_names.deinit(allocator);
-    }
-    // Every `sys` declaration lowers to the same async constructor/body pair
-    // as a source async function, whether or not a trigger invokes it.  A
-    // system's query/resource parameters are opaque i64 handles at this ABI
-    // boundary: the body receives them as handles, and only forwarding them as
-    // call arguments is lowered (see `Builder.lowerCallArg`).  Anything that
-    // needs the synthetic query/record layout is rejected with
-    // `OpaqueHandleAccess` instead of being miscompiled.
-    //
-    // Trigger-attached systems stay restricted to zero parameters because the
-    // generated trigger body does not bind trigger fields into system
-    // parameters.
-    var synthetic_params = std.ArrayList([]ast.Param).empty;
-    defer {
         for (synthetic_params.items) |params| allocator.free(params);
         synthetic_params.deinit(allocator);
     }
-    var opaque_param_lists = std.ArrayList([]const usize).empty;
+    var name_map = std.StringHashMapUnmanaged(u16).empty;
+    defer name_map.deinit(allocator);
+    var trigger_systems = std.StringHashMapUnmanaged(std.ArrayList(TriggerSystemInfo)).empty;
     defer {
-        for (opaque_param_lists.items) |indices| allocator.free(indices);
-        opaque_param_lists.deinit(allocator);
+        var it = trigger_systems.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+        trigger_systems.deinit(allocator);
     }
-    for (module.items) |item| {
-        if (item.kind != .sys) continue;
-        const decl = item.kind.sys;
-        var trigger_name: ?[]const u8 = null;
-        for (item.attributes) |attribute| {
-            if (attribute.path.segments.len == 0 or attribute.args.len == 0) continue;
-            const attr_name = attribute.path.segments[attribute.path.segments.len - 1].name;
-            if (!std.mem.eql(u8, attr_name, "trigger")) continue;
-            const arg = attribute.args[0];
-            if (arg.* != .path or arg.path.segments.len == 0) continue;
-            trigger_name = arg.path.segments[arg.path.segments.len - 1].name;
-            break;
-        }
-        if (name_map.contains(decl.name)) return error.DuplicateFunction;
-        if (trigger_name != null and decl.params.len != 0) return error.UnsupportedFeature;
-        const unit_ty = try allocator.create(ast.Type);
-        unit_ty.* = .{ .tuple = &.{} };
-        try synthetic_types.append(allocator, unit_ty);
-        const params = try allocator.alloc(ast.Param, decl.params.len);
-        try synthetic_params.append(allocator, params);
-        var opaque_indices = std.ArrayList(usize).empty;
-        for (decl.params, 0..) |param, i| switch (param) {
-            .normal => |normal| params[i] = normal,
-            .resource => |resource| {
-                params[i] = resource;
-                try opaque_indices.append(allocator, i);
-            },
-            .query => |query| {
-                params[i] = .{ .name = query.name, .ty = unit_ty };
-                try opaque_indices.append(allocator, i);
-            },
-        };
-        const opaque_slice = try opaque_indices.toOwnedSlice(allocator);
-        try opaque_param_lists.append(allocator, opaque_slice);
-        const synthetic_decl = try allocator.create(ast.FunctionDecl);
-        synthetic_decl.* = .{
-            .name = decl.name,
-            .is_async = true,
-            .generics = decl.generics,
-            .params = params,
-            .result = unit_ty,
-            .where_clause = decl.where_clause,
-            .body = .{ .block = decl.body },
-        };
-        try synthetic.append(allocator, synthetic_decl);
-        const constructor_index = next_index;
-        const body_index = next_index + 1;
-        next_index += 2;
-        try name_map.put(allocator, decl.name, constructor_index);
-        try infos.append(allocator, .{
-            .decl = synthetic_decl,
-            .constructor_index = constructor_index,
-            .body_index = body_index,
-            .opaque_params = opaque_slice,
-        });
-        if (trigger_name) |trigger| {
-            const gop = try trigger_system_names.getOrPut(allocator, trigger);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(allocator, decl.name);
+    var owned_names = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_names.items) |name| allocator.free(name);
+        owned_names.deinit(allocator);
+    }
+
+    var state = LowerState{
+        .allocator = allocator,
+        .config = config,
+        .analysis = analysis,
+        .structs = &structs,
+        .tables = &tables,
+        .enums = &enums,
+        .infos = &infos,
+        .triggers = &triggers,
+        .synthetic = &synthetic,
+        .synthetic_types = &synthetic_types,
+        .synthetic_params = &synthetic_params,
+        .name_map = &name_map,
+        .trigger_systems = &trigger_systems,
+        .owned_names = &owned_names,
+    };
+    try state.collectItems(module.items, "");
+    try state.collectTriggers(module.items, "");
+
+    if (infos.items.len == 0 and triggers.items.len == 0) return error.NoFunctions;
+
+    var sys_wrappers = std.AutoHashMapUnmanaged(u16, u16).empty;
+    defer sys_wrappers.deinit(allocator);
+    for (infos.items) |info| {
+        const wrapper = info.trigger_ctor_index orelse continue;
+        try sys_wrappers.put(allocator, info.constructor_index, wrapper);
+    }
+
+    // Plugin id -> init constructor index, used by `commands.add_plugin`.
+    var plugin_inits = std.AutoHashMapUnmanaged(i64, u16).empty;
+    defer plugin_inits.deinit(allocator);
+    for (analysis.plugins) |plugin| {
+        const init_name = plugin.init orelse continue;
+        if (name_map.get(init_name)) |index| {
+            const wrapper = sys_wrappers.get(index) orelse index;
+            try plugin_inits.put(allocator, plugin.id, wrapper);
         }
     }
 
-    if (infos.items.len == 0 and triggers.items.len == 0) return error.NoFunctions;
-    for (module.items) |item| {
-        switch (item.kind) {
-            .trigger_decl => |decl| {
-                if (name_map.contains(decl.name)) return error.DuplicateFunction;
-                if (next_index + 2 < next_index) return error.TooManyLocals;
-                const constructor_index = next_index;
-                const body_index = next_index + 1;
-                next_index += 2;
-                try name_map.put(allocator, decl.name, constructor_index);
-                const systems = if (trigger_system_names.get(decl.name)) |list|
-                    try allocator.dupe([]const u8, list.items)
-                else
-                    try allocator.alloc([]const u8, 0);
-                try triggers.append(allocator, .{
-                    .decl = &item.kind.trigger_decl,
-                    .id = @intCast(triggers.items.len),
-                    .constructor_index = constructor_index,
-                    .body_index = body_index,
-                    .systems = systems,
-                });
-            },
-            else => {},
-        }
+    const has_ecs = analysis.resources.len > 0 or analysis.components.len > 0;
+    var next_index = state.next_index;
+    var setup_index: ?u16 = null;
+    if (has_ecs) {
+        if (next_index == std.math.maxInt(u16)) return error.TooManyLocals;
+        setup_index = next_index;
+        next_index += 1;
+        try name_map.put(allocator, "__e7_ecs_setup", setup_index.?);
     }
 
     var methods = MethodTable{
@@ -388,6 +599,7 @@ pub fn lower(
     };
 
     for (infos.items) |info| {
+        const is_main = std.mem.eql(u8, info.qualified_name, "main");
         if (info.body_index) |body_index| {
             var constructor = Builder{
                 .allocator = allocator,
@@ -399,8 +611,10 @@ pub fn lower(
                 .tables = &tables,
                 .enums = &enums,
                 .methods = &methods,
+                .name_override = info.qualified_name,
                 .mode = .async_constructor,
                 .body_index = body_index,
+                .sys_wrappers = &sys_wrappers,
             };
             functions[info.constructor_index] = try constructor.finish();
             initialized += 1;
@@ -415,11 +629,40 @@ pub fn lower(
                 .tables = &tables,
                 .enums = &enums,
                 .methods = &methods,
-                .mode = .async_body,
-                .opaque_param_indices = info.opaque_params,
+                .name_override = info.qualified_name,
+                .mode = if (info.sys_decl != null) .sys_body else .async_body,
+                .sys_decl = info.sys_decl,
+                .module_prefix = info.module_prefix,
+                .plugin_inits = &plugin_inits,
+                .sys_wrappers = &sys_wrappers,
+                .emit_ecs_setup = is_main and has_ecs,
             };
             functions[body_index] = try body.finish();
             initialized += 1;
+            if (info.sys_decl) |sys_decl| {
+                // Zero-argument constructor used by triggers and plugin init:
+                // the body receives placeholder zeroes and its prologue reads
+                // world handles from the ECS.
+                const wrapper_index = info.trigger_ctor_index.?;
+                var wrapper_code = std.ArrayList(bytecode.Op).empty;
+                errdefer wrapper_code.deinit(allocator);
+                for (0..sys_decl.params.len) |_| {
+                    try wrapper_code.append(allocator, .{ .push_i64 = 0 });
+                }
+                try wrapper_code.append(allocator, .{ .create_task = .{
+                    .function = body_index,
+                    .argc = @intCast(sys_decl.params.len),
+                } });
+                try wrapper_code.append(allocator, .ret);
+                functions[wrapper_index] = .{
+                    .name = try std.fmt.allocPrint(allocator, "{s}__trigger", .{info.qualified_name}),
+                    .params = 0,
+                    .locals = 0,
+                    .max_stack = config.stack_slots,
+                    .code = try wrapper_code.toOwnedSlice(allocator),
+                };
+                initialized += 1;
+            }
         } else {
             var builder = Builder{
                 .allocator = allocator,
@@ -431,6 +674,10 @@ pub fn lower(
                 .tables = &tables,
                 .enums = &enums,
                 .methods = &methods,
+                .name_override = info.qualified_name,
+                .plugin_inits = &plugin_inits,
+                .sys_wrappers = &sys_wrappers,
+                .emit_ecs_setup = is_main and has_ecs,
             };
             functions[info.constructor_index] = try builder.finish();
             initialized += 1;
@@ -447,7 +694,7 @@ pub fn lower(
         } };
         ctor_code[info.decl.fields.len + 1] = .ret;
         functions[info.constructor_index] = .{
-            .name = try allocator.dupe(u8, info.decl.name),
+            .name = try allocator.dupe(u8, info.name),
             .params = argc,
             .locals = argc,
             .max_stack = config.stack_slots,
@@ -459,30 +706,57 @@ pub fn lower(
         errdefer body_code.deinit(allocator);
         var handle_slots = std.ArrayList(u16).empty;
         defer handle_slots.deinit(allocator);
-        errdefer body_code.deinit(allocator);
+        var gate_jumps = std.ArrayList(usize).empty;
+        defer gate_jumps.deinit(allocator);
         var next_local: u16 = argc + 1;
-        for (info.systems) |system_name| {
-            const system_index = name_map.get(system_name) orelse return error.UnsupportedFeature;
-            try body_code.append(allocator, .{ .call = .{ .function = system_index, .argc = 0 } });
+        for (info.systems) |system| {
+            if (system.gate) |plugin_id| {
+                try body_code.append(allocator, .{ .push_i64 = plugin_id });
+                try body_code.append(allocator, .{ .runtime_call = .{
+                    .function = .ecs_plugin_active,
+                    .argc = 1,
+                } });
+                try gate_jumps.append(allocator, body_code.items.len);
+                try body_code.append(allocator, .{ .jump_if_false = 0 });
+            }
+            // Systems fetch their world parameters themselves; the constructor
+            // takes no arguments (the source-level call form is `await Sys()`).
+            try body_code.append(allocator, .{ .call = .{
+                .function = system.constructor_index,
+                .argc = 0,
+            } });
             try body_code.append(allocator, .task_spawn);
             try body_code.append(allocator, .{ .store_local = next_local });
             try handle_slots.append(allocator, next_local);
             next_local += 1;
+            const after_spawn: u32 = @intCast(body_code.items.len);
+            for (gate_jumps.items) |jump| body_code.items[jump] = .{ .jump_if_false = after_spawn };
+            gate_jumps.clearRetainingCapacity();
         }
         for (handle_slots.items) |slot| {
             try body_code.append(allocator, .{ .load_local = slot });
             try body_code.append(allocator, .task_await);
             try body_code.append(allocator, .pop);
         }
+        // Phase boundary: queued Commands from the systems (and from the
+        // caller before `await Trigger(...)`) are applied when the trigger ends.
+        try body_code.append(allocator, .{ .runtime_call = .{ .function = .ecs_commands, .argc = 0 } });
+        try body_code.append(allocator, .{ .runtime_call = .{ .function = .ecs_commands_flush, .argc = 1 } });
+        try body_code.append(allocator, .pop);
         try body_code.append(allocator, .{ .push_i64 = 0 });
         try body_code.append(allocator, .ret);
         functions[info.body_index] = .{
-            .name = try std.fmt.allocPrint(allocator, "{s}__body", .{info.decl.name}),
+            .name = try std.fmt.allocPrint(allocator, "{s}__body", .{info.name}),
             .params = argc + 1,
             .locals = next_local,
             .max_stack = config.stack_slots,
             .code = try body_code.toOwnedSlice(allocator),
         };
+        initialized += 1;
+    }
+
+    if (setup_index) |index| {
+        functions[index] = try buildEcsSetup(allocator, analysis);
         initialized += 1;
     }
 
@@ -515,7 +789,7 @@ const LoopCtx = struct {
     continues: std.ArrayList(usize),
 };
 
-const BuilderMode = enum { normal, async_constructor, async_body };
+const BuilderMode = enum { normal, async_constructor, async_body, sys_body };
 
 const Builder = struct {
     allocator: std.mem.Allocator,
@@ -532,12 +806,16 @@ const Builder = struct {
     name_override: ?[]const u8 = null,
     mode: BuilderMode = .normal,
     body_index: u16 = 0,
-    /// Parameter positions carrying opaque query/resource handles (systems
-    /// only).  Handles may be forwarded as call arguments and nothing else.
-    opaque_param_indices: []const usize = &.{},
-    /// Local slots resolved from `opaque_param_indices` while allocating the
-    /// function's parameters.
-    opaque_locals: std.ArrayList(u16) = .empty,
+    /// Module prefix for resolving ECS names (`ui` for `ui` module items).
+    module_prefix: []const u8 = "",
+    /// Declared system whose body is being lowered; non-null in sys_body mode.
+    sys_decl: ?*const ast.SysDecl = null,
+    /// Plugin id -> init constructor index for `commands.add_plugin`.
+    plugin_inits: ?*const std.AutoHashMapUnmanaged(i64, u16) = null,
+    /// System constructor index -> zero-argument trigger constructor.
+    sys_wrappers: ?*const std.AutoHashMapUnmanaged(u16, u16) = null,
+    /// Emit the synthetic ECS setup call before `main`'s body.
+    emit_ecs_setup: bool = false,
     code: std.ArrayList(bytecode.Op) = .empty,
     scopes: std.ArrayList(std.StringHashMapUnmanaged(u16)) = .empty,
     next_local: u16 = 0,
@@ -545,7 +823,6 @@ const Builder = struct {
 
     fn finish(self: *Builder) Error!bytecode.Function {
         defer self.code.deinit(self.allocator);
-        defer self.opaque_locals.deinit(self.allocator);
         defer {
             for (self.loops.items) |*loop| {
                 loop.breaks.deinit(self.allocator);
@@ -559,13 +836,21 @@ const Builder = struct {
             self.scopes.deinit(self.allocator);
         }
 
-        if (self.mode == .async_body) {
+        const has_task = self.mode == .async_body or self.mode == .sys_body;
+        if (has_task) {
             _ = try self.allocLocal("<task>");
         }
+        const param_slots = try self.allocator.alloc(u16, self.function.params.len);
+        defer self.allocator.free(param_slots);
         for (self.function.params, 0..) |param, index| {
-            const slot = try self.allocLocal(param.name);
-            if (self.isOpaqueParam(index)) try self.opaque_locals.append(self.allocator, slot);
+            param_slots[index] = try self.allocLocal(param.name);
         }
+
+        if (self.emit_ecs_setup) {
+            try self.emitCall("__e7_ecs_setup", 0);
+            try self.pop();
+        }
+        if (self.mode == .sys_body) try self.emitSysPrologue();
 
         switch (self.mode) {
             .async_constructor => {
@@ -578,7 +863,7 @@ const Builder = struct {
                 } });
                 try self.emit(.ret);
             },
-            .normal, .async_body => switch (self.function.body) {
+            .normal, .async_body, .sys_body => switch (self.function.body) {
                 .expr => |expr| {
                     try self.lowerExpr(expr);
                     try self.emit(.ret);
@@ -590,15 +875,14 @@ const Builder = struct {
             },
         }
 
-        const name = if (self.name_override) |override|
-            try self.allocator.dupe(u8, override)
-        else if (self.mode == .async_body)
-            try std.fmt.allocPrint(self.allocator, "{s}__body", .{self.function.name})
+        const base_name = self.name_override orelse self.function.name;
+        const name = if (self.mode == .async_body or self.mode == .sys_body)
+            try std.fmt.allocPrint(self.allocator, "{s}__body", .{base_name})
         else
-            try self.allocator.dupe(u8, self.function.name);
+            try self.allocator.dupe(u8, base_name);
         return .{
             .name = name,
-            .params = @intCast(self.function.params.len + @as(usize, if (self.mode == .async_body) 1 else 0)),
+            .params = @intCast(self.function.params.len + @as(usize, if (has_task) 1 else 0)),
             .locals = self.next_local,
             .max_stack = self.config.stack_slots,
             .code = try self.code.toOwnedSlice(self.allocator),
@@ -631,33 +915,273 @@ const Builder = struct {
         return null;
     }
 
-    fn isOpaqueParam(self: *const Builder, index: usize) bool {
-        for (self.opaque_param_indices) |candidate| {
-            if (candidate == index) return true;
-        }
-        return false;
-    }
-
-    fn isOpaqueSlot(self: *const Builder, slot: u16) bool {
-        for (self.opaque_locals.items) |candidate| {
-            if (candidate == slot) return true;
-        }
-        return false;
-    }
-
-    /// Lower a call argument.  A bare reference to an opaque query/resource
-    /// handle is forwarded by value; everything else goes through the ordinary
-    /// expression lowering (which rejects other handle uses).
     fn lowerCallArg(self: *Builder, arg: *ast.Expr) Error!void {
-        if (arg.* == .path and arg.path.segments.len == 1) {
-            if (self.local(arg.path.segments[0].name)) |slot| {
-                if (self.isOpaqueSlot(slot)) {
-                    try self.emit(.{ .load_local = slot });
-                    return;
-                }
+        try self.lowerExpr(arg);
+    }
+
+    fn runtimeCall(self: *Builder, function: bytecode.RuntimeFunction, argc: u16) Error!void {
+        try self.emit(.{ .runtime_call = .{ .function = function, .argc = argc } });
+    }
+
+    // ------------------------------------------------------------------
+    // ECS metadata resolution
+    // ------------------------------------------------------------------
+
+    fn findResourceInfo(self: *const Builder, name: []const u8) ?semantic.ResourceInfo {
+        var buffer: [512]u8 = undefined;
+        const qualified = qualifiedNameBuf(&buffer, self.module_prefix, name);
+        if (self.analysis.resource(qualified)) |info| return info;
+        if (self.analysis.resource(name)) |info| return info;
+        for (self.analysis.resources) |info| {
+            if (std.mem.eql(u8, lastSegment(info.name), name)) return info;
+        }
+        return null;
+    }
+
+    fn findComponentInfo(self: *const Builder, name: []const u8) ?semantic.ComponentInfo {
+        var buffer: [512]u8 = undefined;
+        const qualified = qualifiedNameBuf(&buffer, self.module_prefix, name);
+        if (self.analysis.component(qualified)) |info| return info;
+        if (self.analysis.component(name)) |info| return info;
+        for (self.analysis.components) |info| {
+            if (std.mem.eql(u8, lastSegment(info.name), name)) return info;
+        }
+        return null;
+    }
+
+    fn resourceInfoForExpr(self: *Builder, expr: *ast.Expr) ?semantic.ResourceInfo {
+        const ty = self.exprType(expr) orelse return null;
+        const named = self.namedBase(ty) orelse return null;
+        if (self.analysis.resource(named.name)) |info| return info;
+        return self.findResourceInfo(lastSegment(named.name));
+    }
+
+    fn componentInfoForExpr(self: *Builder, expr: *ast.Expr) ?semantic.ComponentInfo {
+        const ty = self.exprType(expr) orelse return null;
+        const named = self.namedBase(ty) orelse return null;
+        if (self.analysis.component(named.name)) |info| return info;
+        return self.findComponentInfo(lastSegment(named.name));
+    }
+
+    fn pluginInfoForExpr(self: *const Builder, expr: *ast.Expr) ?semantic.PluginInfo {
+        if (expr.* != .path or expr.path.segments.len == 0) return null;
+        var buffer: [512]u8 = undefined;
+        const full = joinPathBuf(&buffer, expr.path);
+        if (self.analysis.plugin(full)) |info| return info;
+        var qualified_buffer: [512]u8 = undefined;
+        const qualified = qualifiedNameBuf(&qualified_buffer, self.module_prefix, full);
+        return self.analysis.plugin(qualified);
+    }
+
+    // ------------------------------------------------------------------
+    // System prologue: materialize world handles from declared parameters
+    // ------------------------------------------------------------------
+
+    fn emitSysPrologue(self: *Builder) Error!void {
+        const decl = self.sys_decl orelse return;
+        for (decl.params, 0..) |param, index| {
+            const param_name = switch (param) {
+                .normal => |p| p.name,
+                .resource => |p| p.name,
+                .query => |q| q.name,
+            };
+            // Async bodies reserve slot 0 for the task; declared parameters
+            // occupy slots 1..N and are already bound by ABI copies.
+            const slot: u16 = @intCast(index + 1);
+            try self.scopes.items[self.scopes.items.len - 1].put(self.allocator, param_name, slot);
+            switch (param) {
+                .resource => |resource_param| {
+                    const type_name = typeLastName(resource_param.ty) orelse return error.UnsupportedFeature;
+                    try self.emitResourceHandle(type_name, slot);
+                },
+                .query => |query| try self.emitQueryPrologue(query, slot),
+                .normal => |normal_param| {
+                    const type_name = typeLastName(normal_param.ty) orelse continue;
+                    if (std.mem.eql(u8, type_name, "Commands")) {
+                        try self.runtimeCall(.ecs_commands, 0);
+                        try self.emit(.{ .store_local = slot });
+                        continue;
+                    }
+                    // Known resources are world-backed; with no registration
+                    // (legacy source-level systems) the caller's value is kept.
+                    try self.emitResourceHandle(type_name, slot);
+                },
             }
         }
-        try self.lowerExpr(arg);
+    }
+
+    /// Overwrite `slot` with the registered resource pointer when the world has
+    /// it; otherwise keep the caller-provided value (or the placeholder zero
+    /// supplied by a trigger constructor).
+    fn emitResourceHandle(self: *Builder, type_name: []const u8, slot: u16) Error!void {
+        const info = self.findResourceInfo(type_name) orelse return;
+        try self.push(info.id);
+        try self.runtimeCall(.ecs_has_resource, 1);
+        const skip = self.code.items.len;
+        try self.emit(.{ .jump_if_false = 0 });
+        try self.push(info.id);
+        try self.runtimeCall(.ecs_resource, 1);
+        try self.emit(.{ .store_local = slot });
+        const target: u32 = @intCast(self.code.items.len);
+        self.code.items[skip] = .{ .jump_if_false = target };
+    }
+
+    fn emitQueryPrologue(self: *Builder, query: ast.QueryParam, slot: u16) Error!void {
+        const count = query.projections.len;
+        const ids = try self.allocator.alloc(i64, count);
+        defer self.allocator.free(ids);
+        const muts = try self.allocator.alloc(i64, count);
+        defer self.allocator.free(muts);
+        for (query.projections, 0..) |projection, index| {
+            const name = if (projection.path.segments.len > 0)
+                projection.path.segments[projection.path.segments.len - 1].name
+            else
+                "";
+            ids[index] = if (self.findComponentInfo(name)) |info| info.id else -1;
+            muts[index] = if (projection.mutable) 1 else 0;
+        }
+        var has_id: i64 = -1;
+        if (query.has) |has_ty| {
+            if (typeLastName(has_ty)) |name| {
+                if (self.findComponentInfo(name)) |info| has_id = info.id;
+            }
+        }
+        try self.push(@intCast(count));
+        if (count == 0) {
+            try self.push(0);
+            try self.push(0);
+        } else {
+            const ids_slot = try self.emitI64Array(ids);
+            const muts_slot = try self.emitI64Array(muts);
+            try self.emit(.{ .load_local = ids_slot });
+            try self.emit(.{ .load_local = muts_slot });
+        }
+        try self.push(has_id);
+        try self.runtimeCall(.ecs_query_begin, 4);
+        try self.emit(.{ .store_local = slot });
+    }
+
+    /// Materialize `values` as a heap array of 8-byte slots; returns the local
+    /// holding its base address (a raw i64 passed to the ECS ABI).
+    fn emitI64Array(self: *Builder, values: []const i64) Error!u16 {
+        const slot = try self.allocLocal("<ecs_args>");
+        try self.push(@intCast(values.len));
+        try self.emit(.alloc);
+        try self.emit(.{ .store_local = slot });
+        for (values, 0..) |value, index| {
+            try self.emit(.{ .load_local = slot });
+            // 8-byte slots: byte offset is `index * 8`.
+            try self.push(@intCast(index * 8));
+            try self.emit(.add);
+            try self.push(value);
+            try self.emit(.store_mem);
+        }
+        return slot;
+    }
+
+    /// Lower `await query &mut T`: `Commands` yields the shared command
+    /// buffer; a resource type yields the resource pointer.  Component/table
+    /// queries need entity iteration and are rejected for now.
+    fn lowerQueryLease(self: *Builder, query: ast.QueryExpr) Error!void {
+        const name = typeLastName(query.ty) orelse return error.UnsupportedFeature;
+        if (std.mem.eql(u8, name, "Commands")) {
+            try self.runtimeCall(.ecs_commands, 0);
+            return;
+        }
+        if (self.findResourceInfo(name)) |info| {
+            try self.push(info.id);
+            try self.runtimeCall(.ecs_resource, 1);
+            return;
+        }
+        return error.UnsupportedFeature;
+    }
+
+    // ------------------------------------------------------------------
+    // Commands methods
+    // ------------------------------------------------------------------
+
+    fn lowerCommandsMethodCall(self: *Builder, call: ast.Call) Error!bool {
+        if (call.callee.* != .field) return false;
+        const field = call.callee.field;
+        const target_ty = self.exprType(field.target) orelse return false;
+        const named = self.namedBase(target_ty) orelse return false;
+        if (!std.mem.eql(u8, lastSegment(named.name), "Commands")) return false;
+        const name = field.name;
+
+        if (std.mem.eql(u8, name, "insert_resource")) {
+            if (call.args.len != 1) return error.UnsupportedFeature;
+            const info = self.resourceInfoForExpr(call.args[0]) orelse return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.push(info.id);
+            try self.lowerExpr(call.args[0]);
+            try self.runtimeCall(.ecs_commands_insert_resource, 3);
+            try self.pop();
+            try self.push(0);
+            return true;
+        }
+
+        if (std.mem.eql(u8, name, "add_row")) {
+            if (call.args.len != 2 or call.args[1].* != .row_literal) return error.UnsupportedFeature;
+            if (call.args[1].row_literal.len == 0) return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.runtimeCall(.ecs_commands_row_begin, 1);
+            const row_slot = try self.allocLocal("<row>");
+            try self.emit(.{ .store_local = row_slot });
+            for (call.args[1].row_literal) |item| {
+                const info = self.componentInfoForExpr(item) orelse return error.UnsupportedFeature;
+                try self.emit(.{ .load_local = row_slot });
+                try self.push(info.id);
+                if (info.slots == 0 and item.* == .path) {
+                    // Marker component with no payload slots.
+                    try self.push(0);
+                } else {
+                    try self.lowerExpr(item);
+                }
+                try self.runtimeCall(.ecs_commands_row_add, 3);
+                try self.pop();
+            }
+            try self.emit(.{ .load_local = row_slot });
+            try self.runtimeCall(.ecs_commands_row_finish, 1);
+            try self.pop();
+            try self.push(0);
+            return true;
+        }
+
+        if (std.mem.eql(u8, name, "add_plugin")) {
+            if (call.args.len != 1) return error.UnsupportedFeature;
+            const plugin = self.pluginInfoForExpr(call.args[0]) orelse return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            const cmd_slot = try self.allocLocal("<commands>");
+            try self.emit(.{ .store_local = cmd_slot });
+            // Gated resources must exist before the plugin init queues inserts.
+            for (self.analysis.resources) |resource| {
+                const gate = resource.plugin_id orelse continue;
+                if (gate != plugin.id) continue;
+                try self.push(resource.id);
+                try self.push(@intCast(resource.slots));
+                try self.runtimeCall(.ecs_register_resource, 2);
+                try self.pop();
+            }
+            try self.emit(.{ .load_local = cmd_slot });
+            try self.push(plugin.id);
+            try self.runtimeCall(.ecs_commands_add_plugin, 2);
+            try self.pop();
+            // Activation is only observed after a flush; flush before init.
+            try self.emit(.{ .load_local = cmd_slot });
+            try self.runtimeCall(.ecs_commands_flush, 1);
+            try self.pop();
+            if (self.plugin_inits) |inits| {
+                if (inits.get(plugin.id)) |init_index| {
+                    try self.emit(.{ .call = .{ .function = init_index, .argc = 0 } });
+                    try self.emit(.task_await);
+                    try self.pop();
+                }
+            }
+            try self.push(0);
+            return true;
+        }
+
+        return false;
     }
 
     fn emit(self: *Builder, op: bytecode.Op) Error!void {
@@ -687,9 +1211,21 @@ const Builder = struct {
         }
     }
 
+    /// Emit a call.  Zero-argument calls into a system use its zero-argument
+    /// trigger constructor so world parameters are supplied by the ECS.
+    fn callFunction(self: *Builder, function: u16, argc: usize) Error!void {
+        var target = function;
+        if (argc == 0) {
+            if (self.sys_wrappers) |wrappers| {
+                if (wrappers.get(function)) |wrapper| target = wrapper;
+            }
+        }
+        try self.emit(.{ .call = .{ .function = target, .argc = @intCast(argc) } });
+    }
+
     fn emitCall(self: *Builder, name: []const u8, argc: usize) Error!void {
         const function = self.name_map.get(name) orelse return error.UnsupportedFeature;
-        try self.emit(.{ .call = .{ .function = function, .argc = @intCast(argc) } });
+        try self.callFunction(function, argc);
     }
 
     /// Emit a call to a custom operator/Index implementation method.
@@ -935,7 +1471,6 @@ const Builder = struct {
             .path => |path| {
                 if (path.segments.len != 1) return false;
                 const slot = self.local(path.segments[0].name) orelse return false;
-                if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
                 try self.emit(.{ .local_addr = slot });
                 return true;
             },
@@ -1189,8 +1724,17 @@ const Builder = struct {
             .uninitialized => |decl| {
                 _ = try self.allocLocal(decl.name);
             },
-            // Front-end world-lease release; no bytecode until the ECS task.
-            .disown => {},
+            // `disown commands` releases the caller's claim and flushes the
+            // deferred command buffer so world mutations become visible.
+            .disown => |expr| {
+                if (expr.* == .unary and (expr.unary.op == .borrow_shared or expr.unary.op == .borrow_mut)) {
+                    try self.lowerExpr(expr.unary.operand);
+                } else {
+                    try self.lowerExpr(expr);
+                }
+                try self.runtimeCall(.ecs_commands_flush, 1);
+                try self.pop();
+            },
         }
     }
 
@@ -1398,7 +1942,6 @@ const Builder = struct {
             .path => |path| {
                 if (path.segments.len == 1) {
                     if (self.local(path.segments[0].name)) |slot| {
-                        if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
                         try self.emit(.{ .load_local = slot });
                         return;
                     }
@@ -1444,6 +1987,7 @@ const Builder = struct {
                 switch (unary.op) {
                     .negative => {
                         if (self.exprType(unary.operand)) |operand_ty| {
+                            if (self.resolvedType(operand_ty).* == .float) return error.UnsupportedFeature;
                             if (self.analysis.operatorMethod(operand_ty, "Neg", "neg")) |method| {
                                 try self.lowerExpr(unary.operand);
                                 try self.methodCall(method, 1);
@@ -1477,7 +2021,11 @@ const Builder = struct {
                 try self.patch(ok_jump);
                 try self.emit(.{ .load_local = slot });
             },
-            .range, .float, .error_literal, .function => {
+            // Floats are stored as their f64 bit pattern in the uniform i64
+            // slot representation.  Float *arithmetic* is rejected below;
+            // literal initialization of resource/component fields works.
+            .float => |value| try self.push(@bitCast(value)),
+            .range, .error_literal, .function => {
                 return error.UnsupportedFeature;
             },
             // ECS front-end constructs: execution/lowering is owned by the
@@ -1489,6 +2037,10 @@ const Builder = struct {
     fn lowerPrefix(self: *Builder, prefix_expr: ast.Prefix) Error!void {
         switch (prefix_expr.op) {
             .await_ => {
+                if (prefix_expr.operand.* == .query) {
+                    try self.lowerQueryLease(prefix_expr.operand.query);
+                    return;
+                }
                 try self.lowerExpr(prefix_expr.operand);
                 try self.emit(.task_await);
             },
@@ -1520,6 +2072,14 @@ const Builder = struct {
     }
 
     fn lowerBinary(self: *Builder, binary: ast.Binary) Error!void {
+        if (binary.op != .and_ and binary.op != .or_) {
+            if (self.exprType(binary.lhs)) |left_ty| {
+                if (self.resolvedType(left_ty).* == .float) return error.UnsupportedFeature;
+            }
+            if (self.exprType(binary.rhs)) |right_ty| {
+                if (self.resolvedType(right_ty).* == .float) return error.UnsupportedFeature;
+            }
+        }
         switch (binary.op) {
             .and_ => {
                 try self.lowerExpr(binary.lhs);
@@ -1932,6 +2492,7 @@ const Builder = struct {
     }
 
     fn lowerCall(self: *Builder, call: ast.Call) Error!void {
+        if (try self.lowerCommandsMethodCall(call)) return;
         if (call.callee.* == .field) {
             if (try self.lowerBuiltinMethodCall(call)) return;
         }
@@ -1972,6 +2533,22 @@ const Builder = struct {
             return;
         }
         for (call.args) |arg| try self.lowerCallArg(arg);
+        if (path.segments.len >= 2) {
+            var buffer: [512]u8 = undefined;
+            const full = joinPathBuf(&buffer, path);
+            if (self.name_map.get(full)) |function| {
+                try self.callFunction(function, call.args.len);
+                return;
+            }
+        }
+        if (path.segments.len == 1) {
+            var qualified_buffer: [512]u8 = undefined;
+            const qualified = qualifiedNameBuf(&qualified_buffer, self.module_prefix, name);
+            if (self.name_map.get(qualified)) |function| {
+                try self.callFunction(function, call.args.len);
+                return;
+            }
+        }
         try self.emitCall(name, call.args.len);
     }
 };

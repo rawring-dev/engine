@@ -60,7 +60,27 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_get(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare void @e7_map_set(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_get_str(i64, i64)\n");
-    try translator.out.appendSlice(allocator, "declare void @e7_map_set_str(i64, i64, i64)\n\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_map_set_str(i64, i64, i64)\n");
+    // ECS runtime intrinsics (see runtime/src/ecs.zig and compiler bytecode
+    // `RuntimeFunction`).  Declarations mirror the real C ABI: i64 handles and
+    // values, i32 command/registration statuses, void reset.
+    for (std.enums.values(bytecode.RuntimeFunction)) |function| {
+        try translator.out.appendSlice(allocator, "declare ");
+        try translator.out.appendSlice(allocator, switch (function.returnKind()) {
+            .i64_ => "i64",
+            .i32_ => "i32",
+            .void_ => "void",
+        });
+        try translator.out.appendSlice(allocator, " @");
+        try translator.out.appendSlice(allocator, function.symbol());
+        try translator.out.appendSlice(allocator, "(");
+        for (0..function.arity()) |argument| {
+            if (argument > 0) try translator.out.appendSlice(allocator, ", ");
+            try translator.out.appendSlice(allocator, "i64");
+        }
+        try translator.out.appendSlice(allocator, ")\n");
+    }
+    try translator.out.append(allocator, '\n');
     for (module.functions) |function| try translator.emitFunction(function);
     if (translator.uses_fixpoint_attr) {
         try translator.out.appendSlice(allocator, "attributes #0 = { \"instcombine-no-verify-fixpoint\" }\n");
@@ -109,12 +129,25 @@ const Translator = struct {
         return std.fmt.allocPrint(self.arena, "bb{d}", .{index}) catch unreachable;
     }
 
+    /// LLVM unquoted identifiers exclude `:`; sanitize module-qualified
+    /// bytecode names (`ui::Ui::init`) here only, so the compiler-side module
+    /// keeps readable names for tools and tests.  Collisions between distinct
+    /// qualified names are possible in theory; the engine uses unique names.
+    fn symbolName(self: *Translator, name: []const u8) []const u8 {
+        const copy = self.arena.alloc(u8, name.len) catch unreachable;
+        for (name, 0..) |byte, i| copy[i] = switch (byte) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '.', '$', '-' => byte,
+            else => '_',
+        };
+        return copy;
+    }
+
     fn emitFunction(self: *Translator, function: bytecode.Function) Error!void {
         self.temp = 0;
         self.max_stack = function.max_stack;
         var signature = std.ArrayList(u8).empty;
         defer signature.deinit(self.arena);
-        const prefix = try std.fmt.allocPrint(self.arena, "define i64 @{s}(", .{function.name});
+        const prefix = try std.fmt.allocPrint(self.arena, "define i64 @{s}(", .{self.symbolName(function.name)});
         try signature.appendSlice(self.arena, prefix);
         for (0..function.params) |i| {
             if (i > 0) try signature.appendSlice(self.arena, ", ");
@@ -231,7 +264,7 @@ const Translator = struct {
                 const result = self.fresh();
                 try text.appendSlice(self.arena, result);
                 try text.appendSlice(self.arena, " = call i64 @");
-                try text.appendSlice(self.arena, callee.name);
+                try text.appendSlice(self.arena, self.symbolName(callee.name));
                 try text.appendSlice(self.arena, "(");
                 for (args, 0..) |arg, arg_index| {
                     if (arg_index > 0) try text.appendSlice(self.arena, ", ");
@@ -242,6 +275,59 @@ const Translator = struct {
                 try self.out.appendSlice(self.allocator, text.items);
                 try self.out.append(self.allocator, '\n');
                 try self.pushValue(result);
+            },
+            .runtime_call => |call| {
+                if (call.argc != call.function.arity()) return error.InvalidBytecode;
+                const args = self.arena.alloc([]const u8, call.argc) catch return error.OutOfMemory;
+                var arg_index: usize = call.argc;
+                while (arg_index > 0) {
+                    arg_index -= 1;
+                    args[arg_index] = try self.popValue();
+                }
+                var text = std.ArrayList(u8).empty;
+                defer text.deinit(self.arena);
+                try text.appendSlice(self.arena, "  ");
+                const call_result = self.fresh();
+                switch (call.function.returnKind()) {
+                    .i64_ => {
+                        try text.appendSlice(self.arena, call_result);
+                        try text.appendSlice(self.arena, " = ");
+                    },
+                    .i32_ => {
+                        try text.appendSlice(self.arena, call_result);
+                        try text.appendSlice(self.arena, " = ");
+                    },
+                    .void_ => {},
+                }
+                try text.appendSlice(self.arena, "call ");
+                try text.appendSlice(self.arena, switch (call.function.returnKind()) {
+                    .i64_ => "i64",
+                    .i32_ => "i32",
+                    .void_ => "void",
+                });
+                try text.appendSlice(self.arena, " @");
+                try text.appendSlice(self.arena, call.function.symbol());
+                try text.appendSlice(self.arena, "(");
+                for (args, 0..) |arg, arg_number| {
+                    if (arg_number > 0) try text.appendSlice(self.arena, ", ");
+                    try text.appendSlice(self.arena, "i64 ");
+                    try text.appendSlice(self.arena, arg);
+                }
+                try text.appendSlice(self.arena, ")");
+                try self.out.appendSlice(self.allocator, text.items);
+                try self.out.append(self.allocator, '\n');
+                const result = self.fresh();
+                switch (call.function.returnKind()) {
+                    .i64_ => try self.pushValue(call_result),
+                    .i32_ => {
+                        try self.line("  {s} = zext i32 {s} to i64", .{ result, call_result });
+                        try self.pushValue(result);
+                    },
+                    .void_ => {
+                        try self.line("  {s} = add i64 0, 0", .{result});
+                        try self.pushValue(result);
+                    },
+                }
             },
             .create_task => |create| {
                 const callee = self.module.functions[create.function];
@@ -263,7 +349,7 @@ const Translator = struct {
                 }
                 const result = self.fresh();
                 try self.line("  {s} = call i64 @e7_task_create(ptr @{s}, i64 {d}, ptr {s})", .{
-                    result, callee.name, create.argc, array,
+                    result, self.symbolName(callee.name), create.argc, array,
                 });
                 try self.pushValue(result);
             },

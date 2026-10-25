@@ -7,7 +7,16 @@ pub const iterative = @import("iterative.zig");
 pub const bytecode = @import("bytecode.zig");
 pub const codegen = @import("codegen.zig");
 pub const pipeline = @import("pipeline.zig");
+/// Compile a single source buffer.
 pub const compile = pipeline.compile;
+/// Compile a multi-file project: external `mod name` references load sibling
+/// `name.e7` files and are analyzed as prefixed modules (`ui::Ui`).
+pub const compileProject = pipeline.compileProject;
+/// Load every file of a project without compiling it (paths + sources are
+/// exposed for hosts that register ECS metadata themselves).
+pub const loadProject = pipeline.loadProject;
+pub const Project = pipeline.Project;
+pub const ProjectFile = pipeline.ProjectFile;
 pub const CompileResult = pipeline.CompileResult;
 
 test {

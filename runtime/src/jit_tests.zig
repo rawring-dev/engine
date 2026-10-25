@@ -499,3 +499,64 @@ test "JITed IR drives the scene renderer ABI" {
     // e7_scene_resize resized the hidden window to 128x96 before the capture.
     try std.testing.expectEqual(@as(i32, 128), width);
 }
+
+const ecs = @import("ecs.zig");
+const aggregate = @import("aggregate.zig");
+const task = @import("task.zig");
+const compiler = @import("compiler");
+
+// End-to-end ECS vertical slice: compile e7 source, run it through ORC, and
+// observe the runtime world through the ECS ABI.  `main`'s body emits the
+// synthetic `__e7_ecs_setup` call, queues `insert_resource`/`add_row`/
+// `add_plugin`, and flushes at `disown`.
+test "JIT executes compiled ECS setup, Commands, and plugin activation" {
+    // The ECS world is process-wide; isolate this test from other suites.
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\@resource
+        \\Win <- struct
+        \\    n: i32
+        \\@Components
+        \\Pos <- struct
+        \\    x: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Ui <- plugin
+        \\    init <- sys (commands: &mut Commands):
+        \\        ret
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.insert_resource(Win { n: 7 })
+        \\    pos := Pos { x: 3 }
+        \\    commands.add_row(Components, { pos })
+        \\    commands.add_plugin(Ui)
+        \\    disown commands
+        \\    0
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "ecs-vertical-slice");
+    const Run = *const fn () callconv(.c) i64;
+    const run = try jit.get(Run, "main");
+    const handle = run();
+    _ = task.e7_task_await(handle);
+
+    // Setup registered the resource/component, Commands copied the queued
+    // values on flush, and add_plugin made the plugin active.
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(0));
+    const resource_ptr = ecs.e7_ecs_resource(0);
+    try std.testing.expect(resource_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 7), aggregate.e7_load_i64(resource_ptr));
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_count());
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_plugin_active(0));
+}

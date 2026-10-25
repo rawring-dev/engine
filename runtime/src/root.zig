@@ -13,6 +13,7 @@ pub const bytecode_ir = @import("bytecode_ir.zig");
 pub const task = @import("task.zig");
 pub const lease = @import("lease.zig");
 pub const aggregate = @import("aggregate.zig");
+pub const ecs = @import("ecs.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -55,6 +56,7 @@ test "runtime exercises sibling implementations and native links" {
 test {
     _ = orc;
     _ = bytecode_ir;
+    _ = ecs;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -931,4 +933,130 @@ test "JITed IR calls the lease release/reacquire ABI" {
     const probe = try jit.get(Probe, "lease_probe");
     // acquire=1, active=1 (10), release=1, post-release active=0: 10 + 1 = 11.
     try std.testing.expectEqual(@as(i64, 11), probe());
+}
+
+test "JITed IR calls the ECS command and query ABI" {
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    const symbols = ecs.symbols();
+    try jit.defineSymbols(&symbols);
+    const aggregate_symbols = aggregate.symbols();
+    try jit.defineSymbols(&aggregate_symbols);
+
+    const ir =
+        \\declare i32 @e7_ecs_register_component(i64, i64)
+        \\declare i64 @e7_ecs_commands()
+        \\declare i64 @e7_ecs_commands_row_begin(i64)
+        \\declare i32 @e7_ecs_commands_row_add(i64, i64, i64)
+        \\declare i32 @e7_ecs_commands_row_finish(i64)
+        \\declare i32 @e7_ecs_commands_flush(i64)
+        \\declare i64 @e7_ecs_entity_count()
+        \\declare i64 @e7_ecs_component_get(i64, i64)
+        \\declare i64 @e7_load_i64(i64)
+        \\define i64 @ecs_probe(i64 %value_ptr) {
+        \\entry:
+        \\  %reg = call i32 @e7_ecs_register_component(i64 9, i64 1)
+        \\  %cmd = call i64 @e7_ecs_commands()
+        \\  %row = call i64 @e7_ecs_commands_row_begin(i64 %cmd)
+        \\  %add = call i32 @e7_ecs_commands_row_add(i64 %row, i64 9, i64 %value_ptr)
+        \\  %finish = call i32 @e7_ecs_commands_row_finish(i64 %row)
+        \\  %flush = call i32 @e7_ecs_commands_flush(i64 %cmd)
+        \\  %count = call i64 @e7_ecs_entity_count()
+        \\  %component = call i64 @e7_ecs_component_get(i64 0, i64 9)
+        \\  %load = call i64 @e7_load_i64(i64 %component)
+        \\  %scaled = mul i64 %count, 100
+        \\  %result = add i64 %scaled, %load
+        \\  ret i64 %result
+        \\}
+    ;
+    try jit.addIr(ir, "ecs-abi");
+    const Probe = *const fn (i64) callconv(.c) i64;
+    const probe = try jit.get(Probe, "ecs_probe");
+
+    var values = [_]i64{42};
+    const value_ptr: i64 = @intCast(@intFromPtr(&values));
+    // count=1 contributes 100; the copied component value contributes 42.
+    try std.testing.expectEqual(@as(i64, 142), probe(value_ptr));
+    try std.testing.expectEqual(@as(i64, 42), aggregate.e7_load_i64(ecs.e7_ecs_component_get(0, 9)));
+}
+
+test "JIT executes the ECS resource, row, Commands, and query ABI end-to-end" {
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\@resource
+        \\S <- struct
+        \\    a: i32
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\Marker <- struct
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (
+        \\    target: res &mut S,
+        \\    items: select &mut C from Components,
+        \\    commands: &mut Commands,
+        \\):
+        \\    target.a = target.a + 1
+        \\    commands.add_row(Components, { C { b: 2 }, Marker })
+        \\    disown commands
+        \\main <- async () -> i32:
+        \\    await Tick()
+        \\    7
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    const resource = compiled.analysis.resource("S").?;
+    const component = compiled.analysis.component("C").?;
+    const marker = compiled.analysis.component("Marker").?;
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "ecs-end-to-end");
+
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    const handle = main();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 7), task.e7_task_await(handle));
+
+    // `__e7_ecs_setup` registered the resource/columns; the sys prologue wrote
+    // through the world resource pointer.
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(resource.id));
+    const resource_ptr = ecs.e7_ecs_resource(resource.id);
+    try std.testing.expect(resource_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_load_i64(resource_ptr));
+
+    // The sys queued a row and flushed it at `disown commands`.
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_count());
+    const component_ptr = ecs.e7_ecs_component_get(0, component.id);
+    try std.testing.expect(component_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(component_ptr));
+    try std.testing.expect(ecs.e7_ecs_component_get(0, marker.id) != 0);
+
+    // A fresh query over the flushed world observes the entity and component.
+    var ids = [_]i64{component.id};
+    var muts = [_]i64{1};
+    const query = ecs.e7_ecs_query_begin(
+        1,
+        @intCast(@intFromPtr(&ids)),
+        @intCast(@intFromPtr(&muts)),
+        -1,
+    );
+    try std.testing.expect(query != 0);
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_query_next(query));
+    const query_ptr = ecs.e7_ecs_query_component(query, 0);
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(query_ptr));
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
 }

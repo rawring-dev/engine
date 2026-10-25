@@ -1848,10 +1848,19 @@ const Parser = struct {
             switch (self.peek().kind) {
                 .lparen => {
                     _ = self.advance();
+                    // `commands.add_row(Table, { component })`: the row argument
+                    // is always a brace row literal, including the single-item
+                    // case that would otherwise parse as a block expression.
+                    const row_argument = expr.* == .field and
+                        std.mem.eql(u8, expr.field.name, "add_row");
                     var args = std.ArrayList(*ast.Expr).empty;
                     if (!self.at(.rparen)) {
                         while (true) {
-                            try args.append(self.allocator, try self.parseExpression());
+                            const argument = if (row_argument and args.items.len == 1 and self.at(.lbrace))
+                                try self.parseRowLiteral()
+                            else
+                                try self.parseExpression();
+                            try args.append(self.allocator, argument);
                             if (self.match(.comma) == null) break;
                             if (self.at(.rparen)) break;
                         }

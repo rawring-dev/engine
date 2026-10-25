@@ -26,6 +26,106 @@ pub const Call = struct {
     argc: u16,
 };
 
+/// Runtime C-ABI entry points that bytecode can call directly.
+///
+/// The compiler targets a stable subset of the runtime intrinsics; keeping the
+/// symbol spelled as an enum (rather than a string payload) makes the encoding
+/// compact and lets the translator emit exact LLVM declarations.  Every entry
+/// is declared with an `i64` result in generated IR: the pointer/handle
+/// functions genuinely return `i64`, while the `i32`-returning registration and
+/// command helpers only use the low result bits, which the backend ignores.
+pub const RuntimeFunction = enum(u8) {
+    ecs_reset,
+    ecs_register_resource,
+    ecs_register_component,
+    ecs_resource,
+    ecs_has_resource,
+    ecs_entity_count,
+    ecs_component_get,
+    ecs_commands,
+    ecs_commands_insert_resource,
+    ecs_commands_row_begin,
+    ecs_commands_row_add,
+    ecs_commands_row_finish,
+    ecs_commands_add_plugin,
+    ecs_commands_flush,
+    ecs_plugin_active,
+    ecs_query_begin,
+    ecs_query_next,
+    ecs_query_component,
+
+    pub fn symbol(self: RuntimeFunction) []const u8 {
+        return switch (self) {
+            .ecs_reset => "e7_ecs_reset",
+            .ecs_register_resource => "e7_ecs_register_resource",
+            .ecs_register_component => "e7_ecs_register_component",
+            .ecs_resource => "e7_ecs_resource",
+            .ecs_has_resource => "e7_ecs_has_resource",
+            .ecs_entity_count => "e7_ecs_entity_count",
+            .ecs_component_get => "e7_ecs_component_get",
+            .ecs_commands => "e7_ecs_commands",
+            .ecs_commands_insert_resource => "e7_ecs_commands_insert_resource",
+            .ecs_commands_row_begin => "e7_ecs_commands_row_begin",
+            .ecs_commands_row_add => "e7_ecs_commands_row_add",
+            .ecs_commands_row_finish => "e7_ecs_commands_row_finish",
+            .ecs_commands_add_plugin => "e7_ecs_commands_add_plugin",
+            .ecs_commands_flush => "e7_ecs_commands_flush",
+            .ecs_plugin_active => "e7_ecs_plugin_active",
+            .ecs_query_begin => "e7_ecs_query_begin",
+            .ecs_query_next => "e7_ecs_query_next",
+            .ecs_query_component => "e7_ecs_query_component",
+        };
+    }
+
+    /// Number of `i64` arguments the ABI entry takes.
+    pub fn arity(self: RuntimeFunction) u16 {
+        return switch (self) {
+            .ecs_reset, .ecs_entity_count, .ecs_commands => 0,
+            .ecs_resource,
+            .ecs_has_resource,
+            .ecs_component_get,
+            .ecs_commands_row_begin,
+            .ecs_commands_row_finish,
+            .ecs_commands_flush,
+            .ecs_plugin_active,
+            .ecs_query_next,
+            .ecs_query_component,
+            => 1,
+            .ecs_register_resource,
+            .ecs_register_component,
+            .ecs_commands_add_plugin,
+            => 2,
+            .ecs_commands_insert_resource, .ecs_commands_row_add => 3,
+            .ecs_query_begin => 4,
+        };
+    }
+
+    /// C return type of the ABI entry.  The bytecode stack is uniformly i64;
+    /// the IR translator widens `i32` statuses and produces a dummy `0` for
+    /// `void`, so callers that ignore the result stay simple.
+    pub fn returnKind(self: RuntimeFunction) ReturnKind {
+        return switch (self) {
+            .ecs_reset => .void_,
+            .ecs_register_resource,
+            .ecs_register_component,
+            .ecs_commands_insert_resource,
+            .ecs_commands_row_add,
+            .ecs_commands_row_finish,
+            .ecs_commands_add_plugin,
+            .ecs_commands_flush,
+            => .i32_,
+            else => .i64_,
+        };
+    }
+};
+
+pub const ReturnKind = enum { i64_, i32_, void_ };
+
+pub const RuntimeCall = struct {
+    function: RuntimeFunction,
+    argc: u16,
+};
+
 pub const Op = union(enum) {
     nop,
     push_i64: i64,
@@ -48,6 +148,9 @@ pub const Op = union(enum) {
     jump: u32,
     jump_if_false: u32,
     call: Call,
+    /// Call a runtime C-ABI intrinsic; arguments are popped like `call` and one
+    /// `i64` result is pushed (the backend ignores results it does not use).
+    runtime_call: RuntimeCall,
     create_task: Call,
     task_await,
     task_spawn,
@@ -323,6 +426,12 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 next_height = height - @as(i32, call.argc) + 1;
                 fallthrough = index + 1;
             },
+            .runtime_call => |call| {
+                if (call.argc != call.function.arity()) return error.InvalidBytecode;
+                if (height < call.argc) return error.InvalidBytecode;
+                next_height = height - @as(i32, call.argc) + 1;
+                fallthrough = index + 1;
+            },
             .create_task => |call| {
                 if (call.function >= module.functions.len) return error.InvalidBytecode;
                 if (call.argc + 1 != module.functions[call.function].params) return error.InvalidBytecode;
@@ -588,6 +697,7 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
         .vec_get2 => 56,
         .vec_set2 => 57,
         .vec_set_row => 58,
+        .runtime_call => 59,
     };
     try out.append(allocator, tag);
     switch (op) {
@@ -603,6 +713,10 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
         .vec_binary, .vec_scalar => |code| try out.append(allocator, code),
         .call, .create_task => |call| {
             try writeU16(out, allocator, call.function);
+            try writeU16(out, allocator, call.argc);
+        },
+        .runtime_call => |call| {
+            try out.append(allocator, @intFromEnum(call.function));
             try writeU16(out, allocator, call.argc);
         },
         else => {},
@@ -682,6 +796,14 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         56 => .vec_get2,
         57 => .vec_set2,
         58 => .vec_set_row,
+        59 => blk: {
+            const raw = (cursor.take(1) orelse return error.InvalidBytecode)[0];
+            if (raw > @intFromEnum(RuntimeFunction.ecs_query_component)) return error.InvalidBytecode;
+            const function: RuntimeFunction = @enumFromInt(raw);
+            const argc = cursor.readU16() orelse return error.InvalidBytecode;
+            if (argc != function.arity()) return error.InvalidBytecode;
+            break :blk .{ .runtime_call = .{ .function = function, .argc = argc } };
+        },
         else => error.InvalidBytecode,
     };
 }
@@ -787,4 +909,38 @@ test "bytecode round-trips matrix indexing ops" {
     try std.testing.expect(decoded.functions[0].code[3] == .vec_get2);
     try std.testing.expect(decoded.functions[0].code[7] == .vec_set2);
     try std.testing.expect(decoded.functions[0].code[11] == .vec_set_row);
+}
+
+test "bytecode round-trips runtime calls" {
+    const code = try std.testing.allocator.alloc(Op, 8);
+    code[0] = .{ .push_i64 = 3 }; // resource id
+    code[1] = .{ .push_i64 = 2 }; // slots
+    code[2] = .{ .runtime_call = .{ .function = .ecs_register_resource, .argc = 2 } };
+    code[3] = .pop;
+    code[4] = .{ .push_i64 = 3 };
+    code[5] = .{ .runtime_call = .{ .function = .ecs_resource, .argc = 1 } };
+    code[6] = .{ .push_i64 = 1 };
+    code[7] = .ret;
+    const functions = try std.testing.allocator.alloc(Function, 1);
+    functions[0] = .{
+        .name = try std.testing.allocator.dupe(u8, "ecs"),
+        .params = 0,
+        .locals = 0,
+        .max_stack = 16,
+        .code = code,
+    };
+    var module = Module{
+        .allocator = std.testing.allocator,
+        .functions = functions,
+        .entry = 0,
+    };
+    defer module.deinit();
+    try verify(std.testing.allocator, &module);
+    const bytes = try encode(std.testing.allocator, &module);
+    defer std.testing.allocator.free(bytes);
+    var decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit();
+    try verify(std.testing.allocator, &decoded);
+    try std.testing.expect(decoded.functions[0].code[2].runtime_call.function == .ecs_register_resource);
+    try std.testing.expectEqual(@as(u16, 1), decoded.functions[0].code[5].runtime_call.argc);
 }

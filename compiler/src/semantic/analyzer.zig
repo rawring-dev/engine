@@ -49,6 +49,48 @@ pub const ImplMethod = struct {
     decl: *const ast.FunctionDecl,
 };
 
+/// One `@resource` struct registered with the ECS world.
+pub const ResourceInfo = struct {
+    /// Qualified type name (`Window`, `ui::UINode`).
+    name: []const u8,
+    /// Deterministic world id assigned in declaration order.
+    id: i64,
+    /// Number of 8-byte slots in one value.
+    slots: usize,
+    /// When `@plugin(P)` gates the resource, the owning plugin id.
+    plugin_id: ?i64 = null,
+};
+
+/// One `@Components` struct stored in the `Components` table.
+pub const ComponentInfo = struct {
+    name: []const u8,
+    id: i64,
+    slots: usize,
+};
+
+/// One `Name <- plugin` declaration with its optional `init` system.
+pub const PluginInfo = struct {
+    /// Qualified plugin name (`Ui`, `ui::Ui`).
+    name: []const u8,
+    id: i64,
+    /// Qualified init system name (`ui::Ui::init`), when declared.
+    init: ?[]const u8 = null,
+};
+
+/// `@plugin(P)` gate on a resource or system.
+pub const PluginGate = struct {
+    plugin_id: i64,
+    /// Qualified name of the gated resource or system.
+    target: []const u8,
+};
+
+/// Auto-collected `Components <- table ...` layout metadata.
+pub const ComponentTableInfo = struct {
+    name: []const u8,
+    entity_column: []const u8 = "entity_id",
+    columns: []const ComponentInfo = &.{},
+};
+
 pub const Analysis = struct {
     arena: std.heap.ArenaAllocator,
     store: types.TypeStore,
@@ -62,6 +104,49 @@ pub const Analysis = struct {
     builtin_impls: []TraitImplInfo = &.{},
     /// Every method declared in an `impl` block, keyed by owner type and name.
     impl_methods: []ImplMethod = &.{},
+    /// ECS metadata for codegen/hosts: deterministic ids and slot counts.
+    resources: []ResourceInfo = &.{},
+    components: []ComponentInfo = &.{},
+    plugins: []PluginInfo = &.{},
+    system_gates: []PluginGate = &.{},
+    component_table: ?ComponentTableInfo = null,
+
+    /// Resolve a resource by qualified name.
+    pub fn resource(self: *const Analysis, name: []const u8) ?ResourceInfo {
+        for (self.resources) |info| {
+            if (std.mem.eql(u8, info.name, name)) return info;
+        }
+        return null;
+    }
+
+    /// Resolve a component by qualified name.
+    pub fn component(self: *const Analysis, name: []const u8) ?ComponentInfo {
+        for (self.components) |info| {
+            if (std.mem.eql(u8, info.name, name)) return info;
+        }
+        return null;
+    }
+
+    /// Resolve a plugin by qualified name, falling back to the final path
+    /// segment so `@plugin(Ui)` works from another module.
+    pub fn plugin(self: *const Analysis, name: []const u8) ?PluginInfo {
+        for (self.plugins) |info| {
+            if (std.mem.eql(u8, info.name, name)) return info;
+        }
+        const last = lastPathSegment(name);
+        for (self.plugins) |info| {
+            if (std.mem.eql(u8, lastPathSegment(info.name), last)) return info;
+        }
+        return null;
+    }
+
+    /// Plugin gate for a qualified system name, if any.
+    pub fn systemGate(self: *const Analysis, qualified_system: []const u8) ?i64 {
+        for (self.system_gates) |gate| {
+            if (std.mem.eql(u8, gate.target, qualified_system)) return gate.plugin_id;
+        }
+        return null;
+    }
 
     pub fn deinit(self: *Analysis) void {
         self.arena.deinit();
@@ -122,6 +207,11 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
     };
     try checker.run(module);
     const triggers = try checker.triggerInfos();
+    const components = try checker.components.toOwnedSlice(checker.allocator);
+    // Re-point the auto-collected table at the final component registry slice;
+    // it was collected while the backing list still owned its buffer.
+    var component_table = checker.component_table;
+    if (component_table) |*table| table.columns = components;
     return .{
         .arena = arena,
         .store = checker.store,
@@ -131,6 +221,11 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
         .trait_impls = try checker.trait_impls.toOwnedSlice(checker.allocator),
         .builtin_impls = try checker.builtin_impls.toOwnedSlice(checker.allocator),
         .impl_methods = try checker.impl_methods.toOwnedSlice(checker.allocator),
+        .resources = try checker.resources.toOwnedSlice(checker.allocator),
+        .components = components,
+        .plugins = try checker.plugins.toOwnedSlice(checker.allocator),
+        .system_gates = try checker.system_gates.toOwnedSlice(checker.allocator),
+        .component_table = component_table,
     };
 }
 
@@ -264,6 +359,15 @@ const Checker = struct {
     current_async: bool = false,
     current_generics: ?[]ast.GenericParam = null,
     unsafe_depth: usize = 0,
+    /// ECS registries; ids are assigned in declaration order.
+    resources: std.ArrayList(ResourceInfo) = .empty,
+    components: std.ArrayList(ComponentInfo) = .empty,
+    plugins: std.ArrayList(PluginInfo) = .empty,
+    system_gates: std.ArrayList(PluginGate) = .empty,
+    component_table: ?ComponentTableInfo = null,
+    plugin_ids: std.StringHashMapUnmanaged(i64) = .empty,
+    resource_index: std.StringHashMapUnmanaged(usize) = .empty,
+    component_table_name: ?[]const u8 = null,
 
     // ------------------------------------------------------------------
     // Driver
@@ -274,6 +378,7 @@ const Checker = struct {
         try self.installBuiltinTraits();
         try self.enterScope();
         try self.collectItems(module.items, "");
+        try self.collectEcsMetadata(module.items, "");
         try self.collectImpls();
         try self.collectUses(module.items, "");
         self.checkModuleItems(module.items, "") catch |err| switch (err) {
@@ -324,6 +429,128 @@ const Checker = struct {
         if (self.collected_mods.contains(key)) return;
         try self.collected_mods.put(self.allocator, key, {});
         try self.collectItems(items, prefix);
+    }
+
+    // ------------------------------------------------------------------
+    // ECS metadata
+    // ------------------------------------------------------------------
+
+    /// Collect `@resource` / `@Components` / plugin registries and `@plugin`
+    /// gates with deterministic declaration-order ids.  Runs before semantic
+    /// checks so diagnostics and codegen share one registry view.
+    fn collectEcsMetadata(self: *Checker, items: []*ast.Item, prefix: []const u8) Error!void {
+        try self.collectEcsDeclarations(items, prefix);
+        try self.collectEcsGates(items, prefix);
+        if (self.component_table_name) |name| {
+            self.component_table = .{ .name = name, .columns = self.components.items };
+        }
+    }
+
+    fn collectEcsDeclarations(self: *Checker, items: []*ast.Item, prefix: []const u8) Error!void {
+        for (items) |item| {
+            switch (item.kind) {
+                .struct_decl => |decl| {
+                    const qualified = try self.qualifiedName(prefix, decl.name);
+                    if (itemHasAttribute(item, "resource")) {
+                        try self.resource_index.put(self.allocator, qualified, self.resources.items.len);
+                        try self.resources.append(self.allocator, .{
+                            .name = qualified,
+                            .id = @intCast(self.resources.items.len),
+                            .slots = decl.fields.len,
+                        });
+                    }
+                    if (itemHasAttribute(item, "Components")) {
+                        try self.components.append(self.allocator, .{
+                            .name = qualified,
+                            .id = @intCast(self.components.items.len),
+                            .slots = decl.fields.len,
+                        });
+                    }
+                },
+                .plugin_decl => |plugin| {
+                    const qualified = try self.qualifiedName(prefix, plugin.name);
+                    const child = try self.childModule(prefix, plugin.name);
+                    var init_name: ?[]const u8 = null;
+                    for (plugin.items) |member| {
+                        if (member.kind != .sys) continue;
+                        if (!std.mem.eql(u8, member.kind.sys.name, "init")) continue;
+                        init_name = try self.qualifiedName(child, "init");
+                        break;
+                    }
+                    const id: i64 = @intCast(self.plugins.items.len);
+                    try self.plugins.append(self.allocator, .{
+                        .name = qualified,
+                        .id = id,
+                        .init = init_name,
+                    });
+                    try self.plugin_ids.put(self.allocator, qualified, id);
+                    try self.collectEcsDeclarations(plugin.items, child);
+                },
+                .table_decl => |decl| {
+                    // `Components <- table ...` is the ECS storage table; its
+                    // columns are auto-collected from every @Components struct.
+                    if (decl.has_ellipsis and std.mem.eql(u8, decl.name, "Components")) {
+                        self.component_table_name = try self.qualifiedName(prefix, decl.name);
+                    }
+                },
+                .mod => |m| if (m.items) |inner| {
+                    try self.collectEcsDeclarations(inner, try self.childModule(prefix, m.name));
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn collectEcsGates(self: *Checker, items: []*ast.Item, prefix: []const u8) Error!void {
+        for (items) |item| {
+            switch (item.kind) {
+                .struct_decl => |decl| {
+                    const plugin_path = itemPluginAttribute(item) orelse continue;
+                    const id = self.resolvePluginId(prefix, plugin_path) orelse {
+                        self.setItemSpan(item);
+                        try self.report("unknown plugin `{s}`", .{attributeLastSegment(plugin_path)});
+                        continue;
+                    };
+                    const qualified = try self.qualifiedName(prefix, decl.name);
+                    if (self.resource_index.get(qualified)) |index| {
+                        self.resources.items[index].plugin_id = id;
+                    }
+                },
+                .sys => |decl| {
+                    const plugin_path = itemPluginAttribute(item) orelse continue;
+                    const id = self.resolvePluginId(prefix, plugin_path) orelse {
+                        self.setItemSpan(item);
+                        try self.report("unknown plugin `{s}`", .{attributeLastSegment(plugin_path)});
+                        continue;
+                    };
+                    try self.system_gates.append(self.allocator, .{
+                        .plugin_id = id,
+                        .target = try self.qualifiedName(prefix, decl.name),
+                    });
+                },
+                .plugin_decl => |plugin| {
+                    try self.collectEcsGates(plugin.items, try self.childModule(prefix, plugin.name));
+                },
+                .mod => |m| if (m.items) |inner| {
+                    try self.collectEcsGates(inner, try self.childModule(prefix, m.name));
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn resolvePluginId(self: *Checker, prefix: []const u8, path: ast.Path) ?i64 {
+        const full = self.normalizePath(self.joinPath("", path) catch return null);
+        if (self.plugin_ids.get(full)) |id| return id;
+        const last = lastPathSegment(full);
+        if (self.plugin_ids.get(last)) |id| return id;
+        const qualified = self.qualifiedName(prefix, full) catch return null;
+        if (self.plugin_ids.get(qualified)) |id| return id;
+        return null;
+    }
+
+    fn setItemSpan(self: *Checker, item: *const ast.Item) void {
+        if (self.spans.get(@intFromPtr(item))) |span| self.current_span = span;
     }
 
     fn collectType(self: *Checker, item: *ast.Item, prefix: []const u8) !void {
@@ -388,11 +615,11 @@ const Checker = struct {
         }
         const unit_type = try self.allocator.create(ast.Type);
         unit_type.* = .{ .tuple = &.{} };
-        // A system is callable from source as an async function.  Normal and
-        // resource parameters keep their declared types; a query parameter is
-        // an opaque handle whose source-level argument must itself be a query
-        // binding, so `instantiateCallable` substitutes an unknown type and
-        // `checkCall` validates the argument kind.
+        // A system is callable from source as an async function.  Conventionally
+        // it takes no arguments (the ECS prologue supplies world handles), and
+        // zero-argument `await Tick()` is always accepted; passing the declared
+        // parameters explicitly is also accepted for source compatibility and
+        // forwards them to the body as-is.
         const params = try self.allocator.alloc(ast.Param, decl.params.len);
         for (decl.params, 0..) |param, i| switch (param) {
             .normal => |p| params[i] = p,
@@ -1623,6 +1850,12 @@ const Checker = struct {
         const full = self.normalizePath(try self.joinPath("", path));
         const maybe_def = self.lookupQualifiedType(full) orelse self.lookupTypeDef(name);
         if (maybe_def == null) {
+            // `Commands` is a builtin compiler-known handle; programs may also
+            // declare a plain `Commands <- struct` (the engine scaffold does),
+            // in which case the declared type wins above.
+            if (path.segments.len == 1 and std.mem.eql(u8, name, "Commands")) {
+                return self.store.make(.{ .named = .{ .name = "Commands", .args = &.{} } });
+            }
             // Trait names are also accepted where a type is expected.  The
             // engine samples use this for opaque component handles such as
             // `element: ?*UIElement`; the value is only ever accessed through
@@ -1757,16 +1990,29 @@ const Checker = struct {
         };
     }
 
+    /// References in an async signature are only sound when they point at
+    /// long-lived world values (resources/components), which the engine's
+    /// `gpu_*` async wrappers do.  References to scalars or containers stay
+    /// rejected.
+    fn asyncReferenceAllowed(self: *Checker, ty: *types.Type) bool {
+        const resolved = self.store.resolve(ty);
+        return switch (resolved.*) {
+            .reference => |reference| self.store.resolve(reference.child).* == .named,
+            .optional, .box, .array, .map, .error_union, .tuple, .function => false,
+            else => false,
+        };
+    }
+
     fn checkAsyncSignature(self: *Checker, callable: *Callable) Error!void {
         if (!callable.is_async or callable.kind == .sys) return;
         for (callable.params) |param| {
             const ty = try self.resolveType(param.ty);
-            if (self.containsReference(ty)) {
-                try self.report("async parameter `{s}` cannot contain references", .{param.name});
-            }
+            if (!self.containsReference(ty)) continue;
+            if (self.asyncReferenceAllowed(ty)) continue;
+            try self.report("async parameter `{s}` cannot contain references", .{param.name});
         }
         const result = try self.resolveType(callable.result);
-        if (self.containsReference(result)) {
+        if (self.containsReference(result) and !self.asyncReferenceAllowed(result)) {
             try self.report("async result type cannot contain references", .{});
         }
     }
@@ -1857,7 +2103,7 @@ const Checker = struct {
                 params[i] = switch (sys_param) {
                     .normal => |p| try self.resolveTypeIn(p.ty, &env),
                     .resource => |p| try self.resolveTypeIn(p.ty, &env),
-                    // Opaque handle: only a query binding may be forwarded.
+                    // Query handles are opaque at the source ABI boundary.
                     .query => try self.store.make(.unknown),
                 };
             }
@@ -2487,8 +2733,11 @@ const Checker = struct {
 
     fn checkQueryExpr(self: *Checker, query: ast.QueryExpr) !*types.Type {
         const lease = try self.resolveType(query.ty);
-        // `await query ...` unwraps the same Task shape as an async call.
-        return self.asyncTaskType(lease);
+        // `query ...` is a world lease that resolves to the lease type itself
+        // (no implicit `Cancelled` error like ordinary async calls, so
+        // `await query &mut Commands` yields `&mut Commands`, not an error
+        // union).  Lowering maps the lease to the ECS handle.
+        return self.makeTask(lease);
     }
 
     fn checkRowLiteral(self: *Checker, items: []*ast.Expr) !*types.Type {
@@ -3356,7 +3605,123 @@ const Checker = struct {
         return self.store.make(.{ .range = element });
     }
 
+    /// Resolve the builtin/runtime `Commands` type through any reference
+    /// layers.  Programs may declare their own `Commands <- struct`, so the
+    /// check is by name rather than by a synthetic type definition.
+    fn commandsTypeName(self: *Checker, ty: *types.Type) ?[]const u8 {
+        var resolved = self.store.resolve(ty);
+        while (resolved.* == .reference) resolved = self.store.resolve(resolved.reference.child);
+        if (resolved.* != .named) return null;
+        if (!std.mem.eql(u8, lastPathSegment(resolved.named.name), "Commands")) return null;
+        return resolved.named.name;
+    }
+
+    fn findComponentInfo(self: *Checker, name: []const u8) ?ComponentInfo {
+        for (self.components.items) |info| {
+            if (std.mem.eql(u8, info.name, name) or
+                std.mem.eql(u8, lastPathSegment(info.name), lastPathSegment(name))) return info;
+        }
+        return null;
+    }
+
+    fn lookupTypeDefPath(self: *Checker, path: ast.Path) ?*TypeDef {
+        const full = self.normalizePath(self.joinPath("", path) catch return null);
+        return self.lookupQualifiedType(full) orelse self.lookupTypeDef(lastPathSegment(full));
+    }
+
+    /// World-mutation methods on the `Commands` handle:
+    /// `insert_resource(value)`, `add_row(Table, { ...components })`, and
+    /// `add_plugin(Plugin)`.  The first `add_row` argument is a table *type*,
+    /// so the ordinary expression checker must not try to evaluate it.
+    fn checkCommandsMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .field) return null;
+        const field = call.callee.field;
+        const target_ty = try self.checkExpr(field.target, null);
+        _ = self.commandsTypeName(target_ty) orelse return null;
+        const name = field.name;
+
+        if (std.mem.eql(u8, name, "insert_resource")) {
+            if (call.args.len != 1) {
+                try self.report("`Commands.insert_resource` expects 1 argument, found {d}", .{call.args.len});
+            }
+            for (call.args) |arg| {
+                const value_ty = try self.checkMoveExpr(arg, null);
+                const resolved = self.store.resolve(value_ty);
+                if (resolved.* == .named) {
+                    if (self.resource_index.get(resolved.named.name) == null and
+                        !std.mem.eql(u8, lastPathSegment(resolved.named.name), "Commands"))
+                    {
+                        try self.report("`insert_resource` expects a @resource value, found `{s}`", .{resolved.named.name});
+                    }
+                } else if (resolved.* != .unknown) {
+                    const found = try self.store.typeName(resolved);
+                    try self.report("`insert_resource` expects a @resource value, found `{s}`", .{found});
+                }
+            }
+            return self.store.make(.unit);
+        }
+
+        if (std.mem.eql(u8, name, "add_row")) {
+            if (call.args.len != 2) {
+                try self.report("`Commands.add_row` expects a table and a row literal, found {d} argument(s)", .{call.args.len});
+            }
+            if (call.args.len >= 1) {
+                var table_ok = false;
+                if (call.args[0].* == .path) {
+                    if (self.lookupTypeDefPath(call.args[0].path)) |def| {
+                        table_ok = def.kind == .table_;
+                    }
+                }
+                if (!table_ok) try self.report("`add_row` expects a table type as its first argument", .{});
+            }
+            if (call.args.len >= 2) {
+                const row = call.args[1];
+                if (row.* == .row_literal) {
+                    for (row.row_literal) |item| {
+                        const item_ty = try self.checkMoveExpr(item, null);
+                        const resolved = self.store.resolve(item_ty);
+                        if (resolved.* == .named) {
+                            if (self.findComponentInfo(resolved.named.name) == null) {
+                                try self.report("`add_row` value `{s}` is not a @Components type", .{resolved.named.name});
+                            }
+                        } else if (resolved.* != .unknown) {
+                            const found = try self.store.typeName(resolved);
+                            try self.report("`add_row` value of type `{s}` is not a @Components type", .{found});
+                        }
+                    }
+                } else {
+                    _ = try self.checkExpr(row, null);
+                    try self.report("`add_row` expects a row literal `{{ ... }}`", .{});
+                }
+            }
+            return self.store.make(.unit);
+        }
+
+        if (std.mem.eql(u8, name, "add_plugin")) {
+            if (call.args.len != 1) {
+                try self.report("`Commands.add_plugin` expects 1 argument, found {d}", .{call.args.len});
+            }
+            for (call.args) |arg| {
+                if (arg.* == .path) {
+                    const plugin_id = self.resolvePluginId(self.current_module, arg.path);
+                    if (plugin_id == null) {
+                        try self.report("unknown plugin `{s}`", .{attributeLastSegment(arg.path)});
+                    }
+                } else {
+                    _ = try self.checkExpr(arg, null);
+                    try self.report("`add_plugin` expects a plugin name", .{});
+                }
+            }
+            return self.store.make(.unit);
+        }
+
+        try self.report("unknown `Commands` method `{s}`", .{name});
+        for (call.args) |arg| _ = try self.checkExpr(arg, null);
+        return self.store.make(.unit);
+    }
+
     fn checkCall(self: *Checker, call: ast.Call) !*types.Type {
+        if (try self.checkCommandsMethodCall(call)) |result| return result;
         if (try self.checkBuiltinMethodCall(call)) |result| return result;
         if (call.callee.* == .path and call.callee.path.segments.len == 1) {
             const name = call.callee.path.segments[0].name;
@@ -3389,7 +3754,11 @@ const Checker = struct {
         }
         switch (callee.*) {
             .function => |function| {
-                if (function.params.len != call.args.len) {
+                const zero_arg_system = if (bound_callable) |callable|
+                    callable.kind == .sys and call.args.len == 0
+                else
+                    false;
+                if (!zero_arg_system and function.params.len != call.args.len) {
                     try self.report("call expects {d} argument(s), found {d}", .{
                         function.params.len, call.args.len,
                     });
@@ -3610,6 +3979,31 @@ fn modulePathMatches(qualified: []const u8, prefix: []const u8) bool {
 fn lastPathSegment(path: []const u8) []const u8 {
     if (std.mem.lastIndexOf(u8, path, "::")) |index| return path[index + 2 ..];
     return path;
+}
+
+fn itemHasAttribute(item: *const ast.Item, name: []const u8) bool {
+    for (item.attributes) |attribute| {
+        if (attribute.path.segments.len == 0) continue;
+        if (std.mem.eql(u8, attribute.path.segments[attribute.path.segments.len - 1].name, name)) return true;
+    }
+    return false;
+}
+
+/// `@plugin(P)` argument path, when present.
+fn itemPluginAttribute(item: *const ast.Item) ?ast.Path {
+    for (item.attributes) |attribute| {
+        if (attribute.path.segments.len == 0) continue;
+        if (!std.mem.eql(u8, attribute.path.segments[attribute.path.segments.len - 1].name, "plugin")) continue;
+        if (attribute.args.len == 0) return null;
+        if (attribute.args[0].* != .path) return null;
+        return attribute.args[0].path;
+    }
+    return null;
+}
+
+fn attributeLastSegment(path: ast.Path) []const u8 {
+    if (path.segments.len == 0) return "";
+    return path.segments[path.segments.len - 1].name;
 }
 
 // ---------------------------------------------------------------------------
