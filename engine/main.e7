@@ -1,0 +1,395 @@
+# engine7 sample game/engine scaffold.
+#
+# The runtime exposes SDL3 and Vulkan through a small native ABI. Everything
+# above that ABI lives here: resources, components, systems, the frame loop,
+# and the GPU wrappers. The engine uses one ECS world; each frame runs the
+# FrameInit, PreUpdate, Update, PostUpdate, and Render trigger phases.
+
+# ---------------------------------------------------------------------------
+# Resources: long-lived singletons owned by the world
+# ---------------------------------------------------------------------------
+
+@resource
+Window <- struct
+    handle: u64
+    width: i32
+    height: i32
+    quit_requested: bool
+
+@resource
+Input <- struct
+    move_forward: bool
+    move_backward: bool
+    move_left: bool
+    move_right: bool
+    move_up: bool
+    move_down: bool
+    look_dx: f32
+    look_dy: f32
+
+@resource
+Time <- struct
+    delta: f32
+    elapsed: f32
+
+@resource
+Camera <- struct
+    position: [f32; 3]
+    yaw: f32
+    pitch: f32
+    fov_y: f32
+    near: f32
+    far: f32
+
+@resource
+Gpu <- struct
+    # Native handles returned by the runtime's Vulkan ABI.
+    surface: u64
+    renderer: u64
+    swapchain_format: i32
+    width: i32
+    height: i32
+
+    # Shader/pipeline deployment state. A pipeline is created from a pair of
+    # SPIR-V modules produced from Slang sources at build time.
+    cube_pipeline: u64
+    cube_vertex_shader: u64
+    cube_fragment_shader: u64
+
+@resource
+World <- struct
+    next_entity: u64
+    components: Components
+    ui_root: UINode
+
+# ---------------------------------------------------------------------------
+# Component traits and components
+# ---------------------------------------------------------------------------
+
+# Component types are plain structs tagged with @Components. Entity identity is
+# carried in the `entity_id` column; the Components table below is the ECS
+# storage/query source used by `select ... from Components`.
+
+@Components
+CameraController <- struct
+    entity_id: usize
+    move_speed: f32
+    look_speed: f32
+
+@Components
+Transform <- struct
+    entity_id: usize
+    translation: [f32; 3]
+    rotation: [f32; 3]
+    scale: [f32; 3]
+
+@Components
+MeshRenderer <- struct
+    entity_id: usize
+    mesh: u64
+    pipeline: u64
+    colour: [f32; 4]
+
+@Components
+PointLight <- struct
+    entity_id: usize
+    position: [f32; 3]
+    colour: [f32; 3]
+    intensity: f32
+
+# The ECS component table. Each row is an entity; component columns are
+# optional per entity (empty slots mean “component absent”). Systems query it
+# with `select &mut Component from Components`.
+Components <- table
+    entity_id: usize,
+    transforms: [Transform],
+    camera_controllers: [CameraController],
+    mesh_renderers: [MeshRenderer],
+    point_lights: [PointLight],
+
+# ---------------------------------------------------------------------------
+# GPU wrappers: resources over the runtime's SDL/Vulkan ABI
+# ---------------------------------------------------------------------------
+
+ShaderModule <- struct
+    handle: u64
+    stage: ShaderStage
+
+ShaderStage <- enum
+    Vertex
+    Fragment
+
+RasterPipeline <- struct
+    handle: u64
+    vertex: ShaderModule
+    fragment: ShaderModule
+    topology: Topology
+
+Topology <- enum
+    TriangleList
+
+Mesh <- struct
+    handle: u64
+    vertex_count: u64
+    index_count: u64
+
+ComputePipeline <- struct
+    handle: u64
+    shader: ShaderModule
+    workgroup_size: [u32; 3]
+
+# A deploy is the e7-side description of a shader pair. `gpu_deploy_shader`
+# reads SPIR-V produced from `shaders/*.slang` and builds a raster pipeline.
+ShaderDeploy <- struct
+    name: str
+    vertex_spirv: [u8]
+    fragment_spirv: [u8]
+
+PipelineOptions <- struct
+    depth_test: bool
+    depth_write: bool
+    cull_mode: CullMode
+    topology: Topology
+
+CullMode <- enum
+    None
+    Front
+    Back
+
+# Overloaded deployment entry points. The runtime ABI exposes the Vulkan calls;
+# these declarations are the e7-facing resource wrappers. The body is filled
+# once the compiler can lower `res &mut` sys parameter bodies.
+gpu_deploy_raster_pipeline <- sys (
+    gpu: res &mut Gpu,
+    deploy: ShaderDeploy,
+    options: PipelineOptions,
+) -> u64:
+    ret 0
+
+gpu_deploy_compute_pipeline <- sys (
+    gpu: res &mut Gpu,
+    shader: ShaderModule,
+    workgroup_size: [u32; 3],
+) -> u64:
+    ret 0
+
+gpu_create_mesh <- sys (
+    gpu: res &mut Gpu,
+    vertices: [f32],
+    indices: [u32],
+) -> u64:
+    ret 0
+
+gpu_set_uniform <- sys (
+    gpu: res &mut Gpu,
+    name: str,
+    value: [f32; 4],
+) -> !nil:
+    ret
+
+gpu_begin_frame <- sys (gpu: res &mut Gpu) -> !nil:
+    ret
+
+gpu_end_frame <- sys (gpu: res &mut Gpu) -> !nil:
+    ret
+
+gpu_draw_mesh <- sys (
+    gpu: res &mut Gpu,
+    mesh: Mesh,
+    transform: Transform,
+    camera: &Camera,
+    light: &PointLight,
+) -> !nil:
+    ret
+
+# ---------------------------------------------------------------------------
+# Frame triggers
+# ---------------------------------------------------------------------------
+
+FrameInit <- trigger
+PreUpdate <- trigger
+Update <- trigger
+PostUpdate <- trigger
+Render <- trigger
+QuitRequested <- trigger
+
+# ---------------------------------------------------------------------------
+# Systems
+# ---------------------------------------------------------------------------
+
+@trigger(FrameInit)
+init_window <- sys (
+    window: res &mut Window,
+    gpu: res &mut Gpu,
+    camera: res &mut Camera,
+    world: res &mut World,
+):
+    # Runtime ABI: e7_window_create(title_ptr, title_len, w, h, flags, driver)
+    window.handle = 0
+    window.width = 960
+    window.height = 540
+    window.quit_requested = false
+
+    gpu.width = window.width
+    gpu.height = window.height
+
+    camera.position = [0.0, 1.5, 6.0]
+    camera.yaw = 0.0
+    camera.pitch = 0.0
+    camera.fov_y = 1.0471975512
+    camera.near = 0.1
+    camera.far = 100.0
+
+    world.next_entity = 2
+
+    cube := Transform {
+        entity_id: 0,
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    }
+    world.components.transforms = [cube]
+
+    controller := CameraController {
+        entity_id: 0,
+        move_speed: 4.0,
+        look_speed: 0.0025,
+    }
+    world.components.camera_controllers = [controller]
+
+    light := PointLight {
+        entity_id: 1,
+        position: [2.0, 3.0, 4.0],
+        colour: [1.0, 0.9, 0.8],
+        intensity: 12.0,
+    }
+    world.components.point_lights = [light]
+
+@trigger(PreUpdate)
+poll_window <- sys (window: res &mut Window, input: res &mut Input):
+    # Pump SDL events through the runtime. Window close sets quit_requested;
+    # the main loop treats that as the frame-exit signal.
+    window.quit_requested = window.quit_requested
+
+@trigger(PreUpdate)
+gather_input <- sys (window: res &Window, input: res &mut Input):
+    # WASD on the horizontal plane, Q/E vertical, mouse look.
+    input.move_forward = false
+    input.move_backward = false
+    input.move_left = false
+    input.move_right = false
+    input.move_up = false
+    input.move_down = false
+    input.look_dx = 0.0
+    input.look_dy = 0.0
+
+@trigger(Update)
+move_camera <- sys (
+    camera: res &mut Camera,
+    input: &Input,
+    time: &Time,
+    controllers: select &mut CameraController from Components,
+):
+    # Placeholder until the query body can project mutable component fields.
+    ret
+
+@trigger(Update)
+spin_cube <- sys (
+    transforms: select &mut Transform from Components,
+    time: &Time,
+):
+    ret
+
+@trigger(Update)
+update_light <- sys (lights: select &mut PointLight from Components, time: &Time):
+    ret
+
+@trigger(PostUpdate)
+reset_input <- sys (input: res &mut Input):
+    input.move_forward = false
+    input.move_backward = false
+    input.move_left = false
+    input.move_right = false
+    input.move_up = false
+    input.move_down = false
+    input.look_dx = 0.0
+    input.look_dy = 0.0
+
+@trigger(Render)
+render_scene <- sys (
+    gpu: res &mut Gpu,
+    camera: &Camera,
+    world: &World,
+):
+    # Draw the spinning cube and point light. The native renderer owns the
+    # Vulkan swapchain, depth buffer, and graphics pipeline.
+    ret
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+main <- async () -> i32:
+    window := Window {
+        handle: 0,
+        width: 960,
+        height: 540,
+        quit_requested: false,
+    }
+    input := Input {
+        move_forward: false,
+        move_backward: false,
+        move_left: false,
+        move_right: false,
+        move_up: false,
+        move_down: false,
+        look_dx: 0.0,
+        look_dy: 0.0,
+    }
+    time := Time { delta: 0.0, elapsed: 0.0 }
+    camera := Camera {
+        position: [0.0, 1.5, 6.0],
+        yaw: 0.0,
+        pitch: 0.0,
+        fov_y: 1.0471975512,
+        near: 0.1,
+        far: 100.0,
+    }
+    gpu := Gpu {
+        surface: 0,
+        renderer: 0,
+        swapchain_format: 0,
+        width: 960,
+        height: 540,
+        cube_pipeline: 0,
+        cube_vertex_shader: 0,
+        cube_fragment_shader: 0,
+    }
+    world := World {
+        next_entity: 2,
+        components: Components {
+            entity_id: 0,
+            transforms: [],
+            camera_controllers: [],
+            mesh_renderers: [],
+            point_lights: [],
+        },
+        ui_root: UINode {
+            pos: [0.0, 0.0],
+            scale: [1.0, 1.0],
+            enabled: true,
+            element: nil,
+            children: [],
+        },
+    }
+
+    await FrameInit()
+
+    while not window.quit_requested:
+        await PreUpdate()
+        await Update()
+        await PostUpdate()
+        await Render()
+
+    await QuitRequested()
+    ret 0

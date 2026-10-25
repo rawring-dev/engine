@@ -71,8 +71,8 @@ pub const Camera = struct {
     pitch: f32 = -0.14,
 };
 
-pub const default_light_color = [4]f32{ 1.0, 0.92, 0.82, 2.6 };
-pub const default_ambient = [4]f32{ 0.20, 0.22, 0.28, 1.0 };
+pub const default_light_color = [4]f32{ 1.0, 0.94, 0.86, 4.0 };
+pub const default_ambient = [4]f32{ 0.24, 0.26, 0.30, 1.0 };
 pub const default_fov_y: f32 = std.math.degreesToRadians(60.0);
 pub const default_near: f32 = 0.1;
 pub const default_far: f32 = 100.0;

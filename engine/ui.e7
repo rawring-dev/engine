@@ -1,0 +1,36 @@
+# ECS/UI surface sample from the engine design notes.
+#
+# `Trait : Parent` is the trait-dependency form: every implementor of
+# UIRenderable must also implement UIElement. Required method signatures live
+# in the trait body; implementations provide the bodies in `impl` blocks.
+
+@resource
+UINode <- struct
+    pos: [f32; 2],
+    scale: [f32; 2],
+
+    enabled: bool,
+
+    element: ?*UIElement,
+    children: [UINode]
+
+UIElement <- trait
+UIRenderable <- trait : UIElement
+    render <- async (&self, &mut Gpu) -> !nil
+
+UIInteractable <- trait : UIElement
+    interact <- (&mut self, &Input) -> !nil
+
+@trigger(PreUpdate)
+ui_interact <- sys (
+    ui_root: res &mut UINode,
+    interactable_entities: select &mut UIInteractable from Components,
+):
+    ret # TODO: ui interaction
+
+@trigger(Render)
+ui_render <- sys (
+    ui_root: res &UINode,
+    gpu: res &mut Gpu,
+):
+    ret # TODO: ui render
