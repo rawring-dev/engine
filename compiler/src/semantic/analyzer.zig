@@ -15,6 +15,7 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("types.zig");
+const intrinsics = @import("../intrinsics.zig");
 
 /// Traits with compiler-known operator syntax.
 const builtin_trait_names = [_][]const u8{
@@ -3605,7 +3606,40 @@ const Checker = struct {
         return self.store.make(.{ .range = element });
     }
 
+    fn intrinsicResultType(self: *Checker, spec: intrinsics.ValueType) Error!*types.Type {
+        return switch (spec) {
+            .i64_ => self.store.make(.{ .int = .i64 }),
+            .u64_ => self.store.make(.{ .int = .u64 }),
+            .i32_ => self.store.make(.{ .int = .i32 }),
+            .bool_ => self.store.make(.bool),
+            .str_ => self.store.make(.string),
+            .unit => self.store.make(.unit),
+        };
+    }
+
+    /// Compiler-known host intrinsics (`e7_engine_*`).  They are only resolved
+    /// when no user binding/function shadows the name.
+    fn checkIntrinsicCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .path or call.callee.path.segments.len != 1) return null;
+        const name = call.callee.path.segments[0].name;
+        if (self.lookup(name) != null or self.lookupFunction(name) != null) return null;
+        const intrinsic = intrinsics.lookup(name) orelse return null;
+        if (call.args.len != intrinsic.params.len) {
+            try self.report("intrinsic `{s}` expects {d} argument(s), found {d}", .{
+                name, intrinsic.params.len, call.args.len,
+            });
+        }
+        for (call.args, 0..) |arg, index| {
+            const actual = try self.checkMoveExpr(arg, null);
+            if (index >= intrinsic.params.len) continue;
+            const expected = try self.intrinsicResultType(intrinsic.params[index]);
+            try self.expectAssignable(expected, actual, name);
+        }
+        return self.intrinsicResultType(intrinsic.result);
+    }
+
     /// Resolve the builtin/runtime `Commands` type through any reference
+    /// layers.    /// Resolve the builtin/runtime `Commands` type through any reference
     /// layers.  Programs may declare their own `Commands <- struct`, so the
     /// check is by name rather than by a synthetic type definition.
     fn commandsTypeName(self: *Checker, ty: *types.Type) ?[]const u8 {
@@ -3722,6 +3756,7 @@ const Checker = struct {
 
     fn checkCall(self: *Checker, call: ast.Call) !*types.Type {
         if (try self.checkCommandsMethodCall(call)) |result| return result;
+        if (try self.checkIntrinsicCall(call)) |result| return result;
         if (try self.checkBuiltinMethodCall(call)) |result| return result;
         if (call.callee.* == .path and call.callee.path.segments.len == 1) {
             const name = call.callee.path.segments[0].name;

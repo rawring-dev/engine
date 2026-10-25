@@ -1545,3 +1545,28 @@ test "rejects unknown Commands methods" {
         \\    0
     , "unknown `Commands` method");
 }
+
+test "checks compiler-known engine intrinsics" {
+    try expectClean(
+        \\create <- () -> u64 = e7_engine_window_create("engine7", 960, 540)
+        \\now <- () -> i64 = e7_engine_time_now_ms()
+        \\pump <- (window: u64) -> i64 = e7_engine_window_pump(window)
+        \\alive <- (window: u64) -> i64 = e7_engine_window_should_close(window)
+        \\shutdown <- (window: u64) -> i64 = e7_engine_window_destroy(window)
+        \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
+        \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000, 2600, 3000, 2600)
+        \\limit <- () -> i64 = e7_engine_should_close()
+        \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
+        \\mouse <- () -> i64 = e7_engine_mouse_delta()
+        \\move <- (scene: u64) -> i64 = e7_engine_camera_update(scene, 16)
+    );
+    try expectDiagnostic(
+        \\now <- () -> i64 = e7_engine_time_now_ms(1)
+    , "expects 0 argument");
+    try expectDiagnostic(
+        \\create <- () -> u64 = e7_engine_window_create(1, 960, 540)
+    , "type mismatch");
+    try expectDiagnostic(
+        \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000)
+    , "expects 6 argument");
+}

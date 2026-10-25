@@ -18,16 +18,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("compiler");
+    const transpiler = b.dependency("transpiler", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("transpiler");
     const runtime_dep = b.dependency("runtime", .{
         .target = target,
         .optimize = optimize,
     });
     const runtime = runtime_dep.module("runtime");
 
-    const test_step = b.step("test", "Run scheduler, compiler, and runtime tests");
+    const test_step = b.step("test", "Run scheduler, compiler, runtime, and transpiler tests");
     addTests(b, test_step, "scheduler", scheduler);
     addTests(b, test_step, "compiler", compiler);
     addTests(b, test_step, "runtime", runtime);
+    addTests(b, test_step, "transpiler", transpiler);
 
     // Shader assets for the native scene demo.  Sources live in
     // runtime/shaders/*.slang; build.sh embeds/regenerates the checked-in
@@ -46,12 +51,23 @@ pub fn build(b: *std.Build) void {
     const run_scene_step = b.step("run-scene", "Build and run the Vulkan scene demo");
     run_scene_step.dependOn(&run_scene.step);
 
+    // e7 engine host (`zig build run-engine [-- --frames 2 --headless --capture out.ppm]`).
+    // The executable is defined by runtime/build.zig; this step forwards CLI
+    // arguments and runs from the workspace root so `engine/main.e7` resolves.
+    const engine_run = runtime_dep.artifact("engine-run");
+    const run_engine = b.addRunArtifact(engine_run);
+    if (b.args) |args| run_engine.addArgs(args);
+    run_engine.has_side_effects = true;
+    const run_engine_step = b.step("run-engine", "Compile and run the e7 engine project");
+    run_engine_step.dependOn(&run_engine.step);
+
     // Convenience step that compiles and runs every module root directly.
     const check_step = b.step("check", "Compile and test all workspace modules");
     inline for (.{
         .{ "scheduler", scheduler },
         .{ "compiler", compiler },
         .{ "runtime", runtime },
+        .{ "transpiler", transpiler },
     }) |entry| {
         const check = b.addTest(.{ .root_module = entry[1] });
         const run = std.Build.Step.Run.create(b, b.fmt("check {s} tests", .{entry[0]}));

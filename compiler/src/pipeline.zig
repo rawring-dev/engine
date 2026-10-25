@@ -1065,3 +1065,46 @@ test "compileProject loads sibling modules and prefixes their items" {
     try std.testing.expectEqualStrings("ui::Ui", result.analysis.plugins[0].name);
     try std.testing.expectEqualStrings("ui::Ui::init", result.analysis.plugins[0].init.?);
 }
+
+test "lowers compiler-known engine intrinsics to runtime calls" {
+    var result = try compile(
+        std.testing.allocator,
+        \\create <- () -> u64 = e7_engine_window_create("engine7", 960, 540)
+        \\now <- () -> i64 = e7_engine_time_now_ms()
+        \\pump <- (window: u64) -> i64 = e7_engine_window_pump(window)
+        \\close <- () -> i64 = e7_engine_should_close()
+        \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
+        \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 0, 2600, 3000, 2600)
+        \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
+        \\mouse <- () -> i64 = e7_engine_mouse_delta()
+        \\move <- (scene: u64) -> i64 = e7_engine_camera_update(scene, 16)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const expectations = [_]struct { function: []const u8, intrinsic: bytecode.RuntimeFunction }{
+        .{ .function = "create", .intrinsic = .engine_window_create },
+        .{ .function = "now", .intrinsic = .engine_time_now_ms },
+        .{ .function = "pump", .intrinsic = .engine_window_pump },
+        .{ .function = "close", .intrinsic = .engine_should_close },
+        .{ .function = "camera", .intrinsic = .engine_scene_set_camera },
+        .{ .function = "draw", .intrinsic = .engine_scene_draw },
+        .{ .function = "held", .intrinsic = .engine_key_down },
+        .{ .function = "mouse", .intrinsic = .engine_mouse_delta },
+        .{ .function = "move", .intrinsic = .engine_camera_update },
+    };
+    for (expectations) |expectation| {
+        const function = result.functionNamed(expectation.function).?;
+        var found = false;
+        for (function.code) |op| switch (op) {
+            .runtime_call => |call| {
+                if (call.function == expectation.intrinsic) found = true;
+            },
+            else => {},
+        };
+        try std.testing.expect(found);
+    }
+}

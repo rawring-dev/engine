@@ -1445,10 +1445,18 @@ const Parser = struct {
 
     fn looksLikeBinding(self: *const Parser) bool {
         var i = self.index;
+        // Semicolons can occur inside a binding's type (`[f32; 3]`) or
+        // initializer, so only separators at bracket depth zero terminate the
+        // lookahead.
+        var depth: usize = 0;
         while (i < self.tokens.len) : (i += 1) {
             switch (self.tokens[i].kind) {
-                .newline, .semicolon, .eof => return false,
-                .bind_immutable, .bind_mutable => return true,
+                .lparen, .lbracket, .lbrace => depth += 1,
+                .rparen, .rbracket, .rbrace => {
+                    if (depth > 0) depth -= 1;
+                },
+                .newline, .semicolon, .eof => if (depth == 0) return false,
+                .bind_immutable, .bind_mutable => if (depth == 0) return true,
                 else => {},
             }
         }
@@ -2810,6 +2818,30 @@ test "parses vector, matrix, map, and str types" {
     try std.testing.expect(tree.module.items[2].kind.binding.ty.?.array.columns != null);
     try std.testing.expect(tree.module.items[3].kind.binding.ty.?.* == .map);
     try std.testing.expect(tree.module.items[4].kind.binding.ty.?.* == .path);
+}
+
+test "parses statement bindings with semicolons inside their type" {
+    var tree = try expectAst(
+        \\f <- () -> i32:
+        \\    fixed: [f32; 3] <- [1.0, 2.0, 3.0]
+        \\    matrix: [f32; 2, 2] := [[1.0, 0.0], [0.0, 1.0]]
+        \\    ret 0
+    );
+    defer tree.deinit();
+
+    const block = tree.module.items[0].kind.function.body.block;
+    try std.testing.expectEqual(@as(usize, 3), block.entries.len);
+
+    const fixed = block.entries[0].stmt.*.binding;
+    try std.testing.expectEqualStrings("fixed", fixed.name);
+    try std.testing.expect(!fixed.mutable);
+    try std.testing.expect(fixed.ty.?.array.columns == null);
+    try std.testing.expectEqual(@as(i64, 3), fixed.ty.?.array.length.?.int);
+
+    const matrix = block.entries[1].stmt.*.binding;
+    try std.testing.expectEqualStrings("matrix", matrix.name);
+    try std.testing.expect(matrix.mutable);
+    try std.testing.expect(matrix.ty.?.array.columns != null);
 }
 
 test "parses unsafe blocks and uninitialized declarations" {

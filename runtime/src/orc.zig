@@ -19,6 +19,7 @@ const task = @import("task.zig");
 const lease = @import("lease.zig");
 const aggregate = @import("aggregate.zig");
 const ecs = @import("ecs.zig");
+const engine = @import("engine.zig");
 
 const c = @cImport({
     @cInclude("llvm-c/Core.h");
@@ -128,6 +129,8 @@ pub const Jit = struct {
         try self.defineSymbols(&aggregate_symbols);
         const ecs_symbols = ecs.symbols();
         try self.defineSymbols(&ecs_symbols);
+        const engine_symbols = engine.symbols();
+        try self.defineSymbols(&engine_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidBytecode => return error.InvalidBytecode,

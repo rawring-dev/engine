@@ -53,6 +53,21 @@ pub const RuntimeFunction = enum(u8) {
     ecs_query_begin,
     ecs_query_next,
     ecs_query_component,
+    // Engine/window/scene intrinsics (host-provided, see runtime/src/engine.zig).
+    engine_window_create,
+    engine_window_pump,
+    engine_window_should_close,
+    engine_window_destroy,
+    engine_time_now_ms,
+    engine_scene_create,
+    engine_scene_destroy,
+    engine_scene_resize,
+    engine_scene_set_camera,
+    engine_scene_draw,
+    engine_should_close,
+    engine_key_down,
+    engine_mouse_delta,
+    engine_camera_update,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -74,7 +89,30 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_query_begin => "e7_ecs_query_begin",
             .ecs_query_next => "e7_ecs_query_next",
             .ecs_query_component => "e7_ecs_query_component",
+            .engine_window_create => "e7_engine_window_create",
+            .engine_window_pump => "e7_engine_window_pump",
+            .engine_window_should_close => "e7_engine_window_should_close",
+            .engine_window_destroy => "e7_engine_window_destroy",
+            .engine_time_now_ms => "e7_engine_time_now_ms",
+            .engine_scene_create => "e7_engine_scene_create",
+            .engine_scene_destroy => "e7_engine_scene_destroy",
+            .engine_scene_resize => "e7_engine_scene_resize",
+            .engine_scene_set_camera => "e7_engine_scene_set_camera",
+            .engine_scene_draw => "e7_engine_scene_draw",
+            .engine_should_close => "e7_engine_should_close",
+            .engine_key_down => "e7_engine_key_down",
+            .engine_mouse_delta => "e7_engine_mouse_delta",
+            .engine_camera_update => "e7_engine_camera_update",
         };
+    }
+
+    /// Look up a runtime entry by its C symbol name (the same name e7 source
+    /// uses for compiler-known intrinsics).
+    pub fn fromSymbol(name: []const u8) ?RuntimeFunction {
+        for (std.enums.values(RuntimeFunction)) |function| {
+            if (std.mem.eql(u8, function.symbol(), name)) return function;
+        }
+        return null;
     }
 
     /// Number of `i64` arguments the ABI entry takes.
@@ -97,6 +135,18 @@ pub const RuntimeFunction = enum(u8) {
             => 2,
             .ecs_commands_insert_resource, .ecs_commands_row_add => 3,
             .ecs_query_begin => 4,
+            .engine_window_create, .engine_scene_resize => 3,
+            .engine_window_pump,
+            .engine_window_should_close,
+            .engine_window_destroy,
+            .engine_scene_create,
+            .engine_scene_destroy,
+            .engine_key_down,
+            => 1,
+            .engine_time_now_ms, .engine_should_close, .engine_mouse_delta => 0,
+            .engine_scene_set_camera => 6,
+            .engine_scene_draw => 6,
+            .engine_camera_update => 2,
         };
     }
 
@@ -798,7 +848,7 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         58 => .vec_set_row,
         59 => blk: {
             const raw = (cursor.take(1) orelse return error.InvalidBytecode)[0];
-            if (raw > @intFromEnum(RuntimeFunction.ecs_query_component)) return error.InvalidBytecode;
+            if (raw > @intFromEnum(RuntimeFunction.engine_camera_update)) return error.InvalidBytecode;
             const function: RuntimeFunction = @enumFromInt(raw);
             const argc = cursor.readU16() orelse return error.InvalidBytecode;
             if (argc != function.arity()) return error.InvalidBytecode;

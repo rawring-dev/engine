@@ -99,6 +99,21 @@ attributes      = { attribute } ;
 attribute       = "@", path,
                   [ "(", [ expression, { ",", expression }, [ "," ] ], ")" ] ;
 
+(* The e7s shading subset (see transpiler/docs/e7s.md) uses this generic
+   attribute production for its extensions.  It adds no new syntax:
+     @binding(binding, set)  resource descriptor binding (Vulkan order)
+     @push_constant          push-constant buffer
+     @uniform                explicit constant-buffer resource
+     @resource               documentation tag (struct or resource)
+     @vertex @fragment       shader entry stage
+     @compute(x, y, z)       compute entry + workgroup size
+     @location(n)            varying location (struct fields)
+     @builtin(name)          system-value semantic (struct fields)
+     @flat                   nointerpolation varying (struct fields)
+     @inline                 force-inline function or impl method
+   Resource declarations are top-level uninitialized declarations
+   (`name: Type`) carrying the binding attributes. *)
+
 visibility      = [ "pub", [ "(", visibility_scope, ")" ] ] ;
 
 visibility_scope = "crate" | "self" | "super" | "in", use_path ;

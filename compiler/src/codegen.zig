@@ -31,6 +31,7 @@ const ast = @import("ast.zig");
 const bytecode = @import("bytecode.zig");
 const semantic = @import("semantic/analyzer.zig");
 const types = @import("semantic/types.zig");
+const intrinsics = @import("intrinsics.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -2462,7 +2463,22 @@ const Builder = struct {
         for (end_jumps.items) |index| try self.patch(index);
     }
 
-    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,
+    /// Compiler-known host intrinsic: lower arguments and emit one
+    /// `runtime_call` to its `e7_*` symbol.  User functions/bindings with the
+    /// same name take precedence.
+    fn lowerIntrinsicCall(self: *Builder, call: ast.Call) Error!bool {
+        if (call.callee.* != .path or call.callee.path.segments.len != 1) return false;
+        const name = call.callee.path.segments[0].name;
+        if (self.local(name) != null or self.name_map.get(name) != null) return false;
+        if (intrinsics.lookup(name) == null) return false;
+        const runtime_function = bytecode.RuntimeFunction.fromSymbol(name) orelse return false;
+        if (call.args.len != runtime_function.arity()) return error.UnsupportedFeature;
+        for (call.args) |arg| try self.lowerExpr(arg);
+        try self.runtimeCall(runtime_function, @intCast(call.args.len));
+        return true;
+    }
+
+    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,
     /// vector, and map values.  Returns false for any other call.
     fn lowerBuiltinMethodCall(self: *Builder, call: ast.Call) Error!bool {
         if (call.callee.* != .field) return false;
@@ -2493,6 +2509,7 @@ const Builder = struct {
 
     fn lowerCall(self: *Builder, call: ast.Call) Error!void {
         if (try self.lowerCommandsMethodCall(call)) return;
+        if (try self.lowerIntrinsicCall(call)) return;
         if (call.callee.* == .field) {
             if (try self.lowerBuiltinMethodCall(call)) return;
         }

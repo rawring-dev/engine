@@ -14,6 +14,7 @@ pub const task = @import("task.zig");
 pub const lease = @import("lease.zig");
 pub const aggregate = @import("aggregate.zig");
 pub const ecs = @import("ecs.zig");
+pub const engine = @import("engine.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -57,6 +58,7 @@ test {
     _ = orc;
     _ = bytecode_ir;
     _ = ecs;
+    _ = engine;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -1059,4 +1061,81 @@ test "JIT executes the ECS resource, row, Commands, and query ABI end-to-end" {
     const query_ptr = ecs.e7_ecs_query_component(query, 0);
     try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(query_ptr));
     try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
+}
+
+test "JIT runs the e7 engine project headless and captures a rendered frame" {
+    engine.reset();
+    defer engine.shutdown();
+    engine.setHeadless(true);
+    engine.setMaxFrames(2);
+    engine.setCaptureEnabled(true);
+
+    const candidates = [_][]const u8{
+        "engine/main.e7",
+        "../engine/main.e7",
+        "../../engine/main.e7",
+    };
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var root_path: []const u8 = "";
+    for (candidates) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
+        @memcpy(path_buffer[0..absolute.len], absolute);
+        root_path = path_buffer[0..absolute.len];
+        std.testing.allocator.free(absolute);
+        break;
+    }
+    if (root_path.len == 0) return error.SkipZigTest;
+
+    var compiled = compiler.pipeline.compileProject(std.testing.allocator, root_path, .{}) catch |err| {
+        std.debug.print("engine project compile failed: {s}\n", .{@errorName(err)});
+        return error.TestUnexpectedResult;
+    };
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("engine project semantic: {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    for (compiled.analysis.resources) |resource| {
+        if (resource.plugin_id != null) continue;
+        try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_resource(resource.id, @intCast(resource.slots)));
+    }
+    for (compiled.analysis.components) |component| {
+        try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_component(component.id, @intCast(component.slots)));
+    }
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "engine-main");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    // Synthetic native input: the compiled Render system calls
+    // e7_engine_camera_update each frame, so the camera must move.
+    const camera_before = engine.cameraForTest();
+    engine.injectKeyForTest(@intFromEnum(engine.Key.forward), true);
+    engine.injectKeyForTest(@intFromEnum(engine.Key.sprint), true);
+    engine.injectMouseDeltaForTest(120, 0);
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    // `main` returns i32 0 on success after DeInit tears down window/scene.
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+    const camera_after = engine.cameraForTest();
+    try std.testing.expect(camera_after.eye[2] < camera_before.eye[2]);
+    try std.testing.expect(camera_after.yaw > camera_before.yaw);
+
+    try std.testing.expect(engine.frames() >= 2);
+    var capture = engine.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 960), capture.width);
+    try std.testing.expectEqual(@as(u32, 540), capture.height);
+    try std.testing.expect(engine.captureIsNonBlack(capture));
+    try std.testing.expect(engine.captureHasContent(capture));
 }

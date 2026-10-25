@@ -4,6 +4,10 @@
 # above that ABI lives here: resources, components, systems, the frame loop,
 # and the GPU wrappers. The engine uses one ECS world; each frame runs the
 # FrameInit, PreUpdate, Update, PostUpdate, and Render trigger phases.
+#
+# Controls: WASD move on the horizontal plane, Q/E down/up, Shift sprint,
+# mouse look; Escape or the window close button exits. `run-engine --frames N`
+# exits deterministically after N frames (headless by default).
 
 # ---------------------------------------------------------------------------
 # Resources: long-lived singletons owned by the world
@@ -33,9 +37,14 @@ Input <- struct
 Time <- struct
     delta: f32
     elapsed: f32
+    # Integer clocks for the millisecond intrinsic ABI (f32 math is TODO).
+    now_ms: i64
+    start_ms: i64
 
 @resource
 Gpu <- struct
+    # Engine window/scene handles (see e7_engine_* intrinsics).
+    scene: u64
     # Native handles returned by the runtime's Vulkan ABI.
     surface: u64
     renderer: u64
@@ -223,18 +232,22 @@ Render <- trigger
 init_window <- sys (
     window: res &mut Window,
     gpu: res &mut Gpu,
+    time: res &mut Time,
 
     # Commands is what lets you insert to tables, etc.
     commands: &mut Commands,
 ):
-    # Runtime ABI: e7_window_create(title_ptr, title_len, w, h, flags, driver)
-    window.handle = 0
+    # Compiler-known engine intrinsics: create a (hidden when --headless)
+    # SDL/Vulkan window and a scene using the runtime's embedded SPIR-V.
     window.width = 960
     window.height = 540
+    window.handle = e7_engine_window_create("engine7", window.width, window.height)
     window.quit_requested = false
 
+    gpu.scene = e7_engine_scene_create(window.handle)
     gpu.width = window.width
     gpu.height = window.height
+    time.start_ms = e7_engine_time_now_ms()
 
     camera_transform := Transform {
         translation: [0.0, 1.5, 6.0],
@@ -274,8 +287,11 @@ init_window <- sys (
 @trigger(FrameInit)
 poll_window <- sys (window: res &mut Window, input: res &mut Input):
     # Pump SDL events through the runtime. Window close sets quit_requested;
-    # the main loop treats that as the frame-exit signal.
-    window.quit_requested = window.quit_requested
+    # the main loop treats that as the frame-exit signal. The frame limiter
+    # (`e7_engine_should_close`) is polled from Render after drawing.
+    window.quit_requested = e7_engine_window_pump(window.handle) != 0
+    input.look_dx = 0.0
+    input.look_dy = 0.0
 
 @trigger(FrameInit)
 gather_input <- sys (window: res &Window, input: res &mut Input):
@@ -323,14 +339,27 @@ reset_input <- sys (input: res &mut Input):
 @trigger(Render)
 render_scene <- sys (
     gpu: res &mut Gpu,
-    camera: &Camera,
-
-    cubes: select &CubeMesh, &Transform from Components
-    lights: select &PointLight from Components
+    window: res &mut Window,
+    time: res &Time,
 ):
-    # Draw the spinning cube and point light. The native renderer owns the
-    # Vulkan swapchain, depth buffer, and graphics pipeline.
-    ret
+    # Apply native keyboard/mouse input to the FPS camera (WASD horizontal,
+    # Q/E vertical, mouse look, Shift sprint) in the runtime helper, then draw
+    # the spinning cube and point light. Query projection iteration (reading
+    # camera components from the table) remains a separate gap.
+    # Units: scene helper delta in ms; cube angle in milli-radians.
+    now := e7_engine_time_now_ms()
+    elapsed_ms := now - time.start_ms
+    e7_engine_camera_update(gpu.scene, 16)
+    e7_engine_scene_draw(gpu.scene, 16, elapsed_ms, 2600, 3000, 2600)
+
+    # Poll the frame limiter only after drawing so the captured/last frame is
+    # the one the user sees. A window close request also exits.
+    window.quit_requested = e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
+
+@trigger(DeInit)
+shutdown <- sys (window: res &mut Window, gpu: res &mut Gpu):
+    e7_engine_scene_destroy(gpu.scene)
+    e7_engine_window_destroy(window.handle)
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -339,7 +368,7 @@ render_scene <- sys (
 main <- async () -> i32:
     commands := await query &mut Commands
 
-    commands.add_plugin(Ui)
+    commands.add_plugin(ui::Ui)
 
     commands.insert_resource(Window {
         handle: 0,
@@ -357,8 +386,9 @@ main <- async () -> i32:
         look_dx: 0.0,
         look_dy: 0.0,
     })
-    commands.insert_resource(Time { delta: 0.0, elapsed: 0.0 })
+    commands.insert_resource(Time { delta: 0.0, elapsed: 0.0, now_ms: 0, start_ms: 0 })
     commands.insert_resource(Gpu {
+        scene: 0,
         surface: 0,
         renderer: 0,
         swapchain_format: 0,

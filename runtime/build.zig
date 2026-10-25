@@ -80,6 +80,42 @@ pub fn build(b: *std.Build) void {
     const run_scene_step = b.step("run-scene", "Build and run the Vulkan scene demo");
     run_scene_step.dependOn(&run_scene.step);
 
+    // `engine-run`: the executable host for the e7 engine project.  It loads
+    // engine/main.e7, JITs it, and awaits its compiled main.  Kept next to the
+    // scene demo because it links the same SDL3 + Vulkan + LLVM stack.
+    const engine_run = b.addExecutable(.{
+        .name = "engine-run",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/engine_run.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    engine_run.root_module.addImport("compiler", compiler);
+    engine_run.root_module.addImport("shader_assets", shader_assets);
+    engine_run.root_module.addIncludePath(b.path("vendor"));
+    // The runtime's `Symbol` manifests live in intrinsics.zig, so the host
+    // transitively references every FFI backend the runtime supports.
+    engine_run.root_module.linkSystemLibrary("LLVM-23", .{});
+    engine_run.root_module.linkSystemLibrary("SDL3", .{});
+    engine_run.root_module.linkSystemLibrary("vulkan", .{});
+    engine_run.root_module.linkSystemLibrary("lapack", .{});
+    engine_run.root_module.linkSystemLibrary("blas", .{});
+    engine_run.root_module.linkSystemLibrary("curl", .{});
+    engine_run.root_module.linkSystemLibrary("ssl", .{});
+    engine_run.root_module.linkSystemLibrary("crypto", .{});
+    engine_run.root_module.linkSystemLibrary("ngtcp2", .{});
+    engine_run.root_module.linkSystemLibrary("ngtcp2_crypto_ossl", .{});
+    engine_run.root_module.linkSystemLibrary("datachannel", .{});
+    b.installArtifact(engine_run);
+
+    const run_engine = b.addRunArtifact(engine_run);
+    if (b.args) |args| run_engine.addArgs(args);
+    run_engine.has_side_effects = true;
+    const run_engine_step = b.step("run-engine", "Build and run the e7 engine project");
+    run_engine_step.dependOn(&run_engine.step);
+
     const test_step = b.step("test", "Run runtime tests");
     const tests = b.addTest(.{ .root_module = runtime });
     // A plain Run inherits stdio and prints the full per-test transcript.  The
