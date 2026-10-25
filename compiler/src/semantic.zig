@@ -1233,3 +1233,154 @@ test "reports reads of uninitialized declarations" {
         \\    x
     , "uninitialized");
 }
+
+test "accepts the engine UI trait dependency and sys parameter sample" {
+    try expectClean(
+        \\UINode <- struct
+        \\    pos: [f32; 2],
+        \\    scale: [f32; 2],
+        \\    enabled: bool,
+        \\    element: ?*UIElement,
+        \\    children: [UINode]
+        \\
+        \\UIElement <- trait
+        \\UIRenderable <- trait : UIElement
+        \\    render <- async (&self, &mut Gpu) -> !nil
+        \\
+        \\UIInteractable <- trait : UIElement
+        \\    interact <- (&mut self, &Input) -> !nil
+        \\
+        \\Gpu <- struct
+        \\    id: i32
+        \\Input <- struct
+        \\    id: i32
+        \\Components <- struct
+        \\    id: i32
+        \\
+        \\@trigger(PreUpdate)
+        \\ui_interact <- sys (
+        \\    ui_root: res &mut UINode,
+        \\    interactable_entities: select &mut UIInteractable from Components,
+        \\):
+        \\    ret
+    );
+}
+
+test "validates trait method and supertrait declarations" {
+    // Unknown types in required signatures are diagnosed.
+    try expectDiagnostic(
+        \\UIElement <- trait
+        \\    render <- async (&self, &mut Gpu) -> !nil
+    , "unknown type");
+
+    // Name-first supertrait references must resolve.
+    try expectDiagnostic(
+        \\UIRenderable <- trait : Missing
+        \\    render <- (&self) -> !nil
+    , "unknown supertrait");
+
+    // Required method names must be unique within a trait.
+    try expectDiagnostic(
+        \\trait Poke
+        \\    poke <- (&self) -> nil
+        \\    poke <- (&mut self) -> nil
+    , "duplicate required method");
+
+    // Receiver-only and named requirements are accepted without bodies.
+    try expectClean(
+        \\trait Poke
+        \\    poke <- (&self, strength: i32) -> nil
+        \\    reset <- (&mut self) -> !nil
+        \\Box<T> <- trait
+        \\    get <- (&self) -> T
+        \\    map<U> <- (&self, value: U) -> U
+    );
+}
+
+test "trait dependencies affect impl satisfaction" {
+    try expectClean(
+        \\UIElement <- trait
+        \\UIRenderable <- trait : UIElement
+        \\UINode <- struct
+        \\    id: i32
+        \\impl UIRenderable for UINode:
+        \\    render <- (n: UINode) -> !nil: ret
+        \\accepts<T: UIElement> <- (x: T) -> T = x
+        \\f <- () -> UINode = accepts<UINode>(UINode { id: 1 })
+    );
+    try expectDiagnostic(
+        \\UIElement <- trait
+        \\UIRenderable <- trait : UIElement
+        \\UINode <- struct
+        \\    id: i32
+        \\accepts<T: UIRenderable> <- (x: T) -> T = x
+        \\f <- () -> UINode = accepts(UINode { id: 1 })
+    , "trait bound not satisfied");
+}
+
+test "trait impls must provide required methods" {
+    try expectClean(
+        \\UIElement <- trait
+        \\    render <- (&self) -> !nil
+        \\UINode <- struct
+        \\    id: i32
+        \\impl UIElement for UINode:
+        \\    render <- (n: UINode) -> !nil: ret
+    );
+    try expectDiagnostic(
+        \\UIElement <- trait
+        \\    render <- (&self) -> !nil
+        \\UINode <- struct
+        \\    id: i32
+        \\impl UIElement for UINode:
+        \\    other <- (n: UINode) -> i32 = n.id
+    , "missing required method");
+    // Requirements from supertraits apply to the implementing type as well.
+    try expectDiagnostic(
+        \\UIElement <- trait
+        \\    base <- (&self) -> nil
+        \\UIRenderable <- trait : UIElement
+        \\    render <- (&self) -> !nil
+        \\UINode <- struct
+        \\    id: i32
+        \\impl UIRenderable for UINode:
+        \\    render <- (n: UINode) -> !nil: ret
+    , "missing required method");
+}
+
+test "accepts nil result types and bare ret" {
+    try expectClean(
+        \\f <- () -> !nil:
+        \\    ret
+        \\g <- () -> nil:
+        \\    ret
+        \\h <- () -> !nil:
+        \\    if true:
+        \\        ret
+        \\    ret
+        \\af <- async () -> !nil:
+        \\    ret
+    );
+    // `!T` still requires a value or an error.
+    try expectDiagnostic(
+        \\f <- () -> !i32:
+        \\    ret
+    , "type mismatch");
+}
+
+test "checks sys reference parameter modifiers" {
+    try expectClean(
+        \\Comp <- struct
+        \\    a: i32
+        \\T <- trait
+        \\N <- struct
+        \\    a: i32
+        \\s <- sys (
+        \\    n_mut: res &mut N,
+        \\    n_shared: res &N,
+        \\    t_mut: select &mut T from Comp,
+        \\    t_shared: select &T from Comp,
+        \\):
+        \\    ret
+    );
+}

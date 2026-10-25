@@ -168,6 +168,8 @@ const TraitDef = struct {
     module_path: []const u8 = "",
     generics: []ast.GenericParam = &.{},
     bounds: []*ast.Type = &.{},
+    /// Required method signatures; `impl Trait for Type` supplies the bodies.
+    methods: []ast.TraitMethod = &.{},
 };
 
 const ImplEntry = struct {
@@ -443,6 +445,7 @@ const Checker = struct {
             .module_path = prefix,
             .generics = decl.generics,
             .bounds = decl.bounds,
+            .methods = decl.methods,
         };
         try self.qualified_traits.put(self.allocator, qualified, def);
         if (self.traits.get(decl.name) == null) try self.traits.put(self.allocator, decl.name, def);
@@ -464,21 +467,46 @@ const Checker = struct {
     fn checkTraitDef(self: *Checker, def: *TraitDef) Error!void {
         const old_module = self.current_module;
         const old_env = self.generics;
-        var env = try self.rigidEnv(def.generics);
         self.current_module = def.module_path;
-        self.generics = &env;
         defer {
             self.current_module = old_module;
             self.generics = old_env;
         }
-        for (def.generics) |generic| {
-            const generic_ty = env.get(generic.name) orelse continue;
-            try self.checkBounds(generic_ty, generic.bounds, def.qualified_name);
-        }
-        for (def.bounds) |bound| {
-            if (try self.resolveTraitPath(bound)) |_| {} else {
-                try self.report("unknown supertrait `{s}`", .{bound.path.segments[bound.path.segments.len - 1].name});
+
+        {
+            var env = try self.rigidEnv(def.generics);
+            self.generics = &env;
+            for (def.generics) |generic| {
+                const generic_ty = env.get(generic.name) orelse continue;
+                try self.checkBounds(generic_ty, generic.bounds, def.qualified_name);
             }
+            for (def.bounds) |bound| {
+                if (try self.resolveTraitPath(bound)) |_| {} else {
+                    try self.report("unknown supertrait `{s}`", .{bound.path.segments[bound.path.segments.len - 1].name});
+                }
+            }
+        }
+
+        // Required method signatures are declarations: resolve parameter and
+        // result types so unknown types are diagnosed, and reject duplicate
+        // requirements.  Receivers (`self`, `&self`, `&mut self`) are accepted
+        // only in first position, which the parser enforces.
+        for (def.methods, 0..) |method, index| {
+            for (def.methods[0..index]) |previous| {
+                if (std.mem.eql(u8, previous.name, method.name)) {
+                    try self.report("duplicate required method `{s}::{s}`", .{ def.qualified_name, method.name });
+                    break;
+                }
+            }
+            var method_env = try self.rigidEnv(try self.concatGenerics(def.generics, method.generics));
+            self.generics = &method_env;
+            for (method.generics) |generic| {
+                const generic_ty = method_env.get(generic.name) orelse continue;
+                try self.checkBounds(generic_ty, generic.bounds, def.qualified_name);
+            }
+            try self.checkWhereClause(method.where_clause, &method_env, def.qualified_name);
+            for (method.params) |param| _ = try self.resolveType(param.ty);
+            _ = try self.resolveType(method.result);
         }
     }
 
@@ -487,6 +515,56 @@ const Checker = struct {
         const full = self.normalizePath(try self.joinPath("", ty.path));
         if (self.lookupTrait(self.current_module, full)) |def| return def;
         return self.lookupTrait(self.current_module, ty.path.segments[ty.path.segments.len - 1].name);
+    }
+
+    /// A trait's supertrait, resolved relative to the module that declares the
+    /// trait (the same rule `traitSatisfies` uses).
+    fn supertraitOf(self: *Checker, trait_def: *TraitDef, bound: *ast.Type) ?*TraitDef {
+        if (bound.* != .path or bound.path.segments.len == 0) return null;
+        const last = bound.path.segments[bound.path.segments.len - 1].name;
+        return self.lookupTrait(trait_def.module_path, lastPathSegment(last));
+    }
+
+    /// Every `impl Trait for Type` must provide the methods required by the
+    /// trait and by its transitive supertraits.  Signature conformance of the
+    /// implemented bodies is checked when method-call syntax lands; for now
+    /// the requirement surface is name-based.
+    fn checkImplRequirements(self: *Checker, decl: ast.ImplDecl) Error!void {
+        const trait_ty = decl.trait_ty orelse return;
+        const trait_def = (try self.resolveTraitPath(trait_ty)) orelse return;
+        const target_name = (try self.typePathName(decl.target)) orelse return;
+        const def = self.lookupTypeDef(target_name) orelse return;
+        try self.checkRequiredMethods(def, &decl, trait_def, 0);
+    }
+
+    fn checkRequiredMethods(
+        self: *Checker,
+        def: *TypeDef,
+        decl: *const ast.ImplDecl,
+        trait_def: *TraitDef,
+        depth: usize,
+    ) Error!void {
+        if (depth > 32) return;
+        for (trait_def.bounds) |bound| {
+            const parent = self.supertraitOf(trait_def, bound) orelse continue;
+            try self.checkRequiredMethods(def, decl, parent, depth + 1);
+        }
+        for (trait_def.methods) |method| {
+            if (def.methods.get(method.name) != null) continue;
+            // `impl` blocks nested in function bodies are not collected into
+            // `def.methods`; their own method list still satisfies the trait.
+            var provided = false;
+            for (decl.methods) |candidate| {
+                if (std.mem.eql(u8, candidate.function.name, method.name)) {
+                    provided = true;
+                    break;
+                }
+            }
+            if (provided) continue;
+            try self.report("missing required method `{s}::{s}` for type `{s}`", .{
+                trait_def.qualified_name, method.name, def.qualified_name,
+            });
+        }
     }
 
     fn collectImpls(self: *Checker) !void {
@@ -835,10 +913,13 @@ const Checker = struct {
             .trait_decl => {
                 if (self.lookupTrait(prefix, item.kind.trait_decl.name)) |def| try self.checkTraitDef(def);
             },
-            .impl => |decl| for (decl.methods) |method| {
-                const target_name = (try self.typePathName(decl.target)) orelse continue;
-                const def = self.lookupTypeDef(target_name) orelse continue;
-                if (def.methods.get(method.function.name)) |callable| try self.checkCallable(callable);
+            .impl => |decl| {
+                for (decl.methods) |method| {
+                    const target_name = (try self.typePathName(decl.target)) orelse continue;
+                    const def = self.lookupTypeDef(target_name) orelse continue;
+                    if (def.methods.get(method.function.name)) |callable| try self.checkCallable(callable);
+                }
+                try self.checkImplRequirements(decl);
             },
             .binding => |binding| try self.checkBinding(binding),
             .uninitialized => |decl| try self.checkUninitialized(decl),
@@ -1497,6 +1578,7 @@ const Checker = struct {
                 .key = try self.resolveTypeIn(m.key, env),
                 .value = try self.resolveTypeIn(m.value, env),
             } }),
+            .nil_type => self.store.make(.unit),
             .path => |path| self.resolveTypePath(path, env),
         };
     }
@@ -1530,10 +1612,21 @@ const Checker = struct {
             return self.cancelledType();
         }
         const full = self.normalizePath(try self.joinPath("", path));
-        const def = self.lookupQualifiedType(full) orelse self.lookupTypeDef(name) orelse {
+        const maybe_def = self.lookupQualifiedType(full) orelse self.lookupTypeDef(name);
+        if (maybe_def == null) {
+            // Trait names are also accepted where a type is expected.  The
+            // engine samples use this for opaque component handles such as
+            // `element: ?*UIElement`; the value is only ever accessed through
+            // queries for now, so it stays an unknown placeholder type.
+            if (self.lookupTrait(self.current_module, full) != null or
+                self.lookupTrait(self.current_module, name) != null)
+            {
+                return self.store.make(.unknown);
+            }
             try self.report("unknown type `{s}`", .{full});
             return self.store.make(.unknown);
-        };
+        }
+        const def = maybe_def.?;
         const args = try self.allocator.alloc(*types.Type, segment.args.len);
         for (segment.args, 0..) |arg, i| args[i] = try self.resolveTypeIn(arg, env);
         if (args.len != def.generics.len) {
@@ -2007,9 +2100,24 @@ const Checker = struct {
             const actual = try self.checkMoveExpr(expr, null);
             try self.expectReturn(expected, actual, "return");
             try self.checkBorrowEscape(expr, expected);
-        } else {
+        } else if (!self.allowsBareReturn(expected)) {
             try self.expectAssignable(expected, try self.store.make(.unit), "return");
         }
+    }
+
+    /// A bare `ret` is valid for unit results and for `!nil`-style error
+    /// unions whose success type is unit (`!T` with a concrete `T` still
+    /// requires a value or error).
+    fn allowsBareReturn(self: *Checker, expected: *types.Type) bool {
+        const resolved = self.store.resolve(expected);
+        return switch (resolved.*) {
+            .unit, .never, .unknown => true,
+            .error_union => |e| switch (self.store.resolve(e.value_type).*) {
+                .unit, .never, .unknown => true,
+                else => false,
+            },
+            else => false,
+        };
     }
 
     fn iterableElement(self: *Checker, ty: *types.Type) !*types.Type {

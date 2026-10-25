@@ -274,6 +274,7 @@ const Parser = struct {
                 .kw_table => return .{ .table_decl = try self.parseTableAfterName(name, generics) },
                 .kw_trigger => return .{ .trigger_decl = try self.parseTriggerAfterName(name, generics) },
                 .kw_sys => return .{ .sys = try self.parseSysAfterName(name, generics) },
+                .kw_trait => return .{ .trait_decl = try self.parseTraitAfterName(name, generics) },
                 else => {},
             }
             if (self.looksLikeFunctionSignatureAt(self.index)) {
@@ -639,17 +640,147 @@ const Parser = struct {
     }
 
     // ------------------------------------------------------------------
-    // impl
+    // Traits
     // ------------------------------------------------------------------
 
+    /// Keyword-first form: `trait Name : Parent`.
     fn parseTraitDecl(self: *Parser) ParserError!ast.TraitDecl {
         _ = try self.expect(.kw_trait, "expected `trait`");
         const name = (try self.expect(.identifier, "expected trait name")).lexeme;
         const generics = try self.parseOptionalGenericParams();
+        return self.parseTraitAfterHeader(name, generics);
+    }
+
+    /// Name-first form used by the engine samples: `Name <- trait : Parent`.
+    fn parseTraitAfterName(
+        self: *Parser,
+        name: []const u8,
+        generics: []ast.GenericParam,
+    ) ParserError!ast.TraitDecl {
+        _ = try self.expect(.kw_trait, "expected `trait`");
+        return self.parseTraitAfterHeader(name, generics);
+    }
+
+    fn parseTraitAfterHeader(
+        self: *Parser,
+        name: []const u8,
+        generics: []ast.GenericParam,
+    ) ParserError!ast.TraitDecl {
         var bounds: []*ast.Type = &.{};
         if (self.match(.colon) != null) bounds = try self.parseBounds();
+        const methods = try self.parseTraitBody();
+        return .{
+            .name = name,
+            .generics = generics,
+            .bounds = bounds,
+            .methods = methods,
+        };
+    }
+
+    /// Trait bodies are optional and hold signature-only method requirements.
+    /// They accept the same two body forms as other declarations: a braced
+    /// body or a newline followed by an indented body.
+    fn parseTraitBody(self: *Parser) ParserError![]ast.TraitMethod {
+        if (self.match(.lbrace) != null) {
+            var methods = std.ArrayList(ast.TraitMethod).empty;
+            while (true) {
+                self.skipBraceNoise();
+                if (self.at(.rbrace) or self.at(.eof)) break;
+                try methods.append(self.allocator, try self.parseTraitMethod());
+            }
+            _ = try self.expect(.rbrace, "expected `}` after trait body");
+            return methods.toOwnedSlice(self.allocator);
+        }
+        if (self.match(.newline) != null) {
+            if (!self.at(.indent)) return &.{};
+            _ = self.advance();
+            var methods = std.ArrayList(ast.TraitMethod).empty;
+            while (true) {
+                self.skipSeparators();
+                if (self.at(.dedent) or self.at(.eof)) break;
+                if (self.at(.indent)) return self.fail("unexpected indentation in trait body");
+                try methods.append(self.allocator, try self.parseTraitMethod());
+            }
+            _ = try self.expect(.dedent, "expected dedent after trait body");
+            return methods.toOwnedSlice(self.allocator);
+        }
         _ = self.match(.semicolon);
-        return .{ .name = name, .generics = generics, .bounds = bounds };
+        return &.{};
+    }
+
+    /// `render <- async (&self, &mut Gpu) -> !nil` — a requirement without a
+    /// body.  Terminated by a separator, `}`, or the enclosing dedent.
+    fn parseTraitMethod(self: *Parser) ParserError!ast.TraitMethod {
+        const attrs = try self.parseAttributes();
+        const visibility = try self.parseVisibility();
+        const name = (try self.expect(.identifier, "expected trait method name")).lexeme;
+        const generics = try self.parseOptionalGenericParams();
+        _ = try self.expect(.bind_immutable, "expected `<-` in trait method signature");
+        const is_async = self.match(.kw_async) != null;
+
+        var receiver: ?ast.Receiver = null;
+        var params = std.ArrayList(ast.TraitParam).empty;
+        _ = try self.expect(.lparen, "expected `(` in trait method signature");
+        if (!self.at(.rparen)) {
+            receiver = try self.tryParseReceiver();
+            if (receiver != null) _ = self.match(.comma);
+            if (!self.at(.rparen)) {
+                while (true) {
+                    try params.append(self.allocator, try self.parseTraitParam());
+                    if (self.match(.comma) == null) break;
+                    if (self.at(.rparen)) break;
+                }
+            }
+        }
+        _ = try self.expect(.rparen, "expected `)` after trait method parameters");
+
+        _ = try self.expect(.arrow, "expected `->` after trait method parameters");
+        const result = try self.parseType();
+        const where_clause = try self.parseOptionalWhereClause();
+        _ = self.match(.semicolon);
+        return .{
+            .attributes = attrs,
+            .visibility = visibility,
+            .name = name,
+            .is_async = is_async,
+            .generics = generics,
+            .receiver = receiver,
+            .params = try params.toOwnedSlice(self.allocator),
+            .result = result,
+            .where_clause = where_clause,
+        };
+    }
+
+    /// Trait parameters are either `name: Type` or a bare type (`&mut Gpu`).
+    fn parseTraitParam(self: *Parser) ParserError!ast.TraitParam {
+        var name: ?[]const u8 = null;
+        if (self.at(.identifier) and self.peekAt(1).kind == .colon) {
+            name = self.advance().lexeme;
+            _ = self.advance();
+        }
+        return .{ .name = name, .ty = try self.parseType() };
+    }
+
+    /// Recognize `self`, `&self`, and `&mut self` as a receiver when it is a
+    /// complete parameter.  Returns null for ordinary reference parameters.
+    fn tryParseReceiver(self: *Parser) ParserError!?ast.Receiver {
+        if (self.at(.kw_self)) {
+            const next = self.peekAt(1).kind;
+            if (next == .comma or next == .rparen) {
+                _ = self.advance();
+                return .{ .by_ref = false, .mutable = false };
+            }
+            return null;
+        }
+        if (!self.at(.amp)) return null;
+        var offset: usize = 1;
+        const mutable = self.peekAt(offset).kind == .kw_mut;
+        if (mutable) offset += 1;
+        if (self.peekAt(offset).kind != .kw_self) return null;
+        const after = self.peekAt(offset + 1).kind;
+        if (after != .comma and after != .rparen) return null;
+        self.index += offset + 1;
+        return .{ .by_ref = true, .mutable = mutable };
     }
 
     fn parseImplDecl(self: *Parser) ParserError!ast.ImplDecl {
@@ -966,6 +1097,12 @@ const Parser = struct {
             .kw_crate, .kw_self, .kw_super => self.createType(.{
                 .path = try self.parsePath(true),
             }),
+            // `nil` is the unit/empty result type; `!nil` is the common
+            // "errors or nothing" result shape.
+            .kw_nil => blk: {
+                _ = self.advance();
+                break :blk self.createType(.nil_type);
+            },
             else => self.fail("expected a type"),
         };
     }
@@ -1163,7 +1300,7 @@ const Parser = struct {
                     const next = i + 1;
                     if (next >= self.tokens.len) return false;
                     return switch (self.tokens[next].kind) {
-                        .kw_struct, .kw_enum, .kw_table, .kw_trigger, .kw_sys => true,
+                        .kw_struct, .kw_enum, .kw_table, .kw_trigger, .kw_sys, .kw_trait => true,
                         .lparen => self.looksLikeFunctionSignatureAt(next),
                         else => false,
                     };
@@ -2541,4 +2678,145 @@ test "parses map literals" {
     defer tree.deinit();
     try std.testing.expect(tree.module.items[0].kind.binding.value.* == .map_literal);
     try std.testing.expectEqual(@as(usize, 2), tree.module.items[0].kind.binding.value.map_literal.entries.len);
+}
+
+test "parses name-first traits with supertraits and required methods" {
+    var tree = try expectAst(
+        \\UIElement <- trait
+        \\UIRenderable <- trait : UIElement
+        \\    render <- async (&self, &mut Gpu) -> !nil
+        \\UIInteractable <- trait : UIElement
+        \\    interact <- (&mut self, &Input) -> !nil
+    );
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), tree.module.items.len);
+    const base = tree.module.items[0].kind.trait_decl;
+    try std.testing.expectEqualStrings("UIElement", base.name);
+    try std.testing.expectEqual(@as(usize, 0), base.bounds.len);
+    try std.testing.expectEqual(@as(usize, 0), base.methods.len);
+
+    const renderable = tree.module.items[1].kind.trait_decl;
+    try std.testing.expectEqualStrings("UIRenderable", renderable.name);
+    try std.testing.expectEqual(@as(usize, 1), renderable.bounds.len);
+    try std.testing.expectEqualStrings("UIElement", renderable.bounds[0].path.segments[0].name);
+    try std.testing.expectEqual(@as(usize, 1), renderable.methods.len);
+
+    const render = renderable.methods[0];
+    try std.testing.expectEqualStrings("render", render.name);
+    try std.testing.expect(render.is_async);
+    try std.testing.expect(render.receiver != null);
+    try std.testing.expect(render.receiver.?.by_ref);
+    try std.testing.expect(!render.receiver.?.mutable);
+    try std.testing.expectEqual(@as(usize, 1), render.params.len);
+    try std.testing.expect(render.params[0].name == null);
+    try std.testing.expect(render.params[0].ty.* == .reference);
+    try std.testing.expect(render.params[0].ty.reference.mutable);
+    try std.testing.expectEqualStrings("Gpu", render.params[0].ty.reference.child.path.segments[0].name);
+    try std.testing.expect(render.result.* == .inferred_error);
+    try std.testing.expect(render.result.inferred_error.* == .nil_type);
+
+    const interact = tree.module.items[2].kind.trait_decl.methods[0];
+    try std.testing.expectEqualStrings("interact", interact.name);
+    try std.testing.expect(!interact.is_async);
+    try std.testing.expect(interact.receiver.?.mutable);
+    try std.testing.expectEqual(@as(usize, 1), interact.params.len);
+    try std.testing.expect(interact.params[0].ty.reference.mutable == false);
+    try std.testing.expect(interact.result.inferred_error.* == .nil_type);
+}
+
+test "parses keyword-first traits with braced and named method requirements" {
+    var tree = try expectAst(
+        \\trait Foo: Bar {
+        \\    poke <- (&self, x: i32) -> !nil;
+        \\    reset <- (&mut self) -> nil
+        \\}
+        \\trait Empty
+    );
+    defer tree.deinit();
+
+    const foo = tree.module.items[0].kind.trait_decl;
+    try std.testing.expectEqual(@as(usize, 1), foo.bounds.len);
+    try std.testing.expectEqualStrings("Bar", foo.bounds[0].path.segments[0].name);
+    try std.testing.expectEqual(@as(usize, 2), foo.methods.len);
+
+    const poke = foo.methods[0];
+    try std.testing.expectEqualStrings("poke", poke.name);
+    try std.testing.expect(poke.receiver.?.by_ref);
+    try std.testing.expectEqual(@as(usize, 1), poke.params.len);
+    try std.testing.expectEqualStrings("x", poke.params[0].name.?);
+    try std.testing.expect(poke.params[0].ty.* == .path);
+    try std.testing.expect(poke.result.* == .inferred_error);
+
+    const reset = foo.methods[1];
+    try std.testing.expect(reset.receiver.?.mutable);
+    try std.testing.expectEqual(@as(usize, 0), reset.params.len);
+    try std.testing.expect(reset.result.* == .nil_type);
+
+    const empty = tree.module.items[1].kind.trait_decl;
+    try std.testing.expectEqual(@as(usize, 0), empty.methods.len);
+}
+
+test "parses nil result types without changing error unions" {
+    var tree = try expectAst(
+        \\f <- () -> !nil:
+        \\    ret
+        \\g <- () -> nil:
+        \\    ret
+        \\h <- () -> !i32 = 1
+    );
+    defer tree.deinit();
+
+    try std.testing.expect(tree.module.items[0].kind.function.result.* == .inferred_error);
+    try std.testing.expect(tree.module.items[0].kind.function.result.inferred_error.* == .nil_type);
+    try std.testing.expect(tree.module.items[1].kind.function.result.* == .nil_type);
+    try std.testing.expect(tree.module.items[2].kind.function.result.* == .inferred_error);
+    try std.testing.expect(tree.module.items[2].kind.function.result.inferred_error.* == .path);
+}
+
+test "parses sys reference parameter modifiers" {
+    var tree = try expectAst(
+        \\Comp <- struct
+        \\    a: i32
+        \\T <- trait
+        \\N <- struct
+        \\    a: i32
+        \\s <- sys (
+        \\    n_mut: res &mut N,
+        \\    n_shared: res &N,
+        \\    t_mut: select &mut T from Comp,
+        \\    t_shared: select &T from Comp,
+        \\    n_plain: res N,
+        \\    q_plain: select &a from Comp,
+        \\):
+        \\    ret
+    );
+    defer tree.deinit();
+
+    const sys = tree.module.items[3].kind.sys;
+    try std.testing.expectEqual(@as(usize, 6), sys.params.len);
+
+    const n_mut = sys.params[0].resource.ty;
+    try std.testing.expect(n_mut.* == .reference and n_mut.reference.mutable);
+    try std.testing.expectEqualStrings("N", n_mut.reference.child.path.segments[0].name);
+
+    const n_shared = sys.params[1].resource.ty;
+    try std.testing.expect(n_shared.* == .reference and !n_shared.reference.mutable);
+
+    const t_mut = sys.params[2].query;
+    try std.testing.expect(t_mut.projections[0].mutable);
+    try std.testing.expectEqualStrings("T", t_mut.projections[0].path.segments[0].name);
+    try std.testing.expectEqualStrings("Comp", t_mut.from.path.segments[0].name);
+
+    const t_shared = sys.params[3].query;
+    try std.testing.expect(!t_shared.projections[0].mutable);
+    try std.testing.expectEqualStrings("T", t_shared.projections[0].path.segments[0].name);
+
+    const n_plain = sys.params[4].resource.ty;
+    try std.testing.expect(n_plain.* == .path);
+    try std.testing.expectEqualStrings("N", n_plain.path.segments[0].name);
+
+    const q_plain = sys.params[5].query;
+    try std.testing.expect(!q_plain.projections[0].mutable);
+    try std.testing.expectEqualStrings("a", q_plain.projections[0].path.segments[0].name);
 }

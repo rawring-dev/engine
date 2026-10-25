@@ -118,11 +118,17 @@ mod_decl        = "mod", IDENT,
    Generic parameters are written on the declared name:
        Foo<T> <- struct ...
        foo<T> <- (x: T) -> T: ...
-       impl<T: Bound> Foo<T> where T: Other: ...
-   Marker traits and `impl Trait for Type` are supported.  Trait method
-   signatures/bodies are future work.  `where` follows the signature for
-   functions/sys, follows the type for impls, and follows the aggregate
-   keyword for type declarations: `Foo<T> <- struct where T: Bound`. *)
+
+   Traits declare required method signatures and optional supertraits; an
+   `impl Trait for Type` block supplies the method bodies.  Both declaration
+   spellings are accepted:
+       trait Name : Parent
+       Name <- trait : Parent
+   A trait body is optional and holds signature-only requirements, either as a
+   newline + indented block (the engine sample form) or a braced block.  `where`
+   follows the signature for functions/sys, follows the type for impls, and
+   follows the aggregate keyword for type declarations:
+   `Foo<T> <- struct where T: Bound`. *)
 
 generic_params  = "<", generic_param, { ",", generic_param }, [ "," ], ">" ;
 
@@ -156,9 +162,29 @@ sys_decl        = IDENT, [ generic_params ], "<-", "sys",
                   "(", [ sys_param_list ], ")",
                   [ where_clause ], block ;
 
-(* Marker/generic traits.  Trait bodies and method signatures are future
-   work; `impl Trait for Type` supplies the satisfaction relation. *)
-trait_decl      = "trait", IDENT, [ generic_params ], [ ":", bounds ], [ ";" ] ;
+(* Trait declarations: keyword-first (`trait Foo : Bar`) or name-first
+   (`Foo <- trait : Bar`).  `:` introduces supertrait bounds. *)
+trait_decl      = ( "trait", IDENT, [ generic_params ]
+                  | IDENT, [ generic_params ], "<-", "trait" )
+                  [ ":", bounds ], [ trait_body ] ;
+
+trait_body      = ";"
+                | NEWLINE, INDENT, { trait_method, separator }, DEDENT
+                | "{", { trait_method, [ separator ] }, "}" ;
+
+(* Required method signature: no `=`/block body.  Normal parameters may omit
+   their name (`&mut Gpu`), since a requirement only constrains the type. *)
+trait_method    = attributes, visibility, IDENT, [ generic_params ], "<-",
+                  [ "async" ], "(", [ trait_param_list ], ")", "->", type,
+                  [ where_clause ], [ ";" ] ;
+
+trait_param_list = receiver,
+                   [ ",", [ trait_param, { ",", trait_param }, [ "," ] ] ]
+                 | trait_param, { ",", trait_param }, [ "," ] ;
+
+trait_param     = IDENT, ":", type | type ;
+
+receiver        = "self" | "&", [ "mut" ], "self" ;
 
 impl_decl       = "impl", [ generic_params ], type, [ "for", type ],
                   [ where_clause ], impl_body ;
@@ -340,6 +366,8 @@ literal_pattern = [ "-" ], ( INT | FLOAT )
    ----------------
      !T          inferred error type (arbitrary error sum)
      E!T         explicit error type
+     nil         unit/empty result type (declared value is `nil`)
+     !nil        errors-or-nothing result (`ret` without a value)
      ?T          optional
      &T          reference
      &mut T      mutable reference
@@ -347,9 +375,10 @@ literal_pattern = [ "-" ], ( INT | FLOAT )
      *raw T      raw pointer
      (A, B) -> T function type (also `(A) -> T` and `() -> T`)
 
-   Prefix constructors consume a full type: `&E!T` is `&(E!T)` and `!T!U`
-   is `!(T!U)`.  Parenthesize the left operand for the other grouping, e.g.
-   `(&E)!T` or `(!T)!U`. *)
+   `nil` is accepted only in type position here; `!T` is unchanged for every
+   other `T`.  Prefix constructors consume a full type: `&E!T` is `&(E!T)` and
+   `!T!U` is `!(T!U)`.  Parenthesize the left operand for the other grouping,
+   e.g. `(&E)!T` or `(!T)!U`. *)
 
 type            = error_type | prefix_type ;
 
@@ -360,6 +389,7 @@ prefix_type     = "!", type
                 | "&", [ "mut" ], type
                 | "*", "raw", type
                 | "*", type
+                | "nil"
                 | function_type
                 | tuple_type
                 | array_type
@@ -396,18 +426,29 @@ sys_param_list  = sys_param, { ",", sys_param }, [ "," ] ;
 
 sys_param       = normal_param | query_param | resource_param ;
 
+(* Normal parameters keep an explicit type, so a plain reference parameter is
+   written `input: &Input`. *)
 normal_param    = IDENT, ":", type ;
 
+(* `select` projections accept shared and mutable references; the source
+   aggregate is a type (`Components` in the engine sample). *)
 query_param     = IDENT, ":", "select",
                   query_projection, { ",", query_projection },
                   "from", type,
                   [ "where", expression ] ;
 
 (* Projection functions, aggregates, and computed projections are a planned
-   extension; the first grammar accepts reference projections only. *)
+   extension; the first grammar accepts reference projections only.  A
+   projection path may name a trait for trait-projected queries. *)
 query_projection = "&", [ "mut" ], path ;
 
-resource_param  = IDENT, ":", "res", type ;
+(* Resources bind long-lived world state.  The reference modifier is explicit:
+       name: res T
+       name: res &T
+       name: res &mut T
+   A mutable reference resource is the common form. *)
+resource_param  = IDENT, ":", "res",
+                  ( "&", [ "mut" ], type | type ) ;
 
 
 (* --------------------------------------------------------------------------

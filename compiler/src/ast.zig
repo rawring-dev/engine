@@ -105,6 +105,8 @@ pub const Type = union(enum) {
     array: ArrayType,
     /// `map[K, V]`
     map: MapType,
+    /// `nil` in type position: the unit/empty result type.
+    nil_type,
     /// `Foo<T>::Bar`
     path: Path,
 };
@@ -275,6 +277,35 @@ pub const TraitDecl = struct {
     name: []const u8,
     generics: []GenericParam,
     bounds: []*Type,
+    /// Required method signatures.  Trait methods are declarations only: an
+    /// `impl Trait for Type` block supplies the bodies.
+    methods: []TraitMethod = &.{},
+};
+
+/// Method receiver in a trait requirement: `self`, `&self`, or `&mut self`.
+pub const Receiver = struct {
+    /// `false` for a by-value `self` receiver.
+    by_ref: bool = true,
+    mutable: bool = false,
+};
+
+pub const TraitParam = struct {
+    /// `null` for signature-only parameters such as `&mut Gpu`; names are
+    /// purely documentation in a trait requirement.
+    name: ?[]const u8 = null,
+    ty: *Type,
+};
+
+pub const TraitMethod = struct {
+    attributes: []Attribute = &.{},
+    visibility: ?Visibility = null,
+    name: []const u8,
+    is_async: bool = false,
+    generics: []GenericParam = &.{},
+    receiver: ?Receiver = null,
+    params: []TraitParam = &.{},
+    result: *Type,
+    where_clause: ?WhereClause = null,
 };
 
 pub const ImplDecl = struct {
