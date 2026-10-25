@@ -1,0 +1,17 @@
+.{
+    .name = .compiler,
+    .version = "0.1.0",
+    .fingerprint = 0xaa62bd498aabf71b,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zpars = .{
+            .url = "git+https://codeberg.org/quint/zpars.git#6bf29dda268c4907b392fa71b4f056af24f9a6ad",
+            .hash = "zpars-0.0.0-UWNB40v6EQA3WWsUqVZfTWrLD1RUJFjdJ93sZEQ1M_6t",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

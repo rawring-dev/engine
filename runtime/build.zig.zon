@@ -1,0 +1,17 @@
+.{
+    .name = .runtime,
+    .version = "0.1.0",
+    .fingerprint = 0xd5a60c7b52a83d48,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .scheduler = .{ .path = "../scheduler" },
+        .compiler = .{ .path = "../compiler" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "vendor",
+        "README.md",
+    },
+}

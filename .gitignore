@@ -1,1 +1,4 @@
 target
+.zig-cache/
+zig-pkg/
+zig-out/

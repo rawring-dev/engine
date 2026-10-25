@@ -1,0 +1,459 @@
+//! Bytecode -> textual LLVM IR translation for the ORC JIT.
+//!
+//! The engine bytecode is a stack machine.  Rather than reconstruct SSA values
+//! with phi nodes, each function materialises its operand stack as an `alloca`
+//! array plus a stack-pointer `alloca`; every push/pop becomes load/store/GEP.
+//! LLVM's own `mem2reg`/`instcombine` passes (driven by the iterative pipeline)
+//! then recover SSA form.  This keeps the translator small and makes the
+//! compiler/runtime boundary the verified bytecode rather than IR text.
+
+const std = @import("std");
+const compiler = @import("compiler");
+const bytecode = compiler.bytecode;
+
+pub const Error = error{
+    OutOfMemory,
+    InvalidBytecode,
+};
+
+pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) Error![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    try bytecode.verify(allocator, module);
+    var translator = Translator{
+        .allocator = allocator,
+        .arena = arena.allocator(),
+        .module = module,
+    };
+    try translator.out.appendSlice(allocator, "declare i64 @e7_task_create(ptr, i64, ptr)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_task_spawn(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_task_await(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_task_detach(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_task_cancel(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_trigger_enter(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_trigger_leave(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_alloc_i64(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_load_i64(i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_store_i64(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_load_u8(i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_store_u8(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_new(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_concat(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_len(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_eq(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_new(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_len(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_get(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_vec_set(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_row(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_binary(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_scalar(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_new()\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_get(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_map_set(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_get_str(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_map_set_str(i64, i64, i64)\n\n");
+    for (module.functions) |function| try translator.emitFunction(function);
+    return translator.out.toOwnedSlice(allocator);
+}
+
+const Translator = struct {
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    module: *const bytecode.Module,
+    out: std.ArrayList(u8) = .empty,
+    temp: usize = 0,
+    max_stack: u16 = 0,
+
+    fn line(self: *Translator, comptime format: []const u8, args: anytype) Error!void {
+        const text = try std.fmt.allocPrint(self.arena, format, args);
+        try self.out.appendSlice(self.allocator, text);
+        try self.out.append(self.allocator, '\n');
+    }
+
+    fn fresh(self: *Translator) []const u8 {
+        const name = std.fmt.allocPrint(self.arena, "%t{d}", .{self.temp}) catch unreachable;
+        self.temp += 1;
+        return name;
+    }
+
+    fn label(self: *Translator, index: usize) []const u8 {
+        return std.fmt.allocPrint(self.arena, "bb{d}", .{index}) catch unreachable;
+    }
+
+    fn emitFunction(self: *Translator, function: bytecode.Function) Error!void {
+        self.temp = 0;
+        self.max_stack = function.max_stack;
+        var signature = std.ArrayList(u8).empty;
+        defer signature.deinit(self.arena);
+        const prefix = try std.fmt.allocPrint(self.arena, "define i64 @{s}(", .{function.name});
+        try signature.appendSlice(self.arena, prefix);
+        for (0..function.params) |i| {
+            if (i > 0) try signature.appendSlice(self.arena, ", ");
+            const part = try std.fmt.allocPrint(self.arena, "i64 %arg{d}", .{i});
+            try signature.appendSlice(self.arena, part);
+        }
+        try signature.appendSlice(self.arena, ") {");
+        try self.line("{s}", .{signature.items});
+        try self.line("entry:", .{});
+        for (0..function.locals) |i| try self.line("  %l{d} = alloca i64", .{i});
+        for (0..function.params) |i| {
+            try self.line("  store i64 %arg{d}, ptr %l{d}", .{ i, i });
+        }
+        try self.line("  %stack = alloca [{d} x i64]", .{function.max_stack});
+        try self.line("  %sp = alloca i64", .{});
+        try self.line("  store i64 0, ptr %sp", .{});
+        try self.line("  br label %bb0", .{});
+
+        for (function.code, 0..) |op, index| {
+            try self.line("{s}:", .{self.label(index)});
+            try self.emitOp(op, index, function);
+        }
+        try self.line("end: ret i64 0", .{});
+        try self.line("}}", .{});
+        try self.out.append(self.allocator, '\n');
+    }
+
+    fn emitOp(self: *Translator, op: bytecode.Op, index: usize, function: bytecode.Function) Error!void {
+        switch (op) {
+            .nop => {},
+            .push_i64 => |value| try self.push(value),
+            .load_local => |slot| {
+                const value = self.fresh();
+                try self.line("  {s} = load i64, ptr %l{d}", .{ value, slot });
+                try self.pushValue(value);
+            },
+            .store_local => |slot| {
+                const value = try self.popValue();
+                try self.line("  store i64 {s}, ptr %l{d}", .{ value, slot });
+            },
+            .pop => _ = try self.popValue(),
+            .add, .sub, .mul, .div, .rem, .eq, .ne, .lt, .le, .gt, .ge => {
+                const rhs = try self.popValue();
+                const lhs = try self.popValue();
+                const result = self.fresh();
+                const instruction: []const u8 = switch (op) {
+                    .add => "add",
+                    .sub => "sub",
+                    .mul => "mul",
+                    .div => "sdiv",
+                    .rem => "srem",
+                    .eq => "icmp eq",
+                    .ne => "icmp ne",
+                    .lt => "icmp slt",
+                    .le => "icmp sle",
+                    .gt => "icmp sgt",
+                    .ge => "icmp sge",
+                    else => unreachable,
+                };
+                if (op == .eq or op == .ne or op == .lt or op == .le or op == .gt or op == .ge) {
+                    const cmp = self.fresh();
+                    try self.line("  {s} = {s} i64 {s}, {s}", .{ cmp, instruction, lhs, rhs });
+                    try self.line("  {s} = zext i1 {s} to i64", .{ result, cmp });
+                } else {
+                    try self.line("  {s} = {s} i64 {s}, {s}", .{ result, instruction, lhs, rhs });
+                }
+                try self.pushValue(result);
+            },
+            .neg => {
+                const value = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = sub i64 0, {s}", .{ result, value });
+                try self.pushValue(result);
+            },
+            .not => {
+                const value = try self.popValue();
+                const cmp = self.fresh();
+                const result = self.fresh();
+                try self.line("  {s} = icmp eq i64 {s}, 0", .{ cmp, value });
+                try self.line("  {s} = zext i1 {s} to i64", .{ result, cmp });
+                try self.pushValue(result);
+            },
+            .jump => |target| try self.line("  br label %{s}", .{self.label(target)}),
+            .jump_if_false => |target| {
+                const value = try self.popValue();
+                const cmp = self.fresh();
+                const next = index + 1;
+                try self.line("  {s} = icmp ne i64 {s}, 0", .{ cmp, value });
+                if (next < function.code.len) {
+                    try self.line("  br i1 {s}, label %{s}, label %{s}", .{
+                        cmp, self.label(next), self.label(target),
+                    });
+                } else {
+                    try self.line("  br i1 {s}, label %end, label %{s}", .{ cmp, self.label(target) });
+                }
+            },
+            .call => |call| {
+                const callee = self.module.functions[call.function];
+                if (call.argc != callee.params) return error.InvalidBytecode;
+                const args = self.arena.alloc([]const u8, call.argc) catch return error.OutOfMemory;
+                var i: usize = call.argc;
+                while (i > 0) {
+                    i -= 1;
+                    args[i] = try self.popValue();
+                }
+                var text = std.ArrayList(u8).empty;
+                defer text.deinit(self.arena);
+                try text.appendSlice(self.arena, "  ");
+                const result = self.fresh();
+                try text.appendSlice(self.arena, result);
+                try text.appendSlice(self.arena, " = call i64 @");
+                try text.appendSlice(self.arena, callee.name);
+                try text.appendSlice(self.arena, "(");
+                for (args, 0..) |arg, arg_index| {
+                    if (arg_index > 0) try text.appendSlice(self.arena, ", ");
+                    try text.appendSlice(self.arena, "i64 ");
+                    try text.appendSlice(self.arena, arg);
+                }
+                try text.appendSlice(self.arena, ")");
+                try self.out.appendSlice(self.allocator, text.items);
+                try self.out.append(self.allocator, '\n');
+                try self.pushValue(result);
+            },
+            .create_task => |create| {
+                const callee = self.module.functions[create.function];
+                if (create.argc + 1 != callee.params) return error.InvalidBytecode;
+                const args = self.arena.alloc([]const u8, create.argc) catch return error.OutOfMemory;
+                var arg_index: usize = create.argc;
+                while (arg_index > 0) {
+                    arg_index -= 1;
+                    args[arg_index] = try self.popValue();
+                }
+                const array = self.fresh();
+                try self.line("  {s} = alloca [{d} x i64]", .{ array, @max(@as(u16, 1), create.argc) });
+                for (args, 0..) |arg, i| {
+                    const slot = self.fresh();
+                    try self.line("  {s} = getelementptr [{d} x i64], ptr {s}, i64 0, i64 {d}", .{
+                        slot, @max(@as(u16, 1), create.argc), array, i,
+                    });
+                    try self.line("  store i64 {s}, ptr {s}", .{ arg, slot });
+                }
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_task_create(ptr @{s}, i64 {d}, ptr {s})", .{
+                    result, callee.name, create.argc, array,
+                });
+                try self.pushValue(result);
+            },
+            .task_await => {
+                const task = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_task_await(i64 {s})", .{ result, task });
+                try self.pushValue(result);
+            },
+            .task_spawn => {
+                const task = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_task_spawn(i64 {s})", .{ result, task });
+                try self.pushValue(result);
+            },
+            .task_detach => {
+                const task = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_task_detach(i64 {s})", .{ result, task });
+                try self.line("  {s} = add i64 0, 0", .{self.fresh()});
+                // detach produces unit; keep a value on the operand stack.
+                const unit = self.fresh();
+                try self.line("  {s} = add i64 0, 0", .{unit});
+                try self.pushValue(unit);
+            },
+            .task_cancel => {
+                const task = try self.popValue();
+                try self.line("  call i64 @e7_task_cancel(i64 {s})", .{task});
+                const unit = self.fresh();
+                try self.line("  {s} = add i64 0, 0", .{unit});
+                try self.pushValue(unit);
+            },
+            .trigger_enter => |id| {
+                const role = self.fresh();
+                try self.line("  {s} = call i64 @e7_trigger_enter(i64 {d})", .{ role, id });
+                try self.pushValue(role);
+            },
+            .trigger_leave => |id| {
+                _ = self.fresh();
+                try self.line("  call i64 @e7_trigger_leave(i64 {d})", .{id});
+            },
+            .alloc => {
+                const size = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_alloc_i64(i64 {s})", .{ result, size });
+                try self.pushValue(result);
+            },
+            .load_mem => {
+                const ptr = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_load_i64(i64 {s})", .{ result, ptr });
+                try self.pushValue(result);
+            },
+            .store_mem => {
+                const value = try self.popValue();
+                const ptr = try self.popValue();
+                try self.line("  call void @e7_store_i64(i64 {s}, i64 {s})", .{ ptr, value });
+            },
+            .load_u8 => {
+                const ptr = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_load_u8(i64 {s})", .{ result, ptr });
+                try self.pushValue(result);
+            },
+            .store_u8 => {
+                const value = try self.popValue();
+                const ptr = try self.popValue();
+                try self.line("  call void @e7_store_u8(i64 {s}, i64 {s})", .{ ptr, value });
+            },
+            .local_addr => |slot| {
+                const result = self.fresh();
+                try self.line("  {s} = ptrtoint ptr %l{d} to i64", .{ result, slot });
+                try self.pushValue(result);
+            },
+            .string_lit => |bytes| {
+                const array = self.fresh();
+                try self.line("  {s} = alloca [{d} x i8]", .{ array, @max(@as(usize, 1), bytes.len) });
+                for (bytes, 0..) |byte, i| {
+                    const slot = self.fresh();
+                    try self.line("  {s} = getelementptr [{d} x i8], ptr {s}, i64 0, i64 {d}", .{ slot, @max(@as(usize, 1), bytes.len), array, i });
+                    try self.line("  store i8 {d}, ptr {s}", .{ byte, slot });
+                }
+                const data = self.fresh();
+                try self.line("  {s} = ptrtoint ptr {s} to i64", .{ data, array });
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_new(i64 {s}, i64 {d})", .{ result, data, bytes.len });
+                try self.pushValue(result);
+            },
+            .vec_new => {
+                const columns = try self.popValue();
+                const rows = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_new(i64 {s}, i64 {s})", .{ result, rows, columns });
+                try self.pushValue(result);
+            },
+            .vec_len => {
+                const vec = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_len(i64 {s})", .{ result, vec });
+                try self.pushValue(result);
+            },
+            .vec_get => {
+                const idx = try self.popValue();
+                const vec = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_get(i64 {s}, i64 {s})", .{ result, vec, idx });
+                try self.pushValue(result);
+            },
+            .vec_set => {
+                const value = try self.popValue();
+                const idx = try self.popValue();
+                const vec = try self.popValue();
+                try self.line("  call void @e7_vec_set(i64 {s}, i64 {s}, i64 {s})", .{ vec, idx, value });
+            },
+            .vec_row => {
+                const idx = try self.popValue();
+                const vec = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_row(i64 {s}, i64 {s})", .{ result, vec, idx });
+                try self.pushValue(result);
+            },
+            .vec_binary => |code| {
+                const b = try self.popValue();
+                const a = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_binary(i64 {d}, i64 {s}, i64 {s})", .{ result, code, a, b });
+                try self.pushValue(result);
+            },
+            .vec_scalar => |code| {
+                const scalar = try self.popValue();
+                const vec = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_scalar(i64 {d}, i64 {s}, i64 {s})", .{ result, code, vec, scalar });
+                try self.pushValue(result);
+            },
+            .map_new => {
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_new()", .{result});
+                try self.pushValue(result);
+            },
+            .map_get => {
+                const key = try self.popValue();
+                const map = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_get(i64 {s}, i64 {s})", .{ result, map, key });
+                try self.pushValue(result);
+            },
+            .map_set => {
+                const value = try self.popValue();
+                const key = try self.popValue();
+                const map = try self.popValue();
+                try self.line("  call void @e7_map_set(i64 {s}, i64 {s}, i64 {s})", .{ map, key, value });
+            },
+            .map_get_str => {
+                const key = try self.popValue();
+                const map = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_get_str(i64 {s}, i64 {s})", .{ result, map, key });
+                try self.pushValue(result);
+            },
+            .map_set_str => {
+                const value = try self.popValue();
+                const key = try self.popValue();
+                const map = try self.popValue();
+                try self.line("  call void @e7_map_set_str(i64 {s}, i64 {s}, i64 {s})", .{ map, key, value });
+            },
+            .str_concat => {
+                const b = try self.popValue();
+                const a = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_concat(i64 {s}, i64 {s})", .{ result, a, b });
+                try self.pushValue(result);
+            },
+            .str_eq => {
+                const b = try self.popValue();
+                const a = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_eq(i64 {s}, i64 {s})", .{ result, a, b });
+                try self.pushValue(result);
+            },
+            .ret => {
+                const value = try self.popValue();
+                try self.line("  ret i64 {s}", .{value});
+            },
+        }
+        switch (op) {
+            .jump, .jump_if_false, .ret => {},
+            else => {
+                if (index + 1 < function.code.len) {
+                    try self.line("  br label %{s}", .{self.label(index + 1)});
+                } else {
+                    try self.line("  br label %end", .{});
+                }
+            },
+        }
+    }
+
+    fn push(self: *Translator, value: i64) Error!void {
+        const text = try std.fmt.allocPrint(self.arena, "{d}", .{value});
+        try self.pushValue(text);
+    }
+
+    fn pushValue(self: *Translator, value: []const u8) Error!void {
+        const sp = self.fresh();
+        const slot = self.fresh();
+        const sp_next = self.fresh();
+        try self.line("  {s} = load i64, ptr %sp", .{sp});
+        try self.line("  {s} = getelementptr [{d} x i64], ptr %stack, i64 0, i64 {s}", .{ slot, self.max_stack, sp });
+        try self.line("  store i64 {s}, ptr {s}", .{ value, slot });
+        try self.line("  {s} = add i64 {s}, 1", .{ sp_next, sp });
+        try self.line("  store i64 {s}, ptr %sp", .{sp_next});
+    }
+
+    fn popValue(self: *Translator) Error![]const u8 {
+        const sp = self.fresh();
+        const sp_prev = self.fresh();
+        const slot = self.fresh();
+        const value = self.fresh();
+        try self.line("  {s} = load i64, ptr %sp", .{sp});
+        try self.line("  {s} = sub i64 {s}, 1", .{ sp_prev, sp });
+        try self.line("  store i64 {s}, ptr %sp", .{sp_prev});
+        try self.line("  {s} = getelementptr [{d} x i64], ptr %stack, i64 0, i64 {s}", .{ slot, self.max_stack, sp_prev });
+        try self.line("  {s} = load i64, ptr {s}", .{ value, slot });
+        return value;
+    }
+};

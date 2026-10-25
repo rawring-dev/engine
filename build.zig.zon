@@ -1,0 +1,21 @@
+.{
+    .name = .engine7,
+    .version = "0.1.0",
+    .fingerprint = 0xf95e1d05002f7655,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .scheduler = .{ .path = "scheduler" },
+        .compiler = .{ .path = "compiler" },
+        .runtime = .{ .path = "runtime" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "scheduler",
+        "compiler",
+        "runtime",
+        "CITATIONS.bib",
+        "README.md",
+        "grammar.ebnf",
+    },
+}

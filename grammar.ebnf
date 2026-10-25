@@ -1,0 +1,489 @@
+(* ==========================================================================
+   engine7 — surface grammar (working EBNF)
+   ==========================================================================
+
+   Notation: ISO/IEC 14977 style.
+     =   definition       ;   terminator
+     |   alternative      [ ] optional       { } repetition
+     ,   concatenation    "x" terminal       (* comment *)
+
+   This grammar describes the syntax we settled on from the samples.  It is
+   intentionally a *surface* grammar: semantic rules (mutability, definite
+   assignment, exhaustiveness, query validity, visibility checks) are not
+   encoded here.
+
+   Layout contract
+   ---------------
+   The grammar shows blocks in both forms:
+
+       { ... }                              explicit braces
+       : NEWLINE INDENT ... DEDENT          layout block
+       : statement                          one-statement inline block
+
+   NEWLINE, INDENT, and DEDENT are virtual tokens.  A layout pass may
+   normalize layout bodies to brace bodies before parsing; the productions
+   below show the sugar directly so the surface language is readable.
+   Layout is context-sensitive: a `:` followed by a newline, or an aggregate
+   keyword (`struct`, `enum`, `table`, `trigger`) followed by a newline,
+   opens a layout body; `{}` is explicit.  Blank/comment-only lines do not
+   change the indentation stack.  Newlines inside `(` and `[` are suppressed.
+
+   The parser still has to use lookahead for two surface ambiguities:
+     1. `name <- (` may begin a function declaration or a binding whose
+        initializer is parenthesized.  A typed parameter list followed by
+        `->` selects the function form.
+     2. `name <- {` is a binding with a block/struct-literal initializer;
+        `name <- struct/enum/table/trigger/sys` selects an item.
+   The grammar below documents the intended alternatives; it does not try to
+   encode those lookahead decisions with extra nonterminals.
+
+   Lexical terminals
+   -----------------
+   IDENT   = ? [A-Za-z_][A-Za-z0-9_]* ?, excluding the reserved words below ?
+   INT     = ? decimal integer, optionally with `_` separators ?
+   FLOAT   = ? decimal float with `.` and optional `e`/`E` exponent ?
+   STRING  = ? double-quoted string with escapes ?
+   COMMENT = "#", ? any characters up to but excluding the line ending ?
+
+   Reserved words:
+     if elif else match loop break cont for in while ret
+     use mod pub struct enum table trigger sys impl
+     async await spawn detach cancel unsafe
+     select from where res as not and or xor
+     true false nil mut raw crate self super
+
+   `!` is the error-value prefix.  Boolean negation is the word `not`;
+   `and`, `or`, and `xor` are the boolean infix operators.  There is no
+   boolean `!`, `&&`, or `||`.
+
+   ========================================================================== *)
+
+
+(* --------------------------------------------------------------------------
+   Modules, items, visibility
+   -------------------------------------------------------------------------- *)
+
+module          = { separator }, { item, [ separator ] }, EOF ;
+
+separator       = ( ";" | NEWLINE ), { ";" | NEWLINE } ;
+
+(* In list productions below, a separator is optional when the preceding
+   entry ended in a layout body: the DEDENT already terminates that entry and
+   the next token may follow immediately.  The parser enforces a real newline
+   or semicolon between simple adjacent entries. *)
+
+item            = attributes, visibility, item_kind ;
+
+item_kind       = use_decl
+                | mod_decl
+                | struct_decl
+                | enum_decl
+                | table_decl
+                | trigger_decl
+                | function_decl
+                | sys_decl
+                | trait_decl
+                | impl_decl
+                | binding_decl ;
+
+attributes      = { attribute } ;
+
+attribute       = "@", path,
+                  [ "(", [ expression, { ",", expression }, [ "," ] ], ")" ] ;
+
+visibility      = [ "pub", [ "(", visibility_scope, ")" ] ] ;
+
+visibility_scope = "crate" | "self" | "super" | "in", use_path ;
+
+use_decl        = "use", use_tree, ";" ;
+
+use_tree        = use_path, [ "as", IDENT ]
+                | use_path, "::", "*"
+                | use_path, "::", "{", [ use_tree, { ",", use_tree }, [ "," ] ], "}" ;
+
+use_path        = path_root, { "::", IDENT } ;
+
+mod_decl        = "mod", IDENT,
+                  ( ";" | "{", { item, [ separator ] }, "}" ) ;
+
+
+(* --------------------------------------------------------------------------
+   Declarations
+   -------------------------------------------------------------------------- *)
+
+(* Enum variants are Rust-style: `Unit`, `Bar(i32)`, `Baz(f: Foo)`, and
+   `Struct { a: i32, b: Foo }`.  The earlier struct-like enum sample is
+   obsolete.
+
+   Generic parameters are written on the declared name:
+       Foo<T> <- struct ...
+       foo<T> <- (x: T) -> T: ...
+       impl<T: Bound> Foo<T> where T: Other: ...
+   Marker traits and `impl Trait for Type` are supported.  Trait method
+   signatures/bodies are future work.  `where` follows the signature for
+   functions/sys, follows the type for impls, and follows the aggregate
+   keyword for type declarations: `Foo<T> <- struct where T: Bound`. *)
+
+generic_params  = "<", generic_param, { ",", generic_param }, [ "," ], ">" ;
+
+generic_param   = IDENT, [ ":", bounds ] ;
+
+bounds          = bound, { "+", bound } ;
+
+bound           = type ;
+
+where_clause    = "where", where_predicate, { ",", where_predicate }, [ "," ] ;
+
+where_predicate = type, ":", bounds ;
+
+struct_decl     = IDENT, [ generic_params ],
+                  "<-", "struct", [ where_clause ], record_body ;
+
+enum_decl       = IDENT, [ generic_params ],
+                  "<-", "enum", [ where_clause ], enum_body ;
+
+table_decl      = IDENT, [ generic_params ],
+                  "<-", "table", [ where_clause ], table_body ;
+
+trigger_decl    = IDENT, [ generic_params ],
+                  "<-", "trigger", [ where_clause ], record_body ;
+
+function_decl   = IDENT, [ generic_params ], "<-", [ "async" ],
+                  "(", [ param_list ], ")", "->", type,
+                  [ where_clause ], function_body ;
+
+sys_decl        = IDENT, [ generic_params ], "<-", "sys",
+                  "(", [ sys_param_list ], ")",
+                  [ where_clause ], block ;
+
+(* Marker/generic traits.  Trait bodies and method signatures are future
+   work; `impl Trait for Type` supplies the satisfaction relation. *)
+trait_decl      = "trait", IDENT, [ generic_params ], [ ":", bounds ], [ ";" ] ;
+
+impl_decl       = "impl", [ generic_params ], type, [ "for", type ],
+                  [ where_clause ], impl_body ;
+
+binding_decl    = IDENT, [ ":", type ],
+                  ( ( "<-" | ":=" ), expression
+                  | (* uninitialized mutable declaration *) ) ;
+
+param_list      = param, { ",", param }, [ "," ] ;
+
+param           = IDENT, ":", type ;
+
+function_body   = "=", expression
+                | block ;
+
+(* Anonymous function expression: the declaration form without `name <-`.
+   The parser needs lookahead to distinguish `(a: i32) -> i32 ...` from a
+   parenthesized expression. *)
+function_expr   = [ "async" ], "(", [ param_list ], ")", "->", type,
+                  function_body ;
+
+(* `async` adds the built-in Cancelled error to the task result.  Async
+   functions are called as Task values; `await` consumes a Task.  Trigger
+   declarations are callable with ordinary function-call syntax, e.g.
+   `Update(10)`, and return a Task whose completion barriers all systems
+   registered with `@trigger(Update)`. *)
+
+
+(* --------------------------------------------------------------------------
+   Bodies of aggregate declarations
+   -------------------------------------------------------------------------- *)
+
+record_body     = [ ":" ],
+                  ( NEWLINE, INDENT, [ field_list ], DEDENT
+                  | "{", [ field_list ], "}" ) ;
+
+table_body      = [ ":" ],
+                  ( NEWLINE, INDENT, [ table_entry_list ], DEDENT
+                  | "{", [ table_entry_list ], "}" ) ;
+
+enum_body       = [ ":" ],
+                  ( NEWLINE, INDENT, [ variant_list ], DEDENT
+                  | "{", [ variant_list ], "}" ) ;
+
+impl_body       = "{", [ method_list ], "}"
+                | ":", ( NEWLINE, INDENT, [ method_list ], DEDENT
+                       | method_decl ) ;
+
+field_list      = field_decl, { field_separator, field_decl }, [ field_separator ] ;
+
+field_decl      = attributes, visibility, IDENT, ":", type ;
+
+field_separator = ( "," | NEWLINE ), { "," | NEWLINE } ;
+
+(* `...` is the final entry only: rows collected by the table follow all
+   declared fields. *)
+table_entry_list = [ field_decl, { field_separator, field_decl }, [ field_separator ] ],
+                  [ "..." ] ;
+
+variant_list    = variant_decl, { field_separator, variant_decl }, [ field_separator ] ;
+
+variant_decl    = IDENT,
+                  [ "(", [ payload_list ], ")"
+                  | "{", [ field_list ], "}" ] ;
+
+payload_list    = payload, { ",", payload }, [ "," ] ;
+
+payload         = [ IDENT, ":" ], type ;
+
+method_list     = method_decl, { [ separator ], method_decl }, [ separator ] ;
+
+method_decl     = attributes, visibility, function_decl ;
+
+
+(* --------------------------------------------------------------------------
+   Blocks and statements
+   -------------------------------------------------------------------------- *)
+
+block           = brace_block | layout_block ;
+
+brace_block     = "{", [ block_contents ], "}" ;
+
+layout_block    = ":", layout_body ;
+
+layout_body     = NEWLINE, INDENT, [ block_contents ], DEDENT
+                | inline_statement ;
+
+inline_statement = statement ;
+
+block_contents  = [ block_entry, { [ separator ], block_entry }, [ separator ] ] ;
+
+block_entry     = item | statement ;
+
+statement       = binding_decl
+                | uninitialized_decl
+                | unsafe_stmt
+                | ret_stmt
+                | break_stmt
+                | cont_stmt
+                | while_stmt
+                | for_stmt
+                | loop_stmt
+                | expr_or_assign ;
+
+ret_stmt        = "ret", [ expression ] ;
+
+break_stmt      = "break" ;
+
+cont_stmt       = "cont" ;
+
+while_stmt      = "while", expression, block ;
+
+for_stmt        = "for", pattern, "in", expression, block ;
+
+loop_stmt       = "loop", block ;
+
+unsafe_stmt     = "unsafe", block ;
+
+(* `name: T` declares a mutable, initially undefined local. *)
+uninitialized_decl = IDENT, ":", type ;
+
+expr_or_assign  = expression, [ assign_op, expression ] ;
+
+assign_op       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
+
+
+(* --------------------------------------------------------------------------
+   Conditional and match expressions
+   -------------------------------------------------------------------------- *)
+
+if_expr         = "if", expression, block,
+                  { "elif", expression, block },
+                  [ "else", block ] ;
+
+match_expr      = "match", expression, match_body ;
+
+match_body      = "{", [ match_arm_list ], "}"
+                | ":", NEWLINE, INDENT, [ match_arm_list ], DEDENT ;
+
+match_arm_list  = match_arm, { [ separator ], match_arm }, [ separator ] ;
+
+match_arm       = pattern, [ "if", expression ],
+                  ( ":", layout_body | brace_block ) ;
+
+
+(* --------------------------------------------------------------------------
+   Patterns
+   -------------------------------------------------------------------------- *)
+
+pattern         = or_pattern ;
+
+or_pattern      = primary_pattern, { "|", primary_pattern } ;
+
+primary_pattern = "_"
+                | literal_pattern
+                | IDENT
+                | path, [ "(", [ pattern_list ], ")"
+                        | "{", [ field_pattern_list ], "}" ]
+                | "(", [ pattern_list ], ")" ;
+
+pattern_list    = pattern, { ",", pattern }, [ "," ] ;
+
+field_pattern_list = field_pattern, { ",", field_pattern }, [ "," ] ;
+
+field_pattern   = IDENT, [ ":", pattern ] ;
+
+literal_pattern = [ "-" ], ( INT | FLOAT )
+                | STRING
+                | "true"
+                | "false"
+                | "nil" ;
+
+
+(* --------------------------------------------------------------------------
+   Types
+   -------------------------------------------------------------------------- *)
+
+(* Type constructors
+   ----------------
+     !T          inferred error type (arbitrary error sum)
+     E!T         explicit error type
+     ?T          optional
+     &T          reference
+     &mut T      mutable reference
+     *T          box
+     *raw T      raw pointer
+     (A, B) -> T function type (also `(A) -> T` and `() -> T`)
+
+   Prefix constructors consume a full type: `&E!T` is `&(E!T)` and `!T!U`
+   is `!(T!U)`.  Parenthesize the left operand for the other grouping, e.g.
+   `(&E)!T` or `(!T)!U`. *)
+
+type            = error_type | prefix_type ;
+
+error_type      = prefix_type, "!", type ;
+
+prefix_type     = "!", type
+                | "?", type
+                | "&", [ "mut" ], type
+                | "*", "raw", type
+                | "*", type
+                | function_type
+                | tuple_type
+                | array_type
+                | map_type
+                | path ;
+
+(* Function types always have an arrow.  `(A)` is a parenthesized/tuple type;
+   `(A) -> T` is a function type. *)
+function_type   = "(", [ type_list ], ")", "->", type ;
+
+map_type        = "map", "[", type, ",", type, "]" ;
+
+type_list       = type, { ",", type }, [ "," ] ;
+
+tuple_type      = "(", ")"
+                | "(", type, ")"
+                | "(", type, ",", [ type, { ",", type }, [ "," ] ], ")" ;
+
+array_type      = "[", type,
+                  [ ";", expression, [ ",", expression ] ], "]" ;
+
+path            = path_root, [ type_args ], { "::", IDENT, [ type_args ] } ;
+
+path_root       = IDENT | "crate" | "self" | "super" ;
+
+type_args       = "<", type, { ",", type }, [ "," ], ">" ;
+
+
+(* --------------------------------------------------------------------------
+   sys parameters — queries and resources are contextual here
+   -------------------------------------------------------------------------- *)
+
+sys_param_list  = sys_param, { ",", sys_param }, [ "," ] ;
+
+sys_param       = normal_param | query_param | resource_param ;
+
+normal_param    = IDENT, ":", type ;
+
+query_param     = IDENT, ":", "select",
+                  query_projection, { ",", query_projection },
+                  "from", type,
+                  [ "where", expression ] ;
+
+(* Projection functions, aggregates, and computed projections are a planned
+   extension; the first grammar accepts reference projections only. *)
+query_projection = "&", [ "mut" ], path ;
+
+resource_param  = IDENT, ":", "res", type ;
+
+
+(* --------------------------------------------------------------------------
+   Expressions
+   -------------------------------------------------------------------------- *)
+
+expression      = or_expr ;
+
+or_expr         = xor_expr, { "or", xor_expr } ;
+
+xor_expr        = and_expr, { "xor", and_expr } ;
+
+and_expr        = comparison, { "and", comparison } ;
+
+comparison      = range_expr, { comp_op, range_expr } ;
+
+comp_op         = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+
+range_expr      = additive, [ range_op, additive ]
+                | "..", [ additive ]
+                | "..=", additive ;
+
+range_op        = ".." | "..=" ;
+
+additive        = multiplicative, { ( "+" | "-" ), multiplicative } ;
+
+multiplicative  = unary, { ( "*" | "/" | "%" ), unary } ;
+
+unary           = "not", unary
+                | "-", unary
+                | "&", [ "mut" ], unary
+                | "*", unary
+                | "await", unary
+                | "spawn", unary
+                | "detach", unary
+                | "cancel", unary
+                | cast ;
+
+cast            = postfix, { "as", type } ;
+
+postfix         = primary, { call | field_access | index | "?" } ;
+
+call            = "(", [ argument_list ], ")" ;
+
+argument_list   = expression, { ",", expression }, [ "," ] ;
+
+field_access    = ".", IDENT ;
+
+index           = "[", expression, "]" ;
+
+primary         = literal
+                | map_literal
+                | error_literal
+                | function_expr
+                | struct_literal
+                | path
+                | list
+                | brace_block
+                | if_expr
+                | match_expr
+                | "(", expression, ")" ;
+
+struct_literal  = path, "{", [ field_init_list ], "}" ;
+
+map_literal     = "map", "[", type, ",", type, "]",
+                  "{", [ map_entry_list ], "}" ;
+
+map_entry_list  = expression, ":", expression,
+                  { ",", expression, ":", expression }, [ "," ] ;
+
+field_init_list = field_init, { ",", field_init }, [ "," ] ;
+
+field_init      = IDENT, [ ":", expression ] ;
+
+list            = "[", [ expression, { ",", expression }, [ "," ] ], "]" ;
+
+literal         = INT | FLOAT | STRING | "true" | "false" | "nil" ;
+
+error_literal   = "!", path ;
