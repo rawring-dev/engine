@@ -355,6 +355,116 @@ test "JIT lowers strings, vectors, matrices, maps, and unsafe raw pointers" {
     try std.testing.expectEqual(@as(i64, 22), (try jit.get(Read, "advance"))(slots));
 }
 
+test "JIT executes map and vector iteration and string container builtins" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\map_sum <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10, 2: 20, 3: 30 }
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        total = total + key + value
+        \\    total
+        \\map_keys <- (m: map[i32, i32]) -> i32:
+        \\    total := 0
+        \\    for key in m:
+        \\        total = total + key
+        \\    total
+        \\map_len <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10, 2: 20 }
+        \\    m.len()
+        \\str_map_sum <- () -> i32:
+        \\    m := map[str, i32] { "a": 1, "bb": 2 }
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        total = total + key.len() + value
+        \\    total
+        \\vec_sum <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    total := 0
+        \\    for x in xs:
+        \\        total = total + x
+        \\    total
+        \\vec_index_sum <- () -> i32:
+        \\    xs := [10, 20, 30]
+        \\    total := 0
+        \\    for (i, x) in xs:
+        \\        total = total + i * x
+        \\    total
+        \\break_map <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10, 2: 20, 3: 30 }
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        if key == 2:
+        \\            break
+        \\        total = total + key
+        \\    for _ in m:
+        \\        total = total + 1
+        \\    total
+        \\vec_len <- () -> i32 = [4, 5, 6].len()
+        \\text_len <- () -> i32 = "hello".len()
+        \\text_slice <- () -> str = "abcdef".slice(1, 3)
+        \\text_char <- () -> str = "abc".char_at(1)
+        \\text_iter <- () -> i32:
+        \\    text := "abc"
+        \\    total := 0
+        \\    for c in text:
+        \\        total = total + c.len()
+        \\    for (i, c) in text:
+        \\        total = total + i + c.len()
+        \\    total
+        \\slice_eq <- () -> i32 = if "abcdef".slice(1, 3) == "bc": 1 else: 0
+        \\char_eq <- () -> i32 = if "abc".char_at(1) == "b": 1 else: 0
+        \\slice_clamped <- () -> str = "abc".slice(1, 99)
+        \\char_out_of_range <- () -> str = "abc".char_at(9)
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "iteration-and-builtins");
+
+    const IntFn = *const fn () callconv(.c) i64;
+    const Lookup = *const fn (i64) callconv(.c) i64;
+    const textBytes = struct {
+        fn get(ptr: i64) [*]const u8 {
+            return @ptrFromInt(@as(usize, @intCast(ptr + 8)));
+        }
+    };
+
+    try std.testing.expectEqual(@as(i64, 66), (try jit.get(IntFn, "map_sum"))());
+    const map = aggregate.e7_map_new();
+    aggregate.e7_map_set(map, 5, 50);
+    aggregate.e7_map_set(map, 7, 70);
+    try std.testing.expectEqual(@as(i64, 12), (try jit.get(Lookup, "map_keys"))(map));
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(IntFn, "map_len"))());
+    try std.testing.expectEqual(@as(i64, 6), (try jit.get(IntFn, "str_map_sum"))());
+
+    try std.testing.expectEqual(@as(i64, 6), (try jit.get(IntFn, "vec_sum"))());
+    try std.testing.expectEqual(@as(i64, 80), (try jit.get(IntFn, "vec_index_sum"))());
+    try std.testing.expectEqual(@as(i64, 4), (try jit.get(IntFn, "break_map"))());
+    try std.testing.expectEqual(@as(i64, 3), (try jit.get(IntFn, "vec_len"))());
+
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(IntFn, "text_len"))());
+    const slice = (try jit.get(IntFn, "text_slice"))();
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_str_len(slice));
+    try std.testing.expectEqualStrings("bc", textBytes.get(slice)[0..2]);
+    const char = (try jit.get(IntFn, "text_char"))();
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_str_len(char));
+    try std.testing.expectEqualStrings("b", textBytes.get(char)[0..1]);
+    try std.testing.expectEqual(@as(i64, 9), (try jit.get(IntFn, "text_iter"))());
+
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(IntFn, "slice_eq"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(IntFn, "char_eq"))());
+    const clamped = (try jit.get(IntFn, "slice_clamped"))();
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_str_len(clamped));
+    try std.testing.expectEqualStrings("bc", textBytes.get(clamped)[0..2]);
+    const missing = (try jit.get(IntFn, "char_out_of_range"))();
+    try std.testing.expectEqual(@as(i64, 0), aggregate.e7_str_len(missing));
+}
+
 test "JIT lowers enums and enum matches" {
     var compiled = try compiler.pipeline.compile(
         std.testing.allocator,

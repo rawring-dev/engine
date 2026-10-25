@@ -962,6 +962,25 @@ const Builder = struct {
     fn lowerFor(self: *Builder, loop: ast.ForStmt) Error!void {
         try self.enterScope();
         defer self.leaveScope();
+        if (loop.iterable.* == .range) return self.lowerForRange(loop);
+
+        const iterable_ty = self.exprType(loop.iterable) orelse return error.UnsupportedFeature;
+        const resolved = self.resolvedType(iterable_ty);
+        switch (resolved.*) {
+            .array => |array| {
+                // Iteration walks the flat element list; matrices do not have a
+                // meaningful single-index layout for that, so reject them
+                // rather than silently iterating only their rows.
+                if (array.columns != null) return error.UnsupportedFeature;
+                try self.lowerForCollection(loop, .vector);
+            },
+            .string => try self.lowerForCollection(loop, .string),
+            .map => try self.lowerForCollection(loop, .map),
+            else => return error.UnsupportedFeature,
+        }
+    }
+
+    fn lowerForRange(self: *Builder, loop: ast.ForStmt) Error!void {
         if (loop.pattern.* != .binding and loop.pattern.* != .wildcard) return error.UnsupportedFeature;
         const slot = if (loop.pattern.* == .binding)
             try self.allocLocal(loop.pattern.binding)
@@ -969,10 +988,9 @@ const Builder = struct {
             try self.allocLocal("<for>");
         const hidden = try self.allocLocal("<for_end>");
 
-        if (loop.iterable.* != .range) return error.UnsupportedFeature;
         const range = loop.iterable.range;
         if (range.end == null) return error.UnsupportedFeature;
-        if (range.start) |start| try self.lowerExpr(start) else try self.push(0);
+        if (range.start) |start_expr| try self.lowerExpr(start_expr) else try self.push(0);
         try self.emit(.{ .store_local = slot });
         try self.lowerExpr(range.end.?);
         try self.emit(.{ .store_local = hidden });
@@ -994,6 +1012,131 @@ const Builder = struct {
         try self.push(1);
         try self.emit(.add);
         try self.emit(.{ .store_local = slot });
+        try self.emit(.{ .jump = @intCast(start) });
+
+        const break_target = self.code.items.len;
+        try self.patchLoop(&self.loops.items[loop_index], increment_target, break_target);
+        try self.patch(end_jump);
+    }
+
+    const CollectionKind = enum { vector, string, map };
+
+    /// Allocate a binding slot for one `for` pattern element, or null for `_`.
+    fn forPatternSlot(self: *Builder, pattern: *ast.Pattern) Error!?u16 {
+        return switch (pattern.*) {
+            .binding => |name| try self.allocLocal(name),
+            .wildcard => null,
+            else => error.UnsupportedFeature,
+        };
+    }
+
+    fn emitContainerLen(self: *Builder, kind: CollectionKind) Error!void {
+        try self.emit(switch (kind) {
+            .vector => .vec_len,
+            .string => .str_len,
+            .map => .map_len,
+        });
+    }
+
+    /// Iterate vectors, strings, and maps.  A tuple pattern binds
+    /// `(index, value)` for vectors/strings and `(key, value)` for maps; a bare
+    /// binding binds the element, the character, or the map key.
+    fn lowerForCollection(self: *Builder, loop: ast.ForStmt, kind: CollectionKind) Error!void {
+        const pattern = loop.pattern;
+        const pair = pattern.* == .tuple;
+        if (pair and pattern.tuple.len != 2) return error.UnsupportedFeature;
+        if (!pair and pattern.* != .binding and pattern.* != .wildcard) return error.UnsupportedFeature;
+
+        var first_slot: ?u16 = null;
+        var second_slot: ?u16 = null;
+        if (pair) {
+            first_slot = try self.forPatternSlot(pattern.tuple[0]);
+            second_slot = try self.forPatternSlot(pattern.tuple[1]);
+        } else if (pattern.* == .binding) {
+            first_slot = try self.forPatternSlot(pattern);
+        }
+
+        const iterable_slot = try self.allocLocal("<for_iter>");
+        const length_slot = try self.allocLocal("<for_len>");
+        const index_slot = try self.allocLocal("<for_index>");
+
+        try self.lowerExpr(loop.iterable);
+        try self.emit(.{ .store_local = iterable_slot });
+        try self.emit(.{ .load_local = iterable_slot });
+        try self.emitContainerLen(kind);
+        try self.emit(.{ .store_local = length_slot });
+        try self.push(0);
+        try self.emit(.{ .store_local = index_slot });
+
+        const start = self.code.items.len;
+        try self.loops.append(self.allocator, .{ .breaks = .empty, .continues = .empty });
+        const loop_index = self.loops.items.len - 1;
+        defer _ = self.loops.pop();
+
+        try self.emit(.{ .load_local = index_slot });
+        try self.emit(.{ .load_local = length_slot });
+        try self.emit(.lt);
+        const end_jump = try self.emitJump(true);
+
+        if (pair) {
+            switch (kind) {
+                .map => {
+                    if (first_slot) |slot| {
+                        try self.emit(.{ .load_local = iterable_slot });
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.map_key_at);
+                        try self.emit(.{ .store_local = slot });
+                    }
+                    if (second_slot) |slot| {
+                        try self.emit(.{ .load_local = iterable_slot });
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.map_value_at);
+                        try self.emit(.{ .store_local = slot });
+                    }
+                },
+                .vector => {
+                    if (first_slot) |slot| {
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.{ .store_local = slot });
+                    }
+                    if (second_slot) |slot| {
+                        try self.emit(.{ .load_local = iterable_slot });
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.vec_get);
+                        try self.emit(.{ .store_local = slot });
+                    }
+                },
+                .string => {
+                    if (first_slot) |slot| {
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.{ .store_local = slot });
+                    }
+                    if (second_slot) |slot| {
+                        try self.emit(.{ .load_local = iterable_slot });
+                        try self.emit(.{ .load_local = index_slot });
+                        try self.emit(.str_char_at);
+                        try self.emit(.{ .store_local = slot });
+                    }
+                },
+            }
+        } else if (first_slot) |slot| {
+            try self.emit(.{ .load_local = iterable_slot });
+            try self.emit(.{ .load_local = index_slot });
+            try self.emit(switch (kind) {
+                .vector => .vec_get,
+                .string => .str_char_at,
+                .map => .map_key_at,
+            });
+            try self.emit(.{ .store_local = slot });
+        }
+
+        try self.lowerBlockStatements(loop.body);
+
+        const increment_target = self.code.items.len;
+        try self.emit(.{ .load_local = index_slot });
+        try self.push(1);
+        try self.emit(.add);
+        try self.emit(.{ .store_local = index_slot });
         try self.emit(.{ .jump = @intCast(start) });
 
         const break_target = self.code.items.len;
@@ -1510,7 +1653,39 @@ const Builder = struct {
         for (end_jumps.items) |index| try self.patch(index);
     }
 
+    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,
+    /// vector, and map values.  Returns false for any other call.
+    fn lowerBuiltinMethodCall(self: *Builder, call: ast.Call) Error!bool {
+        if (call.callee.* != .field) return false;
+        const field = call.callee.field;
+        const name = field.name;
+        const is_len = std.mem.eql(u8, name, "len");
+        const is_slice = std.mem.eql(u8, name, "slice");
+        const is_char_at = std.mem.eql(u8, name, "char_at");
+        if (!is_len and !is_slice and !is_char_at) return false;
+        const target_ty = self.exprType(field.target) orelse return false;
+        const resolved = self.resolvedType(target_ty);
+        if (is_len) {
+            try self.lowerExpr(field.target);
+            try self.emit(switch (resolved.*) {
+                .string => .str_len,
+                .array => .vec_len,
+                .map => .map_len,
+                else => return error.UnsupportedFeature,
+            });
+            return true;
+        }
+        if (resolved.* != .string) return error.UnsupportedFeature;
+        try self.lowerExpr(field.target);
+        for (call.args) |arg| try self.lowerExpr(arg);
+        try self.emit(if (is_slice) .str_slice else .str_char_at);
+        return true;
+    }
+
     fn lowerCall(self: *Builder, call: ast.Call) Error!void {
+        if (call.callee.* == .field) {
+            if (try self.lowerBuiltinMethodCall(call)) return;
+        }
         if (call.callee.* != .path) return error.UnsupportedFeature;
         const path = call.callee.path;
         if (path.segments.len == 0) return error.UnsupportedFeature;

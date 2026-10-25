@@ -27,6 +27,11 @@ it through the iterative pass pipeline and LLJIT.
 ├── build.zig.zon
 ├── CITATIONS.bib          every external project/paper referenced by the code
 ├── grammar.ebnf           surface grammar (language design, not parser code)
+├── editors/
+│   ├── README.md          shared highlighting model + conventions
+│   ├── samples/           shared parseable highlighting fixture
+│   ├── neovim/            Neovim syntax plugin
+│   └── vscode/            VS Code TextMate extension
 ├── scheduler/
 │   ├── build.zig
 │   └── src/
@@ -119,6 +124,31 @@ Individual packages work standalone as well:
 
 The first compiler build downloads and pins `zpars` at the commit recorded in
 `compiler/build.zig.zon`.
+
+## Editor support
+
+[`grammar.ebnf`](grammar.ebnf) also drives editor syntax highlighting. The
+plugins under [`editors/`](editors/README.md) implement the same lexical model
+and highlighting heuristics:
+
+- [`editors/neovim/`](editors/neovim/README.md) — a legacy Neovim `:syntax`
+  plugin (no tree-sitter parser needed) with filetype detection for `.e7` and
+  `.engine7`, plus comment/indent filetype settings.
+- [`editors/vscode/`](editors/vscode/README.md) — a declarative VS Code
+  extension (TextMate grammar + language configuration + snippets) that
+  contributes language id `engine7` and scope `source.engine7`.
+
+Both are tested against the shared, compiler-parseable fixture
+[`editors/samples/kitchen_sink.e7`](editors/samples/kitchen_sink.e7). From the
+repository root:
+
+```sh
+bash editors/verify.sh
+```
+
+The VS Code suite installs `vscode-textmate` and `vscode-oniguruma` into
+`editors/vscode/node_modules` on first run; the Neovim suite only needs
+`nvim --headless`.
 
 ## Design decisions
 

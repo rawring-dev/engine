@@ -1886,8 +1886,12 @@ const Checker = struct {
                 return null;
             },
             .for_stmt => |loop| {
-                const iterable = try self.checkMoveExpr(loop.iterable, null);
-                const element = try self.iterableElement(iterable);
+                // Iteration only reads the container.  Maps are not copy types,
+                // so moving them here would make `for (k, v) in m:` prohibit any
+                // later use of `m` (including inside the loop body).
+                const iterable = try self.checkExpr(loop.iterable, null);
+                if (self.store.resolve(iterable).* != .map) try self.markMoveValue(loop.iterable);
+                const element = try self.forElement(iterable, loop.pattern);
                 try self.enterScope();
                 try self.checkPattern(loop.pattern, element);
                 self.loop_depth += 1;
@@ -1969,6 +1973,7 @@ const Checker = struct {
             .array => |array| array.element,
             .query => |q| q.element,
             .string => resolved,
+            .map => |m| self.makeTupleType(&.{ m.key, m.value }),
             .unknown => self.store.make(.unknown),
             else => blk: {
                 const name = try self.store.typeName(resolved);
@@ -1976,6 +1981,43 @@ const Checker = struct {
                 break :blk self.store.make(.unknown);
             },
         };
+    }
+
+    /// Element type bound by a `for` pattern.  Maps iterate `(key, value)` pairs,
+    /// but a bare binding is the common shorthand for iterating keys.  Arrays and
+    /// strings optionally pair each element with its index when the pattern is a
+    /// two-element tuple.
+    fn forElement(self: *Checker, ty: *types.Type, pattern: *ast.Pattern) !*types.Type {
+        const resolved = self.store.resolve(ty);
+        switch (resolved.*) {
+            .map => |m| return switch (pattern.*) {
+                .binding, .wildcard => m.key,
+                .tuple => self.makeTupleType(&.{ m.key, m.value }),
+                else => self.iterableElement(ty),
+            },
+            .array => |array| return switch (pattern.*) {
+                .tuple => blk: {
+                    const index_ty = try self.store.make(.{ .int = .i32 });
+                    break :blk self.makeTupleType(&.{ index_ty, array.element });
+                },
+                else => self.iterableElement(ty),
+            },
+            .string => return switch (pattern.*) {
+                .tuple => blk: {
+                    const index_ty = try self.store.make(.{ .int = .i32 });
+                    break :blk self.makeTupleType(&.{ index_ty, resolved });
+                },
+                else => self.iterableElement(ty),
+            },
+            else => return self.iterableElement(ty),
+        }
+    }
+
+    fn makeTupleType(self: *Checker, items: []const *types.Type) !*types.Type {
+        if (items.len == 0) return self.store.make(.unit);
+        const elements = try self.allocator.alloc(*types.Type, items.len);
+        @memcpy(elements, items);
+        return self.store.make(.{ .tuple = elements });
     }
 
     fn checkAssign(self: *Checker, assign: ast.AssignStmt) !void {
@@ -3107,6 +3149,7 @@ const Checker = struct {
     }
 
     fn checkCall(self: *Checker, call: ast.Call) !*types.Type {
+        if (try self.checkBuiltinMethodCall(call)) |result| return result;
         if (call.callee.* == .path and call.callee.path.segments.len == 1) {
             const name = call.callee.path.segments[0].name;
             if (std.mem.eql(u8, name, "print") and self.lookup(name) == null and self.functions.get(name) == null) {
@@ -3162,6 +3205,48 @@ const Checker = struct {
                 for (call.args) |arg| _ = try self.checkExpr(arg, null);
                 return self.store.make(.unknown);
             },
+        }
+    }
+
+    /// Builtin container methods use method-call syntax on builtin aggregates:
+    /// `text.len()`, `text.slice(start, end)`, `text.char_at(i)`,
+    /// `vector.len()`, and `map.len()`.  Returns null when the call is not one of
+    /// these (so the ordinary call path keeps diagnosing it).
+    fn checkBuiltinMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .field) return null;
+        const field = call.callee.field;
+        const name = field.name;
+        const is_len = std.mem.eql(u8, name, "len");
+        const is_slice = std.mem.eql(u8, name, "slice");
+        const is_char_at = std.mem.eql(u8, name, "char_at");
+        if (!is_len and !is_slice and !is_char_at) return null;
+
+        const target_ty = try self.checkExpr(field.target, null);
+        const resolved = self.store.resolve(target_ty);
+        const int_ty = try self.store.make(.{ .int = .i32 });
+        const index_ty = try self.store.make(.{ .int = .usize });
+
+        switch (resolved.*) {
+            .string => {
+                if (is_len) {
+                    if (call.args.len != 0) try self.report("`len()` takes no arguments", .{});
+                    return int_ty;
+                }
+                const want: usize = if (is_slice) 2 else 1;
+                if (call.args.len != want) {
+                    try self.report("`{s}()` expects {d} argument(s), found {d}", .{
+                        name, want, call.args.len,
+                    });
+                }
+                for (call.args) |arg| _ = try self.checkExpr(arg, index_ty);
+                return resolved;
+            },
+            .array, .map => {
+                if (!is_len) return null;
+                if (call.args.len != 0) try self.report("`len()` takes no arguments", .{});
+                return int_ty;
+            },
+            else => return null,
         }
     }
 

@@ -108,6 +108,80 @@ test "compiles control flow to bytecode" {
     try bytecode.verify(std.testing.allocator, &result.bytecode);
 }
 
+test "compiles map and vector iteration and container builtins" {
+    var result = try compile(
+        std.testing.allocator,
+        \\sum_map <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10, 2: 20 }
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        total = total + key + value
+        \\    for key in m:
+        \\        total = total + key
+        \\    total
+        \\sum_vec <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    total := 0
+        \\    for x in xs:
+        \\        total = total + x
+        \\    for (i, x) in xs:
+        \\        total = total + i + x
+        \\    total
+        \\break_map <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10, 2: 20, 3: 30 }
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        if key == 2:
+        \\            break
+        \\        total = total + key
+        \\    for _ in m:
+        \\        total = total + 1
+        \\    total
+        \\container_ops <- () -> i32:
+        \\    text := "hello"
+        \\    text.len() + text.slice(1, 3).len() + text.char_at(0).len()
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const map_body = result.functionNamed("sum_map").?;
+    var saw_map_len = false;
+    var saw_map_key = false;
+    var saw_map_value = false;
+    for (map_body.code) |op| switch (op) {
+        .map_len => saw_map_len = true,
+        .map_key_at => saw_map_key = true,
+        .map_value_at => saw_map_value = true,
+        else => {},
+    };
+    try std.testing.expect(saw_map_len and saw_map_key and saw_map_value);
+
+    const vec_body = result.functionNamed("sum_vec").?;
+    var saw_vec_len = false;
+    var saw_vec_get = false;
+    for (vec_body.code) |op| switch (op) {
+        .vec_len => saw_vec_len = true,
+        .vec_get => saw_vec_get = true,
+        else => {},
+    };
+    try std.testing.expect(saw_vec_len and saw_vec_get);
+
+    const ops_body = result.functionNamed("container_ops").?;
+    var saw_str_len = false;
+    var saw_str_slice = false;
+    var saw_str_char_at = false;
+    for (ops_body.code) |op| switch (op) {
+        .str_len => saw_str_len = true,
+        .str_slice => saw_str_slice = true,
+        .str_char_at => saw_str_char_at = true,
+        else => {},
+    };
+    try std.testing.expect(saw_str_len and saw_str_slice and saw_str_char_at);
+}
+
 test "rejects semantically invalid source before lowering" {
     try std.testing.expectError(error.SemanticFailed, compile(
         std.testing.allocator,

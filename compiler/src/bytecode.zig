@@ -76,6 +76,12 @@ pub const Op = union(enum) {
     map_set_str,
     str_concat,
     str_eq,
+    str_len,
+    str_slice,
+    str_char_at,
+    map_len,
+    map_key_at,
+    map_value_at,
     ret,
 };
 
@@ -337,7 +343,7 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
             .trigger_leave => {
                 fallthrough = index + 1;
             },
-            .alloc, .load_mem, .vec_len => {
+            .alloc, .load_mem, .vec_len, .str_len, .map_len => {
                 if (height < 1) return error.InvalidBytecode;
                 fallthrough = index + 1;
             },
@@ -345,12 +351,12 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 if (height < 1) return error.InvalidBytecode;
                 fallthrough = index + 1;
             },
-            .store_mem, .vec_get, .vec_row, .vec_binary, .vec_scalar, .map_get, .map_get_str, .str_concat, .str_eq => {
+            .store_mem, .vec_get, .vec_row, .vec_binary, .vec_scalar, .map_get, .map_get_str, .str_concat, .str_eq, .str_char_at, .map_key_at, .map_value_at => {
                 if (height < 2) return error.InvalidBytecode;
                 next_height -= 1;
                 fallthrough = index + 1;
             },
-            .store_u8, .vec_set, .map_set, .map_set_str => {
+            .store_u8, .vec_set, .map_set, .map_set_str, .str_slice => {
                 if (height < 3) return error.InvalidBytecode;
                 next_height -= 2;
                 fallthrough = index + 1;
@@ -560,6 +566,12 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
         .str_eq => 47,
         .map_get_str => 48,
         .map_set_str => 49,
+        .str_len => 50,
+        .str_slice => 51,
+        .str_char_at => 52,
+        .map_len => 53,
+        .map_key_at => 54,
+        .map_value_at => 55,
     };
     try out.append(allocator, tag);
     switch (op) {
@@ -645,6 +657,12 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         47 => .str_eq,
         48 => .map_get_str,
         49 => .map_set_str,
+        50 => .str_len,
+        51 => .str_slice,
+        52 => .str_char_at,
+        53 => .map_len,
+        54 => .map_key_at,
+        55 => .map_value_at,
         else => error.InvalidBytecode,
     };
 }

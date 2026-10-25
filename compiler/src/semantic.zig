@@ -407,6 +407,63 @@ test "checks arrays, iteration, and indexing" {
     );
 }
 
+test "checks map iteration over key/value pairs and keys" {
+    try expectClean(
+        \\f <- (m: map[i32, str]) -> i32:
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        total = total + key + value.len()
+        \\    for key in m:
+        \\        total = total + key
+        \\    total
+    );
+}
+
+test "checks vector and string iteration with index and value" {
+    try expectClean(
+        \\f <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    total := 0
+        \\    for (i, x) in xs:
+        \\        total = total + i + x
+        \\    for c in "abc":
+        \\        total = total + c.len()
+        \\    for (i, c) in "abc":
+        \\        total = total + i + c.len()
+        \\    total
+    );
+}
+
+test "checks string and container builtin methods" {
+    try expectClean(
+        \\f <- () -> i32:
+        \\    text := "hello"
+        \\    size := text.len()
+        \\    part := text.slice(1, 3)
+        \\    first := text.char_at(0)
+        \\    size + part.len() + first.len()
+        \\g <- (xs: [i32; 3], m: map[i32, i32]) -> i32 = xs.len() + m.len()
+    );
+}
+
+test "reports mismatched map iteration patterns and bad builtin arguments" {
+    try expectDiagnostic(
+        \\f <- (m: map[i32, str]) -> i32:
+        \\    total := 0
+        \\    for (key, value) in m:
+        \\        total = total + value
+        \\    total
+    , "type mismatch");
+
+    try expectDiagnostic(
+        \\f <- () -> str = "abc".slice(1)
+    , "expects 2 argument(s)");
+
+    try expectDiagnostic(
+        \\f <- () -> i32 = 1.len()
+    , "unknown field");
+}
+
 test "resolves type and function aliases from use declarations" {
     try expectClean(
         \\Base <- struct

@@ -88,6 +88,23 @@ pub export fn e7_str_concat(a: i64, b: i64) callconv(.c) i64 {
     return ptr;
 }
 
+pub export fn e7_str_slice(str: i64, start: i64, end: i64) callconv(.c) i64 {
+    const len: i64 = if (str == 0) 0 else slots(str)[0];
+    var first: i64 = @max(0, start);
+    var last: i64 = @min(len, end);
+    if (first > len) first = len;
+    if (last < first) last = first;
+    const count = last - first;
+    if (count <= 0) return e7_str_new(0, 0);
+    return e7_str_new(str + 8 + first, count);
+}
+
+pub export fn e7_str_char_at(str: i64, index: i64) callconv(.c) i64 {
+    const len: i64 = if (str == 0) 0 else slots(str)[0];
+    if (index < 0 or index >= len) return e7_str_new(0, 0);
+    return e7_str_new(str + 8 + index, 1);
+}
+
 pub export fn e7_str_eq(a: i64, b: i64) callconv(.c) i64 {
     if (a == b) return 1;
     if (a == 0 or b == 0) return 0;
@@ -268,6 +285,27 @@ pub export fn e7_map_new() callconv(.c) i64 {
     return allocSlots(3);
 }
 
+pub export fn e7_map_len(map: i64) callconv(.c) i64 {
+    if (map == 0) return 0;
+    return slots(map)[0];
+}
+
+fn mapEntryAt(map: i64, index: i64, column: usize) i64 {
+    if (map == 0 or index < 0) return 0;
+    const len = slots(map)[0];
+    if (index >= len) return 0;
+    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(slots(map)[2])));
+    return entries[@as(usize, @intCast(index)) * 2 + column];
+}
+
+pub export fn e7_map_key_at(map: i64, index: i64) callconv(.c) i64 {
+    return mapEntryAt(map, index, 0);
+}
+
+pub export fn e7_map_value_at(map: i64, index: i64) callconv(.c) i64 {
+    return mapEntryAt(map, index, 1);
+}
+
 pub export fn e7_map_get(map: i64, key: i64) callconv(.c) i64 {
     if (map == 0) return 0;
     const len = slots(map)[0];
@@ -336,7 +374,7 @@ pub export fn e7_map_set_str(map: i64, key: i64, value: i64) callconv(.c) void {
     e7_map_set(map, key, value);
 }
 
-pub fn symbols() [21]Symbol {
+pub fn symbols() [26]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -346,6 +384,8 @@ pub fn symbols() [21]Symbol {
         .{ .name = "e7_str_new", .address = @intFromPtr(&e7_str_new) },
         .{ .name = "e7_str_concat", .address = @intFromPtr(&e7_str_concat) },
         .{ .name = "e7_str_len", .address = @intFromPtr(&e7_str_len) },
+        .{ .name = "e7_str_slice", .address = @intFromPtr(&e7_str_slice) },
+        .{ .name = "e7_str_char_at", .address = @intFromPtr(&e7_str_char_at) },
         .{ .name = "e7_str_eq", .address = @intFromPtr(&e7_str_eq) },
         .{ .name = "e7_vec_new", .address = @intFromPtr(&e7_vec_new) },
         .{ .name = "e7_vec_len", .address = @intFromPtr(&e7_vec_len) },
@@ -355,9 +395,41 @@ pub fn symbols() [21]Symbol {
         .{ .name = "e7_vec_binary", .address = @intFromPtr(&e7_vec_binary) },
         .{ .name = "e7_vec_scalar", .address = @intFromPtr(&e7_vec_scalar) },
         .{ .name = "e7_map_new", .address = @intFromPtr(&e7_map_new) },
+        .{ .name = "e7_map_len", .address = @intFromPtr(&e7_map_len) },
         .{ .name = "e7_map_get", .address = @intFromPtr(&e7_map_get) },
         .{ .name = "e7_map_set", .address = @intFromPtr(&e7_map_set) },
         .{ .name = "e7_map_get_str", .address = @intFromPtr(&e7_map_get_str) },
         .{ .name = "e7_map_set_str", .address = @intFromPtr(&e7_map_set_str) },
+        .{ .name = "e7_map_key_at", .address = @intFromPtr(&e7_map_key_at) },
+        .{ .name = "e7_map_value_at", .address = @intFromPtr(&e7_map_value_at) },
     };
+}
+
+test "string slices, characters, and map entry accessors" {
+    const text = e7_str_new(@intCast(@intFromPtr("abcdef".ptr)), 6);
+    try std.testing.expectEqual(@as(i64, 6), e7_str_len(text));
+
+    const slice = e7_str_slice(text, 1, 3);
+    try std.testing.expectEqual(@as(i64, 2), e7_str_len(slice));
+    try std.testing.expectEqualStrings("bc", bytePtr(slice + 8)[0..2]);
+
+    const char = e7_str_char_at(text, 4);
+    try std.testing.expectEqual(@as(i64, 1), e7_str_len(char));
+    try std.testing.expectEqualStrings("e", bytePtr(char + 8)[0..1]);
+
+    try std.testing.expectEqual(@as(i64, 0), e7_str_len(e7_str_char_at(text, 99)));
+    try std.testing.expectEqual(@as(i64, 0), e7_str_len(e7_str_slice(text, 4, 2)));
+
+    const clamped = e7_str_slice(text, -2, 99);
+    try std.testing.expectEqual(@as(i64, 6), e7_str_len(clamped));
+    try std.testing.expectEqualStrings("abcdef", bytePtr(clamped + 8)[0..6]);
+
+    const map = e7_map_new();
+    e7_map_set(map, 7, 70);
+    e7_map_set(map, 9, 90);
+    try std.testing.expectEqual(@as(i64, 2), e7_map_len(map));
+    try std.testing.expectEqual(@as(i64, 7), e7_map_key_at(map, 0));
+    try std.testing.expectEqual(@as(i64, 90), e7_map_value_at(map, 1));
+    try std.testing.expectEqual(@as(i64, 0), e7_map_key_at(map, 5));
+    try std.testing.expectEqual(@as(i64, 0), e7_map_value_at(map, -1));
 }

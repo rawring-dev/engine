@@ -40,6 +40,8 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_new(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_concat(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_len(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_slice(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_str_char_at(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_eq(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_new(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_len(i64)\n");
@@ -49,12 +51,30 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_binary(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_scalar(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_new()\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_len(i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_key_at(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_map_value_at(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_get(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare void @e7_map_set(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_get_str(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare void @e7_map_set_str(i64, i64, i64)\n\n");
     for (module.functions) |function| try translator.emitFunction(function);
+    if (translator.uses_fixpoint_attr) {
+        try translator.out.appendSlice(allocator, "attributes #0 = { \"instcombine-no-verify-fixpoint\" }\n");
+    }
     return translator.out.toOwnedSlice(allocator);
+}
+
+/// Collection length/iteration lowering produces IR that trips LLVM 23's
+/// InstCombine fixed-point verifier.  Those functions carry
+/// `"instcombine-no-verify-fixpoint"`; the driver's own fixed-point loop still
+/// limits repeated optimization.
+fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
+    for (function.code) |op| switch (op) {
+        .vec_len, .str_len, .map_len => return true,
+        else => {},
+    };
+    return false;
 }
 
 const Translator = struct {
@@ -64,6 +84,11 @@ const Translator = struct {
     out: std.ArrayList(u8) = .empty,
     temp: usize = 0,
     max_stack: u16 = 0,
+    /// Set when a function contains collection iteration/length lowering.
+    /// LLVM 23's InstCombine fixed-point verifier aborts on the stack-machine
+    /// IR those loops produce, so such functions opt out of the verification;
+    /// the iterative pipeline above still drives the IR to a fixed point.
+    uses_fixpoint_attr: bool = false,
 
     fn line(self: *Translator, comptime format: []const u8, args: anytype) Error!void {
         const text = try std.fmt.allocPrint(self.arena, format, args);
@@ -93,7 +118,12 @@ const Translator = struct {
             const part = try std.fmt.allocPrint(self.arena, "i64 %arg{d}", .{i});
             try signature.appendSlice(self.arena, part);
         }
-        try signature.appendSlice(self.arena, ") {");
+        try signature.appendSlice(self.arena, ")");
+        if (functionNeedsFixpointAttr(function)) {
+            try signature.appendSlice(self.arena, " #0");
+            self.uses_fixpoint_attr = true;
+        }
+        try signature.appendSlice(self.arena, " {");
         try self.line("{s}", .{signature.items});
         try self.line("entry:", .{});
         for (0..function.locals) |i| try self.line("  %l{d} = alloca i64", .{i});
@@ -409,6 +439,47 @@ const Translator = struct {
                 const a = try self.popValue();
                 const result = self.fresh();
                 try self.line("  {s} = call i64 @e7_str_eq(i64 {s}, i64 {s})", .{ result, a, b });
+                try self.pushValue(result);
+            },
+            .str_len => {
+                const str = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_len(i64 {s})", .{ result, str });
+                try self.pushValue(result);
+            },
+            .str_slice => {
+                const end = try self.popValue();
+                const start = try self.popValue();
+                const str = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_slice(i64 {s}, i64 {s}, i64 {s})", .{ result, str, start, end });
+                try self.pushValue(result);
+            },
+            .str_char_at => {
+                const char_index = try self.popValue();
+                const str = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_str_char_at(i64 {s}, i64 {s})", .{ result, str, char_index });
+                try self.pushValue(result);
+            },
+            .map_len => {
+                const map = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_len(i64 {s})", .{ result, map });
+                try self.pushValue(result);
+            },
+            .map_key_at => {
+                const entry_index = try self.popValue();
+                const map = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_key_at(i64 {s}, i64 {s})", .{ result, map, entry_index });
+                try self.pushValue(result);
+            },
+            .map_value_at => {
+                const entry_index = try self.popValue();
+                const map = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_map_value_at(i64 {s}, i64 {s})", .{ result, map, entry_index });
                 try self.pushValue(result);
             },
             .ret => {
