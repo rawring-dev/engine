@@ -37,6 +37,12 @@ const sprint_multiplier: f32 = 2.5;
 const mouse_sensitivity: f32 = 0.0025;
 const keyboard_look_speed: f32 = 1.6;
 const max_frame_delta_ms: i64 = 100;
+/// Clamp one SDL mouse-motion event.  Relative mode should produce small
+/// deltas, but focus/window-manager transitions can report a single huge jump.
+const look_delta_limit: f32 = 250.0;
+/// Clamp the accumulated per-frame look delta so a stalled frame cannot spin
+/// the camera by an unbounded amount.
+const max_look_delta: f32 = 600.0;
 
 /// Logical action codes shared by SDL key mapping, `e7_engine_key_down`, and
 /// the headless input tests.
@@ -175,8 +181,17 @@ fn pumpEventsLocked(window_handle: i64) void {
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 if (event.motion.windowID != window.id) continue;
-                state.input.mouse_dx += event.motion.xrel;
-                state.input.mouse_dy += event.motion.yrel;
+                // Only accumulate relative look while the window owns the
+                // pointer/focus.  Focus changes can otherwise inject a large
+                // synthetic delta that looks like the cube teleporting around
+                // the camera.
+                if ((c.SDL_GetWindowFlags(window.handle) & c.SDL_WINDOW_INPUT_FOCUS) == 0) continue;
+                state.input.mouse_dx += @max(-look_delta_limit, @min(event.motion.xrel, look_delta_limit));
+                state.input.mouse_dy += @max(-look_delta_limit, @min(event.motion.yrel, look_delta_limit));
+            },
+            c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                state.input.mouse_dx = 0.0;
+                state.input.mouse_dy = 0.0;
             },
             c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
                 if (event.key.windowID != window.id) continue;
@@ -199,8 +214,10 @@ fn cameraUpdateLocked(scene_handle: i64, delta_ms: i64) void {
     const clamped_ms = @max(@as(i64, 0), @min(delta_ms, max_frame_delta_ms));
     const delta = @as(f32, @floatFromInt(clamped_ms)) / 1000.0;
 
-    state.camera.yaw += state.input.mouse_dx * mouse_sensitivity;
-    state.camera.pitch -= state.input.mouse_dy * mouse_sensitivity;
+    const mouse_dx = std.math.clamp(state.input.mouse_dx, -max_look_delta, max_look_delta);
+    const mouse_dy = std.math.clamp(state.input.mouse_dy, -max_look_delta, max_look_delta);
+    state.camera.yaw += mouse_dx * mouse_sensitivity;
+    state.camera.pitch -= mouse_dy * mouse_sensitivity;
     state.input.mouse_dx = 0.0;
     state.input.mouse_dy = 0.0;
     if (state.input.look_left) state.camera.yaw -= keyboard_look_speed * delta;
