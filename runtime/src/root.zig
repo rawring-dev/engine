@@ -667,3 +667,173 @@ test "JIT executes custom operator traits, Deref, and Index" {
     try std.testing.expectEqual(@as(i64, 9), (try jit.get(Thunk, "read"))());
     try std.testing.expectEqual(@as(i64, 14), (try jit.get(Thunk, "at"))());
 }
+
+test "JIT executes aggregate reference semantics" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\Inner <- struct
+        \\    v: i32
+        \\Outer <- struct
+        \\    inner: Inner
+        \\Color <- enum
+        \\    Red
+        \\    Green
+        \\sum_ref <- (p: &Point) -> i32 = p.x + p.y
+        \\value_param <- (p: Point) -> i32 = p.x + p.y
+        \\bump <- (p: &mut Point) -> i32:
+        \\    p.x = p.x + 1
+        \\    p.x
+        \\inc <- (p: &mut i32) -> i32:
+        \\    *p = *p + 1
+        \\    *p
+        \\pick <- (c: &Color) -> i32:
+        \\    match *c:
+        \\        Red: 1
+        \\        Green: 2
+        \\via_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    sum_ref(&p)
+        \\mutate_param <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    bump(&mut p)
+        \\    p.x
+        \\mutate_scalar <- () -> i32:
+        \\    x := 5
+        \\    inc(&mut x)
+        \\    x
+        \\local_field <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    r.x + (*r).y
+        \\whole_deref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    q := *r
+        \\    q.y
+        \\deref_arg <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    value_param(*r)
+        \\field_addr <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    q := &p.x
+        \\    *q
+        \\field_mut <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &mut p
+        \\    r.x = 7
+        \\    r.x + r.y
+        \\bump_paren <- (p: &mut Point) -> i32:
+        \\    (*p).x = p.x + 2
+        \\    p.x
+        \\paren_mut <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    bump_paren(&mut p)
+        \\    p.x
+        \\inner_ref <- () -> i32:
+        \\    o := Outer { inner: Inner { v: 4 } }
+        \\    r := &o.inner
+        \\    r.v
+        \\inner_param <- (r: &Inner) -> i32 = r.v
+        \\inner_field_ref <- () -> i32:
+        \\    o := Outer { inner: Inner { v: 4 } }
+        \\    inner_param(&o.inner)
+        \\scalar_field_param <- (p: &i32) -> i32 = *p
+        \\scalar_field_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    scalar_field_param(&p.x)
+        \\scalar_ref <- () -> i32:
+        \\    x := 5
+        \\    r := &x
+        \\    *r
+        \\inner_mut <- () -> i32:
+        \\    o := Outer { inner: Inner { v: 4 } }
+        \\    s := &mut o
+        \\    s.inner.v = 9
+        \\    s.inner.v
+        \\enum_ref <- () -> i32:
+        \\    c := Color::Green
+        \\    pick(&c)
+        \\vec_ref <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    r := &mut xs
+        \\    r[1] = 9
+        \\    r.len() * 10 + r[1]
+        \\vec_whole <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    r := &xs
+        \\    q := *r
+        \\    q[2]
+        \\map_ref <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10 }
+        \\    r := &mut m
+        \\    r[2] = 22
+        \\    r[1] + r[2]
+        \\string_ref <- () -> i32:
+        \\    s := "hello"
+        \\    r := &s
+        \\    r.len() + r.char_at(1).len()
+        \\string_whole <- () -> i32:
+        \\    s := "hello"
+        \\    r := &s
+        \\    q := *r
+        \\    q.len()
+        \\mat_elem <- (m: &[i32; 2, 3]) -> i32 = m[0, 1]
+        \\mat_check <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    mat_elem(&m)
+        \\mat_deref <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    r := &m
+        \\    q := *r
+        \\    q[1, 0]
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const serialized = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(serialized);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(serialized, "aggregate-refs");
+
+    const Thunk = *const fn () callconv(.c) i64;
+    const Unary = *const fn (i64) callconv(.c) i64;
+
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(Thunk, "via_ref"))());
+    try std.testing.expectEqual(@as(i64, 3), (try jit.get(Thunk, "mutate_param"))());
+    try std.testing.expectEqual(@as(i64, 6), (try jit.get(Thunk, "mutate_scalar"))());
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(Thunk, "local_field"))());
+    try std.testing.expectEqual(@as(i64, 3), (try jit.get(Thunk, "whole_deref"))());
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(Thunk, "deref_arg"))());
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(Thunk, "field_addr"))());
+    try std.testing.expectEqual(@as(i64, 10), (try jit.get(Thunk, "field_mut"))());
+    try std.testing.expectEqual(@as(i64, 4), (try jit.get(Thunk, "paren_mut"))());
+    try std.testing.expectEqual(@as(i64, 4), (try jit.get(Thunk, "inner_ref"))());
+    try std.testing.expectEqual(@as(i64, 4), (try jit.get(Thunk, "inner_field_ref"))());
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(Thunk, "scalar_field_ref"))());
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(Thunk, "scalar_ref"))());
+    try std.testing.expectEqual(@as(i64, 9), (try jit.get(Thunk, "inner_mut"))());
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(Thunk, "enum_ref"))());
+    try std.testing.expectEqual(@as(i64, 39), (try jit.get(Thunk, "vec_ref"))());
+    try std.testing.expectEqual(@as(i64, 3), (try jit.get(Thunk, "vec_whole"))());
+    try std.testing.expectEqual(@as(i64, 32), (try jit.get(Thunk, "map_ref"))());
+    try std.testing.expectEqual(@as(i64, 6), (try jit.get(Thunk, "string_ref"))());
+    try std.testing.expectEqual(@as(i64, 5), (try jit.get(Thunk, "string_whole"))());
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(Thunk, "mat_check"))());
+    try std.testing.expectEqual(@as(i64, 4), (try jit.get(Thunk, "mat_deref"))());
+
+    // Host-built aggregate objects interoperate with reference parameters: a
+    // `&Point` argument aliases the object pointer directly.
+    const point = aggregate.e7_alloc_i64(2);
+    aggregate.e7_store_i64(point, 11);
+    aggregate.e7_store_i64(point + 8, 31);
+    try std.testing.expectEqual(@as(i64, 42), (try jit.get(Unary, "sum_ref"))(point));
+    try std.testing.expectEqual(@as(i64, 12), (try jit.get(Unary, "bump"))(point));
+    try std.testing.expectEqual(@as(i64, 12), aggregate.e7_load_i64(point));
+    try std.testing.expectEqual(@as(i64, 31), aggregate.e7_load_i64(point + 8));
+}

@@ -74,6 +74,14 @@ pub fn compile(
     };
 }
 
+fn hasLocalAddr(function: *const bytecode.Function) bool {
+    for (function.code) |op| switch (op) {
+        .local_addr => return true,
+        else => {},
+    };
+    return false;
+}
+
 test "compiles a source function to optimized bytecode" {
     var result = try compile(
         std.testing.allocator,
@@ -224,6 +232,119 @@ test "compiles matrix two-dimensional indexing and row assignment" {
         else => {},
     };
     try std.testing.expect(saw_set_row);
+}
+
+test "compiles aggregate references as object aliases" {
+    var result = try compile(
+        std.testing.allocator,
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\sum_ref <- (p: &Point) -> i32 = p.x + p.y
+        \\bump <- (p: &mut Point) -> i32:
+        \\    p.x = p.x + 1
+        \\    p.x
+        \\via_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    sum_ref(&p)
+        \\mutate <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    bump(&mut p)
+        \\    p.x
+        \\local_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    r.x + (*r).y
+        \\whole_value <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    q := *r
+        \\    q.y
+        \\scalar_ref <- () -> i32:
+        \\    x := 5
+        \\    r := &x
+        \\    *r
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    // Aggregate references alias the object pointer, so taking one never forms
+    // the address of a local slot.
+    for ([_][]const u8{ "sum_ref", "bump", "via_ref", "mutate", "local_ref", "whole_value" }) |name| {
+        try std.testing.expect(!hasLocalAddr(result.functionNamed(name).?));
+    }
+    // Scalar references still point at the local i64 slot.
+    const scalar = result.functionNamed("scalar_ref").?;
+    try std.testing.expect(hasLocalAddr(scalar));
+}
+
+test "compiles container references through aggregate aliases" {
+    var result = try compile(
+        std.testing.allocator,
+        \\vector_ref <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    r := &mut xs
+        \\    r[1] = 9
+        \\    r.len() * 10 + r[1]
+        \\map_ref <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10 }
+        \\    r := &mut m
+        \\    r[2] = 22
+        \\    r[1] + r[2]
+        \\string_ref <- () -> i32:
+        \\    s := "hello"
+        \\    r := &s
+        \\    r.len() + r.char_at(1).len()
+        \\matrix_ref <- (m: &[i32; 2, 3]) -> i32 = m[0, 1]
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    for ([_][]const u8{ "vector_ref", "map_ref", "string_ref", "matrix_ref" }) |name| {
+        try std.testing.expect(!hasLocalAddr(result.functionNamed(name).?));
+    }
+
+    const vector = result.functionNamed("vector_ref").?;
+    var saw_vec_set = false;
+    var saw_vec_len = false;
+    for (vector.code) |op| switch (op) {
+        .vec_set => saw_vec_set = true,
+        .vec_len => saw_vec_len = true,
+        else => {},
+    };
+    try std.testing.expect(saw_vec_set and saw_vec_len);
+
+    const map_function = result.functionNamed("map_ref").?;
+    var saw_map_set = false;
+    for (map_function.code) |op| switch (op) {
+        .map_set => saw_map_set = true,
+        else => {},
+    };
+    try std.testing.expect(saw_map_set);
+
+    const string = result.functionNamed("string_ref").?;
+    var saw_str_len = false;
+    var saw_str_char_at = false;
+    for (string.code) |op| switch (op) {
+        .str_len => saw_str_len = true,
+        .str_char_at => saw_str_char_at = true,
+        else => {},
+    };
+    try std.testing.expect(saw_str_len and saw_str_char_at);
+
+    const matrix = result.functionNamed("matrix_ref").?;
+    var saw_get2 = false;
+    for (matrix.code) |op| switch (op) {
+        .vec_get2 => saw_get2 = true,
+        else => {},
+    };
+    try std.testing.expect(saw_get2);
 }
 
 test "rejects semantically invalid source before lowering" {

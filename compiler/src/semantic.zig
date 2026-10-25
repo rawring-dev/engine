@@ -353,6 +353,71 @@ test "allows mutation through a mutable reference field" {
     );
 }
 
+test "supports references to aggregate values" {
+    try expectClean(
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\Inner <- struct
+        \\    v: i32
+        \\Outer <- struct
+        \\    inner: Inner
+        \\sum_ref <- (p: &Point) -> i32 = p.x + p.y
+        \\bump <- (p: &mut Point) -> i32:
+        \\    p.x = p.x + 1
+        \\    p.x
+        \\local_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    r.x + (*r).y
+        \\whole_value <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    r := &p
+        \\    q := *r
+        \\    sum_ref(&q)
+        \\call_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    sum_ref(&p)
+        \\mutate_ref <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    bump(&mut p)
+        \\    p.x
+        \\field_refs <- () -> i32:
+        \\    o := Outer { inner: Inner { v: 4 } }
+        \\    r := &o.inner
+        \\    r.v
+        \\nested_mut <- () -> i32:
+        \\    o := Outer { inner: Inner { v: 4 } }
+        \\    s := &mut o
+        \\    s.inner.v = 9
+        \\    s.inner.v
+        \\scalar_ref <- () -> i32:
+        \\    x := 5
+        \\    r := &x
+        \\    *r
+    );
+}
+
+test "supports references to builtin containers" {
+    try expectClean(
+        \\vector_ref <- () -> i32:
+        \\    xs := [1, 2, 3]
+        \\    r := &mut xs
+        \\    r[1] = 9
+        \\    r.len() * 10 + r[1]
+        \\map_ref <- () -> i32:
+        \\    m := map[i32, i32] { 1: 10 }
+        \\    r := &mut m
+        \\    r[2] = 22
+        \\    r[1] + r[2]
+        \\string_ref <- () -> i32:
+        \\    s := "hello"
+        \\    r := &s
+        \\    r.len() + r.char_at(1).len()
+        \\matrix_ref <- (m: &[i32; 2, 3]) -> i32 = m[0, 1]
+    );
+}
+
 test "reports non-exhaustive enum matches" {
     try expectDiagnostic(
         \\E <- enum

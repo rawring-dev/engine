@@ -983,7 +983,7 @@ const Checker = struct {
             },
             .index => |index_expr| {
                 const base = try self.placeOf(index_expr.target) orelse return null;
-                const base_ty = self.store.resolve(try self.placeType(base));
+                const base_ty = self.unwrapReferences(try self.placeType(base));
                 try self.checkIndexKeys(base_ty, index_expr.indices);
                 const path = try self.allocator.alloc(Projection, base.path.len + 1);
                 @memcpy(path[0..base.path.len], base.path);
@@ -1008,7 +1008,7 @@ const Checker = struct {
             ty = switch (projection) {
                 .field => |name| (try self.fieldType(ty, name)) orelse return try self.store.make(.unknown),
                 .index => |count| blk: {
-                    const resolved = self.store.resolve(ty);
+                    const resolved = self.unwrapReferences(ty);
                     break :blk switch (resolved.*) {
                         .array => |a| try self.arrayIndexType(a, count),
                         .map => |m| blk2: {
@@ -1385,6 +1385,15 @@ const Checker = struct {
         const resolved = self.store.resolve(ty);
         if (resolved.* != .named) return null;
         return self.lookupTypeDef(resolved.named.name);
+    }
+
+    /// Resolve through any number of reference layers.  Field, index, and
+    /// builtin-container access auto-deref references, so lowering and
+    /// placement need the underlying aggregate type.
+    fn unwrapReferences(self: *Checker, ty: *types.Type) *types.Type {
+        var resolved = self.store.resolve(ty);
+        while (resolved.* == .reference) resolved = self.store.resolve(resolved.reference.child);
+        return resolved;
     }
 
     fn fieldType(self: *Checker, ty: *types.Type, name: []const u8) !?*types.Type {
@@ -2887,10 +2896,14 @@ const Checker = struct {
             .borrow_shared, .borrow_mut => {
                 const mutable = unary.op == .borrow_mut;
                 if (try self.placeOf(unary.operand)) |place| {
+                    const place_ty = try self.placeType(place);
+                    // Lowering needs the operand's place types (`&p.field`,
+                    // `&*r`, ...) even though a borrow only checks the place.
+                    try self.recordPlaceTypes(unary.operand, place_ty);
                     try self.borrowPlace(place, mutable);
                     return self.store.make(.{ .reference = .{
                         .mutable = mutable,
-                        .child = try self.placeType(place),
+                        .child = place_ty,
                     } });
                 }
                 if (mutable) {
@@ -3236,7 +3249,7 @@ const Checker = struct {
         if (!is_len and !is_slice and !is_char_at) return null;
 
         const target_ty = try self.checkExpr(field.target, null);
-        const resolved = self.store.resolve(target_ty);
+        const resolved = self.unwrapReferences(target_ty);
         const int_ty = try self.store.make(.{ .int = .i32 });
         const index_ty = try self.store.make(.{ .int = .usize });
 
@@ -3348,7 +3361,7 @@ const Checker = struct {
         }
         // Always check the target so codegen can look up its recorded type,
         // even when the whole index expression is already a valid place.
-        const target_ty = self.store.resolve(try self.checkExpr(index_expr.target, null));
+        const target_ty = self.unwrapReferences(try self.checkExpr(index_expr.target, null));
         if (!index_checked) try self.checkIndexKeys(target_ty, index_expr.indices);
         return self.indexResultType(target_ty, index_expr.indices.len);
     }

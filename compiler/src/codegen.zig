@@ -623,6 +623,38 @@ const Builder = struct {
         };
     }
 
+    fn hasAggregateDecl(self: *Builder, name: []const u8) bool {
+        if (self.structs.contains(name) or self.tables.contains(name) or self.enums.contains(name)) {
+            return true;
+        }
+        // Qualified names may carry an enclosing module path; the declaration
+        // tables are keyed by the unqualified type name.
+        if (std.mem.lastIndexOf(u8, name, "::")) |index| {
+            const last = name[index + 2 ..];
+            return self.structs.contains(last) or self.tables.contains(last) or self.enums.contains(last);
+        }
+        return false;
+    }
+
+    /// True when values of `ty` are heap-allocated aggregate objects (structs,
+    /// enums, tables, vectors, matrices, maps, strings) rather than i64 scalars.
+    /// A local of such a type stores the object pointer, not the object itself.
+    fn isAggregateType(self: *Builder, ty: *types.Type) bool {
+        return switch (self.resolvedType(ty).*) {
+            .string, .array, .map => true,
+            .named => |named| self.hasAggregateDecl(named.name),
+            else => false,
+        };
+    }
+
+    /// Resolve through any number of reference layers so field/index/builtin
+    /// lowering runs against the referenced aggregate.
+    fn unwrapReferences(self: *Builder, ty: *types.Type) *types.Type {
+        var resolved = self.resolvedType(ty);
+        while (resolved.* == .reference) resolved = self.resolvedType(resolved.reference.child);
+        return resolved;
+    }
+
     fn exprType(self: *Builder, expr: *ast.Expr) ?*types.Type {
         return self.analysis.typeOf(expr);
     }
@@ -781,7 +813,7 @@ const Builder = struct {
 
     fn lowerIndex(self: *Builder, index_expr: ast.Index) Error!void {
         const target_ty = self.exprType(index_expr.target) orelse return error.UnsupportedFeature;
-        const resolved = self.resolvedType(target_ty);
+        const resolved = self.unwrapReferences(target_ty);
         try self.lowerExpr(index_expr.target);
         for (index_expr.indices) |index| try self.lowerExpr(index);
         switch (resolved.*) {
@@ -803,7 +835,7 @@ const Builder = struct {
             },
             .named => {
                 if (index_expr.indices.len != 1) return error.UnsupportedFeature;
-                const method = self.analysis.operatorMethod(target_ty, "Index", "index") orelse
+                const method = self.analysis.operatorMethod(resolved, "Index", "index") orelse
                     return error.UnsupportedFeature;
                 try self.methodCall(method, 2);
             },
@@ -836,6 +868,96 @@ const Builder = struct {
             },
             else => return false,
         }
+    }
+
+    /// Lower `&`/`&mut`.  A reference to a scalar is a pointer to that scalar's
+    /// 8-byte storage slot; a reference to an aggregate aliases the aggregate
+    /// object pointer, because the local already stores that pointer and the
+    /// object is addressed through it everywhere.  This mirrors `lowerDeref`.
+    fn lowerReference(self: *Builder, expr: *ast.Expr) Error!void {
+        if (self.exprType(expr)) |ty| {
+            if (self.isAggregateType(ty)) {
+                if (!isPlaceSyntax(expr)) {
+                    // Aggregate rvalue: alias the freshly produced object.
+                    try self.lowerExpr(expr);
+                    return;
+                }
+                // Only places that directly alias the aggregate object are
+                // supported; vector/matrix element places are copies and raw
+                // pointer derefs are slot addresses.
+                if (!self.isAliasableAggregatePlace(expr)) return error.UnsupportedFeature;
+                try self.lowerExpr(expr);
+                return;
+            }
+        }
+        if (try self.lowerAddress(expr)) return;
+        // Place expressions we cannot address (vector/matrix elements) must not
+        // silently fall back to a copy: a mutable borrow of one would mutate
+        // the copy instead of the container.
+        if (isPlaceSyntax(expr)) return error.UnsupportedFeature;
+        // A non-place scalar rvalue has no slot of its own, so materialize one;
+        // `&` always yields a pointer to an 8-byte slot.
+        const slot = try self.allocLocal("<ref>");
+        try self.lowerExpr(expr);
+        try self.emit(.{ .store_local = slot });
+        try self.emit(.{ .local_addr = slot });
+    }
+
+    fn isPlaceSyntax(expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .path, .field, .index => true,
+            .unary => |unary| unary.op == .deref,
+            else => false,
+        };
+    }
+
+    /// True for aggregate places whose value is the object pointer itself:
+    /// locals/parameters, struct fields, and dereferences of references.
+    fn isAliasableAggregatePlace(self: *Builder, expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .path, .field => true,
+            .unary => |unary| blk: {
+                if (unary.op != .deref) break :blk false;
+                const operand_ty = self.exprType(unary.operand) orelse break :blk false;
+                break :blk self.resolvedType(operand_ty).* == .reference;
+            },
+            else => false,
+        };
+    }
+
+    /// Lower `*expr`.  A reference to an aggregate aliases the object pointer,
+    /// so dereferencing it is the identity; references to scalars, boxes, and
+    /// raw pointers store a real pointer that must be loaded.  Custom `Deref`
+    /// keeps applying to named values.
+    fn lowerDeref(self: *Builder, unary: ast.Unary) Error!void {
+        if (self.exprType(unary.operand)) |operand_ty| {
+            switch (self.resolvedType(operand_ty).*) {
+                .reference => |reference| {
+                    if (self.isAggregateType(reference.child)) {
+                        try self.lowerExpr(unary.operand);
+                        return;
+                    }
+                },
+                .named => {
+                    if (self.analysis.operatorMethod(operand_ty, "Deref", "deref")) |method| {
+                        try self.lowerExpr(unary.operand);
+                        try self.methodCall(method, 1);
+                        return;
+                    }
+                },
+                else => {},
+            }
+        }
+        try self.lowerExpr(unary.operand);
+        try self.emit(.load_mem);
+    }
+
+    /// True for `*r` where `r` references an aggregate value.
+    fn isAggregateDerefTarget(self: *Builder, target: *ast.Expr) bool {
+        if (target.* != .unary or target.unary.op != .deref) return false;
+        const operand_ty = self.exprType(target.unary.operand) orelse return false;
+        const resolved = self.resolvedType(operand_ty);
+        return resolved.* == .reference and self.isAggregateType(resolved.reference.child);
     }
 
     fn lowerBlockStatements(self: *Builder, block: *ast.Block) Error!void {
@@ -908,7 +1030,7 @@ const Builder = struct {
                 } else if (target.* == .index) {
                     if (assign.op != .assign) return error.UnsupportedFeature;
                     const base_ty = self.exprType(target.index.target) orelse return error.UnsupportedFeature;
-                    const resolved = self.resolvedType(base_ty);
+                    const resolved = self.unwrapReferences(base_ty);
                     try self.lowerExpr(target.index.target);
                     for (target.index.indices) |index| try self.lowerExpr(index);
                     try self.lowerExpr(assign.value);
@@ -933,6 +1055,11 @@ const Builder = struct {
                     }
                 } else {
                     if (assign.op != .assign) return error.UnsupportedFeature;
+                    // Whole-value assignment through a reference to an
+                    // aggregate cannot be represented: the reference aliases
+                    // the object pointer, not the referent's storage slot.
+                    // Field/index assignments through the reference still work.
+                    if (self.isAggregateDerefTarget(target)) return error.UnsupportedFeature;
                     if (!try self.lowerAddress(target)) return error.UnsupportedFeature;
                     try self.lowerExpr(assign.value);
                     try self.emit(.store_mem);
@@ -1224,24 +1351,8 @@ const Builder = struct {
                         try self.lowerExpr(unary.operand);
                         try self.emit(.not);
                     },
-                    .borrow_shared, .borrow_mut => {
-                        if (!try self.lowerAddress(unary.operand)) return error.UnsupportedFeature;
-                    },
-                    .deref => {
-                        // Custom `Deref` applies to named types only; references,
-                        // boxes, and raw pointers keep the built-in load.
-                        if (self.exprType(unary.operand)) |operand_ty| {
-                            if (self.resolvedType(operand_ty).* == .named) {
-                                if (self.analysis.operatorMethod(operand_ty, "Deref", "deref")) |method| {
-                                    try self.lowerExpr(unary.operand);
-                                    try self.methodCall(method, 1);
-                                    return;
-                                }
-                            }
-                        }
-                        try self.lowerExpr(unary.operand);
-                        try self.emit(.load_mem);
-                    },
+                    .borrow_shared, .borrow_mut => try self.lowerReference(unary.operand),
+                    .deref => try self.lowerDeref(unary),
                 }
             },
             .binary => |binary| try self.lowerBinary(binary),
@@ -1693,7 +1804,7 @@ const Builder = struct {
         const is_char_at = std.mem.eql(u8, name, "char_at");
         if (!is_len and !is_slice and !is_char_at) return false;
         const target_ty = self.exprType(field.target) orelse return false;
-        const resolved = self.resolvedType(target_ty);
+        const resolved = self.unwrapReferences(target_ty);
         if (is_len) {
             try self.lowerExpr(field.target);
             try self.emit(switch (resolved.*) {
