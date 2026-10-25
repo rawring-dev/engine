@@ -46,6 +46,111 @@ const TriggerInfo = struct {
     systems: [][]const u8,
 };
 
+/// Build a bytecode (and LLVM-safe) symbol for an impl method.  Qualified type
+/// names use `::`, which LLVM IR identifiers cannot contain unquoted, so every
+/// character outside the unquoted-identifier set becomes `_`.
+fn mangleMethodSymbol(
+    allocator: std.mem.Allocator,
+    type_name: []const u8,
+    method_name: []const u8,
+) Error![]const u8 {
+    const raw = try std.fmt.allocPrint(allocator, "impl.{s}.{s}", .{ type_name, method_name });
+    for (raw) |*char| {
+        switch (char.*) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '.', '$', '-' => {},
+            else => char.* = '_',
+        }
+    }
+    return raw;
+}
+
+/// Bytecode functions for custom operator/Index implementation methods.
+///
+/// Methods are only compiled when lowering actually resolves an operator to
+/// them, so an impl block is not compiled (and cannot fail to compile) unless
+/// its method is used.  A method can reference further methods, so compilation
+/// drains the pending queue to a fixed point.
+const MethodTable = struct {
+    allocator: std.mem.Allocator,
+    config: Config,
+    name_map: *const std.StringHashMapUnmanaged(u16),
+    analysis: *const semantic.Analysis,
+    structs: *const std.StringHashMapUnmanaged(*const ast.StructDecl),
+    tables: *const std.StringHashMapUnmanaged(*const ast.TableDecl),
+    enums: *const std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// First bytecode index occupied by impl-method functions.
+    base_index: u16,
+    by_decl: std.AutoHashMapUnmanaged(usize, u16) = .empty,
+    pending: std.ArrayList(PendingMethod) = .empty,
+    functions: std.ArrayList(bytecode.Function) = .empty,
+    /// Cleared once the functions are copied into the module function table.
+    owned: bool = true,
+
+    const PendingMethod = struct {
+        decl: *const ast.FunctionDecl,
+        index: u16,
+        name: []const u8,
+    };
+
+    fn deinit(self: *MethodTable) void {
+        if (self.owned) {
+            for (self.functions.items) |function| {
+                self.allocator.free(function.name);
+                self.allocator.free(function.code);
+            }
+        }
+        self.functions.deinit(self.allocator);
+        for (self.pending.items) |pending| self.allocator.free(pending.name);
+        self.pending.deinit(self.allocator);
+        self.by_decl.deinit(self.allocator);
+    }
+
+    fn ensure(self: *MethodTable, method: semantic.ImplMethod) Error!u16 {
+        const key = @intFromPtr(method.decl);
+        if (self.by_decl.get(key)) |index| return index;
+        const offset = std.math.cast(u16, self.functions.items.len) orelse return error.TooManyLocals;
+        const index = std.math.add(u16, self.base_index, offset) catch return error.TooManyLocals;
+        const name = try mangleMethodSymbol(self.allocator, method.type_name, method.method_name);
+        errdefer self.allocator.free(name);
+        try self.by_decl.put(self.allocator, key, index);
+        errdefer _ = self.by_decl.remove(key);
+        // Placeholder owning no allocations; replaced by `finish`.
+        try self.functions.append(self.allocator, .{
+            .name = "",
+            .params = 0,
+            .locals = 0,
+            .max_stack = self.config.stack_slots,
+            .code = &.{},
+        });
+        try self.pending.append(self.allocator, .{ .decl = method.decl, .index = index, .name = name });
+        return index;
+    }
+
+    fn finish(self: *MethodTable) Error!void {
+        var next: usize = 0;
+        while (next < self.pending.items.len) : (next += 1) {
+            const pending = self.pending.items[next];
+            const offset = pending.index - self.base_index;
+            var builder = Builder{
+                .allocator = self.allocator,
+                .config = self.config,
+                .name_map = self.name_map,
+                .function = pending.decl,
+                .analysis = self.analysis,
+                .structs = self.structs,
+                .tables = self.tables,
+                .enums = self.enums,
+                .methods = self,
+                .name_override = pending.name,
+            };
+            const compiled = try builder.finish();
+            self.allocator.free(self.functions.items[offset].name);
+            self.allocator.free(self.functions.items[offset].code);
+            self.functions.items[offset] = compiled;
+        }
+    }
+};
+
 pub fn lower(
     allocator: std.mem.Allocator,
     module: *ast.Module,
@@ -210,15 +315,28 @@ pub fn lower(
         }
     }
 
+    var methods = MethodTable{
+        .allocator = allocator,
+        .config = config,
+        .name_map = &name_map,
+        .analysis = analysis,
+        .structs = &structs,
+        .tables = &tables,
+        .enums = &enums,
+        .base_index = next_index,
+    };
+    defer methods.deinit();
+
     const functions = try allocator.alloc(bytecode.Function, next_index);
     var initialized: usize = 0;
-    errdefer {
+    var transferred = false;
+    errdefer if (!transferred) {
         for (functions[0..initialized]) |function| {
             allocator.free(function.name);
             allocator.free(function.code);
         }
         allocator.free(functions);
-    }
+    };
 
     for (infos.items) |info| {
         if (info.body_index) |body_index| {
@@ -231,6 +349,7 @@ pub fn lower(
                 .structs = &structs,
                 .tables = &tables,
                 .enums = &enums,
+                .methods = &methods,
                 .mode = .async_constructor,
                 .body_index = body_index,
             };
@@ -246,6 +365,7 @@ pub fn lower(
                 .structs = &structs,
                 .tables = &tables,
                 .enums = &enums,
+                .methods = &methods,
                 .mode = .async_body,
             };
             functions[body_index] = try body.finish();
@@ -260,6 +380,7 @@ pub fn lower(
                 .structs = &structs,
                 .tables = &tables,
                 .enums = &enums,
+                .methods = &methods,
             };
             functions[info.constructor_index] = try builder.finish();
             initialized += 1;
@@ -315,9 +436,23 @@ pub fn lower(
         initialized += 1;
     }
 
+    // Compile any impl methods that lowering resolved custom operators to.
+    try methods.finish();
+
+    const method_functions = methods.functions.items;
+    const combined = try allocator.alloc(bytecode.Function, next_index + method_functions.len);
+    @memcpy(combined[0..next_index], functions);
+    @memcpy(combined[next_index..], method_functions);
+    allocator.free(functions);
+    transferred = true;
+    // Ownership of the method functions moved into `combined`.
+    methods.functions.deinit(allocator);
+    methods.functions = .empty;
+    methods.owned = false;
+
     var result = bytecode.Module{
         .allocator = allocator,
-        .functions = functions,
+        .functions = combined,
         .entry = name_map.get("main"),
     };
     errdefer result.deinit();
@@ -341,6 +476,10 @@ const Builder = struct {
     structs: *const std.StringHashMapUnmanaged(*const ast.StructDecl),
     tables: *const std.StringHashMapUnmanaged(*const ast.TableDecl),
     enums: *const std.StringHashMapUnmanaged(*const ast.EnumDecl),
+    /// Non-null for implementation-method functions (custom operators/Index).
+    methods: ?*MethodTable = null,
+    /// Bytecode symbol to use instead of the AST function name.
+    name_override: ?[]const u8 = null,
     mode: BuilderMode = .normal,
     body_index: u16 = 0,
     code: std.ArrayList(bytecode.Op) = .empty,
@@ -393,7 +532,9 @@ const Builder = struct {
             },
         }
 
-        const name = if (self.mode == .async_body)
+        const name = if (self.name_override) |override|
+            try self.allocator.dupe(u8, override)
+        else if (self.mode == .async_body)
             try std.fmt.allocPrint(self.allocator, "{s}__body", .{self.function.name})
         else
             try self.allocator.dupe(u8, self.function.name);
@@ -462,6 +603,13 @@ const Builder = struct {
     fn emitCall(self: *Builder, name: []const u8, argc: usize) Error!void {
         const function = self.name_map.get(name) orelse return error.UnsupportedFeature;
         try self.emit(.{ .call = .{ .function = function, .argc = @intCast(argc) } });
+    }
+
+    /// Emit a call to a custom operator/Index implementation method.
+    fn methodCall(self: *Builder, method: semantic.ImplMethod, argc: u16) Error!void {
+        const methods = self.methods orelse return error.UnsupportedFeature;
+        const function = try methods.ensure(method);
+        try self.emit(.{ .call = .{ .function = function, .argc = argc } });
     }
 
     fn isStringType(self: *Builder, ty: *types.Type) bool {
@@ -639,6 +787,11 @@ const Builder = struct {
         switch (resolved.*) {
             .array => |array| try self.emit(if (array.columns != null) .vec_row else .vec_get),
             .map => |m| try self.emit(if (self.isStringType(m.key)) .map_get_str else .map_get),
+            .named => {
+                const method = self.analysis.operatorMethod(target_ty, "Index", "index") orelse
+                    return error.UnsupportedFeature;
+                try self.methodCall(method, 2);
+            },
             else => return error.UnsupportedFeature,
         }
     }
@@ -884,14 +1037,36 @@ const Builder = struct {
             .prefix => |prefix_expr| try self.lowerPrefix(prefix_expr),
             .unary => |unary| {
                 switch (unary.op) {
-                    .negative, .not => {
+                    .negative => {
+                        if (self.exprType(unary.operand)) |operand_ty| {
+                            if (self.analysis.operatorMethod(operand_ty, "Neg", "neg")) |method| {
+                                try self.lowerExpr(unary.operand);
+                                try self.methodCall(method, 1);
+                                return;
+                            }
+                        }
                         try self.lowerExpr(unary.operand);
-                        try self.emit(if (unary.op == .negative) .neg else .not);
+                        try self.emit(.neg);
+                    },
+                    .not => {
+                        try self.lowerExpr(unary.operand);
+                        try self.emit(.not);
                     },
                     .borrow_shared, .borrow_mut => {
                         if (!try self.lowerAddress(unary.operand)) return error.UnsupportedFeature;
                     },
                     .deref => {
+                        // Custom `Deref` applies to named types only; references,
+                        // boxes, and raw pointers keep the built-in load.
+                        if (self.exprType(unary.operand)) |operand_ty| {
+                            if (self.resolvedType(operand_ty).* == .named) {
+                                if (self.analysis.operatorMethod(operand_ty, "Deref", "deref")) |method| {
+                                    try self.lowerExpr(unary.operand);
+                                    try self.methodCall(method, 1);
+                                    return;
+                                }
+                            }
+                        }
                         try self.lowerExpr(unary.operand);
                         try self.emit(.load_mem);
                     },
@@ -977,6 +1152,8 @@ const Builder = struct {
             else => {},
         }
 
+        if (try self.lowerCustomBinary(binary)) return;
+
         const left_ty = self.exprType(binary.lhs);
         const right_ty = self.exprType(binary.rhs);
         if (left_ty != null and right_ty != null) {
@@ -1055,6 +1232,107 @@ const Builder = struct {
             .mod => .rem,
             .and_, .or_ => unreachable,
         });
+    }
+
+    /// Lower a binary operator that a named type implements through a custom
+    /// operator trait.  Returns false when the operands are not custom
+    /// operators, leaving built-in lowering untouched.
+    fn lowerCustomBinary(self: *Builder, binary: ast.Binary) Error!bool {
+        const left_ty = self.exprType(binary.lhs) orelse return false;
+        switch (binary.op) {
+            .add, .sub, .mul, .div => {
+                const trait_name: []const u8 = switch (binary.op) {
+                    .add => "Add",
+                    .sub => "Sub",
+                    .mul => "Mul",
+                    .div => "Div",
+                    else => unreachable,
+                };
+                const method_name: []const u8 = switch (binary.op) {
+                    .add => "add",
+                    .sub => "sub",
+                    .mul => "mul",
+                    .div => "div",
+                    else => unreachable,
+                };
+                if (self.analysis.operatorMethod(left_ty, trait_name, method_name)) |method| {
+                    try self.lowerExpr(binary.lhs);
+                    try self.lowerExpr(binary.rhs);
+                    try self.methodCall(method, 2);
+                    return true;
+                }
+                // The analyzer accepted a custom impl but no usable method
+                // exists; refuse to silently fall back to scalar arithmetic.
+                if (self.analysis.implementsTrait(left_ty, trait_name)) return error.UnsupportedFeature;
+                return false;
+            },
+            .eq, .ne => {
+                const method = self.analysis.operatorMethod(left_ty, "PartialEq", "eq") orelse {
+                    if (self.analysis.implementsTrait(left_ty, "PartialEq")) return error.UnsupportedFeature;
+                    return false;
+                };
+                try self.lowerExpr(binary.lhs);
+                try self.lowerExpr(binary.rhs);
+                try self.methodCall(method, 2);
+                if (binary.op == .ne) try self.emit(.not);
+                return true;
+            },
+            .lt, .le, .gt, .ge => {
+                if (!self.analysis.implementsTrait(left_ty, "PartialOrd")) return false;
+                return self.lowerCustomComparison(binary, left_ty);
+            },
+            else => return false,
+        }
+    }
+
+    const ComparisonPlan = struct {
+        method: []const u8,
+        swap: bool = false,
+        negate: bool = false,
+    };
+
+    fn lowerCustomComparison(self: *Builder, binary: ast.Binary, left_ty: *types.Type) Error!bool {
+        const plans: []const ComparisonPlan = switch (binary.op) {
+            .lt => &[_]ComparisonPlan{.{ .method = "lt" }},
+            .le => &[_]ComparisonPlan{
+                .{ .method = "le" },
+                .{ .method = "lt", .swap = true, .negate = true },
+            },
+            .gt => &[_]ComparisonPlan{
+                .{ .method = "gt" },
+                .{ .method = "lt", .swap = true },
+            },
+            .ge => &[_]ComparisonPlan{
+                .{ .method = "ge" },
+                .{ .method = "le", .swap = true },
+                .{ .method = "lt", .negate = true },
+            },
+            else => return false,
+        };
+        for (plans) |plan| {
+            const method = self.analysis.operatorMethod(left_ty, "PartialOrd", plan.method) orelse continue;
+            if (plan.swap) {
+                // Evaluate operands left-to-right, then pass them reversed to
+                // the method (e.g. `a > b` -> `lt(b, a)`).
+                const lhs_slot = try self.allocLocal("<cmp_lhs>");
+                try self.lowerExpr(binary.lhs);
+                try self.emit(.{ .store_local = lhs_slot });
+                const rhs_slot = try self.allocLocal("<cmp_rhs>");
+                try self.lowerExpr(binary.rhs);
+                try self.emit(.{ .store_local = rhs_slot });
+                try self.emit(.{ .load_local = rhs_slot });
+                try self.emit(.{ .load_local = lhs_slot });
+            } else {
+                try self.lowerExpr(binary.lhs);
+                try self.lowerExpr(binary.rhs);
+            }
+            try self.methodCall(method, 2);
+            if (plan.negate) try self.emit(.not);
+            return true;
+        }
+        // PartialOrd is implemented but exposes none of the comparison methods
+        // lowering can use (e.g. only `eq`): report instead of comparing pointers.
+        return error.UnsupportedFeature;
     }
 
     fn lowerIf(self: *Builder, if_expr: ast.IfExpr) Error!void {

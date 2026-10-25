@@ -395,3 +395,99 @@ test "JIT lowers enums and enum matches" {
     const some = try jit.get(Some, "some");
     try std.testing.expectEqual(@as(i64, 42), read_maybe(some()));
 }
+
+test "JIT executes custom operator traits, Deref, and Index" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\impl Add for Point:
+        \\    add <- (a: Point, b: Point) -> Point = Point { x: a.x + b.x, y: a.y + b.y }
+        \\impl Sub for Point:
+        \\    sub <- (a: Point, b: Point) -> Point = Point { x: a.x - b.x, y: a.y - b.y }
+        \\impl Mul for Point:
+        \\    mul <- (a: Point, b: Point) -> Point = Point { x: a.x * b.x, y: a.y * b.y }
+        \\impl Div for Point:
+        \\    div <- (a: Point, b: Point) -> Point = Point { x: a.x / b.x, y: a.y / b.y }
+        \\impl Neg for Point:
+        \\    neg <- (a: Point) -> Point = Point { x: -a.x, y: -a.y }
+        \\impl PartialEq for Point:
+        \\    eq <- (a: Point, b: Point) -> bool = a.x == b.x
+        \\impl PartialOrd for Point:
+        \\    lt <- (a: Point, b: Point) -> bool = a.x < b.x
+        \\impl Deref for Point:
+        \\    deref <- (a: Point) -> i32 = a.x + a.y
+        \\impl Index for Point:
+        \\    index <- (a: Point, i: i32) -> i32 = a.x + a.y + i
+        \\add <- () -> i32:
+        \\    p := Point { x: 1, y: 2 } + Point { x: 3, y: 4 }
+        \\    p.x + p.y
+        \\sub <- () -> i32:
+        \\    p := Point { x: 5, y: 7 } - Point { x: 2, y: 3 }
+        \\    p.x + p.y
+        \\mul <- () -> i32:
+        \\    p := Point { x: 2, y: 3 } * Point { x: 4, y: 5 }
+        \\    p.x + p.y
+        \\divide <- () -> i32:
+        \\    p := Point { x: 8, y: 6 } / Point { x: 2, y: 3 }
+        \\    p.x + p.y
+        \\negate <- () -> i32:
+        \\    p := Point { x: 2, y: 3 }
+        \\    q := -p
+        \\    q.x + q.y
+        \\equal <- () -> bool:
+        \\    a := Point { x: 1, y: 2 }
+        \\    b := Point { x: 1, y: 2 }
+        \\    a == b
+        \\not_equal <- () -> bool:
+        \\    a := Point { x: 1, y: 2 }
+        \\    b := Point { x: 2, y: 3 }
+        \\    a != b
+        \\less <- () -> bool:
+        \\    a := Point { x: 1, y: 0 }
+        \\    b := Point { x: 2, y: 0 }
+        \\    a < b
+        \\greater <- () -> bool:
+        \\    a := Point { x: 2, y: 0 }
+        \\    b := Point { x: 1, y: 0 }
+        \\    a > b
+        \\at_most <- () -> bool:
+        \\    a := Point { x: 3, y: 0 }
+        \\    b := Point { x: 3, y: 0 }
+        \\    a <= b
+        \\at_least <- () -> bool:
+        \\    a := Point { x: 2, y: 0 }
+        \\    b := Point { x: 1, y: 0 }
+        \\    a >= b
+        \\read <- () -> i32:
+        \\    p := Point { x: 4, y: 5 }
+        \\    *p
+        \\at <- () -> i32:
+        \\    p := Point { x: 5, y: 6 }
+        \\    p[3]
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    const serialized = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(serialized);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(serialized, "custom-operators");
+
+    const Thunk = *const fn () callconv(.c) i64;
+    try std.testing.expectEqual(@as(i64, 10), (try jit.get(Thunk, "add"))());
+    try std.testing.expectEqual(@as(i64, 7), (try jit.get(Thunk, "sub"))());
+    try std.testing.expectEqual(@as(i64, 23), (try jit.get(Thunk, "mul"))());
+    try std.testing.expectEqual(@as(i64, 6), (try jit.get(Thunk, "divide"))());
+    try std.testing.expectEqual(@as(i64, -5), (try jit.get(Thunk, "negate"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "equal"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "not_equal"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "less"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "greater"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "at_most"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(Thunk, "at_least"))());
+    try std.testing.expectEqual(@as(i64, 9), (try jit.get(Thunk, "read"))());
+    try std.testing.expectEqual(@as(i64, 14), (try jit.get(Thunk, "at"))());
+}

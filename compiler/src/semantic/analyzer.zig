@@ -16,6 +16,12 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("types.zig");
 
+/// Traits with compiler-known operator syntax.
+const builtin_trait_names = [_][]const u8{
+    "Add",       "Sub",        "Mul",   "Div",   "Neg",
+    "PartialEq", "PartialOrd", "Deref", "Index",
+};
+
 pub const Diagnostic = struct {
     message: []const u8,
     span: ast.Span = .{},
@@ -26,12 +32,36 @@ pub const TriggerInfo = struct {
     systems: [][]const u8,
 };
 
+/// A declared `impl Trait for Type` relation (direct, not supertrait-expanded).
+pub const TraitImplInfo = struct {
+    /// Qualified name of the implementing type, matching `types.Named.name`.
+    target: []const u8,
+    /// Qualified name of the implemented trait.
+    trait_name: []const u8,
+};
+
+/// A method declared in an `impl` block, exposed to lowering so codegen can
+/// resolve operator syntax (`a + b`, `*a`, `a[i]`, ...) to its implementation.
+pub const ImplMethod = struct {
+    /// Qualified name of the implementing type, matching `types.Named.name`.
+    type_name: []const u8,
+    method_name: []const u8,
+    decl: *const ast.FunctionDecl,
+};
+
 pub const Analysis = struct {
     arena: std.heap.ArenaAllocator,
     store: types.TypeStore,
     diagnostics: []Diagnostic,
     expr_types: std.AutoHashMapUnmanaged(usize, *types.Type),
     triggers: []TriggerInfo,
+    /// Direct `impl Trait for Type` relations, as written.
+    trait_impls: []TraitImplInfo = &.{},
+    /// Builtin trait relations, including ones reached through supertraits
+    /// (`impl MyAdd for Foo` where `trait MyAdd: Add` also records `Add`).
+    builtin_impls: []TraitImplInfo = &.{},
+    /// Every method declared in an `impl` block, keyed by owner type and name.
+    impl_methods: []ImplMethod = &.{},
 
     pub fn deinit(self: *Analysis) void {
         self.arena.deinit();
@@ -44,6 +74,42 @@ pub const Analysis = struct {
 
     pub fn typeOf(self: *const Analysis, expr: *const ast.Expr) ?*types.Type {
         return self.expr_types.get(@intFromPtr(expr));
+    }
+
+    /// True when the concrete named type implements the builtin trait.
+    pub fn implementsTrait(self: *const Analysis, ty: *types.Type, trait_name: []const u8) bool {
+        const resolved = self.store.resolve(ty);
+        if (resolved.* != .named) return false;
+        for (self.builtin_impls) |impl| {
+            if (std.mem.eql(u8, impl.target, resolved.named.name) and
+                std.mem.eql(u8, impl.trait_name, trait_name)) return true;
+        }
+        return false;
+    }
+
+    /// Resolve a method declared for the concrete named type, if any.
+    pub fn implMethod(self: *const Analysis, ty: *types.Type, method_name: []const u8) ?ImplMethod {
+        const resolved = self.store.resolve(ty);
+        if (resolved.* != .named) return null;
+        for (self.impl_methods) |method| {
+            if (std.mem.eql(u8, method.type_name, resolved.named.name) and
+                std.mem.eql(u8, method.method_name, method_name)) return method;
+        }
+        return null;
+    }
+
+    /// Resolve the method backing a custom operator: the type must implement
+    /// `trait_name` and declare `method_name` in one of its `impl` blocks.
+    /// This mirrors the analyzer's own operator rules so lowering does not
+    /// re-derive trait satisfaction.
+    pub fn operatorMethod(
+        self: *const Analysis,
+        ty: *types.Type,
+        trait_name: []const u8,
+        method_name: []const u8,
+    ) ?ImplMethod {
+        if (!self.implementsTrait(ty, trait_name)) return null;
+        return self.implMethod(ty, method_name);
     }
 };
 
@@ -62,6 +128,9 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
         .diagnostics = try checker.diagnostics.toOwnedSlice(checker.allocator),
         .expr_types = checker.expr_types,
         .triggers = triggers,
+        .trait_impls = try checker.trait_impls.toOwnedSlice(checker.allocator),
+        .builtin_impls = try checker.builtin_impls.toOwnedSlice(checker.allocator),
+        .impl_methods = try checker.impl_methods.toOwnedSlice(checker.allocator),
     };
 }
 
@@ -99,11 +168,6 @@ const TraitDef = struct {
     module_path: []const u8 = "",
     generics: []ast.GenericParam = &.{},
     bounds: []*ast.Type = &.{},
-};
-
-const TraitImpl = struct {
-    target: []const u8,
-    trait_name: []const u8,
 };
 
 const ImplEntry = struct {
@@ -172,7 +236,9 @@ const Checker = struct {
     qualified_types: std.StringHashMapUnmanaged(*TypeDef) = .empty,
     traits: std.StringHashMapUnmanaged(*TraitDef) = .empty,
     qualified_traits: std.StringHashMapUnmanaged(*TraitDef) = .empty,
-    trait_impls: std.ArrayList(TraitImpl) = .empty,
+    trait_impls: std.ArrayList(TraitImplInfo) = .empty,
+    builtin_impls: std.ArrayList(TraitImplInfo) = .empty,
+    impl_methods: std.ArrayList(ImplMethod) = .empty,
     qualified_functions: std.StringHashMapUnmanaged(*Callable) = .empty,
     item_types: std.AutoHashMapUnmanaged(usize, *TypeDef) = .empty,
     item_callables: std.AutoHashMapUnmanaged(usize, *Callable) = .empty,
@@ -213,11 +279,7 @@ const Checker = struct {
     }
 
     fn installBuiltinTraits(self: *Checker) Error!void {
-        const names = [_][]const u8{
-            "Add",       "Sub",        "Mul",   "Div",   "Neg",
-            "PartialEq", "PartialOrd", "Deref", "Index",
-        };
-        for (names) |name| {
+        for (builtin_trait_names) |name| {
             const def = try self.allocator.create(TraitDef);
             def.* = .{
                 .name = name,
@@ -451,13 +513,14 @@ const Checker = struct {
                             .target = def.qualified_name,
                             .trait_name = trait_def.qualified_name,
                         });
+                        try self.recordBuiltinTraitImpls(def.qualified_name, trait_def);
                     }
                 } else {
                     try self.report("unknown trait in impl", .{});
                 }
             }
 
-            for (decl.methods) |method| {
+            for (decl.methods) |*method| {
                 if (def.methods.get(method.function.name) != null) {
                     try self.report("duplicate method `{s}::{s}`", .{ def.name, method.function.name });
                     continue;
@@ -475,7 +538,36 @@ const Checker = struct {
                     .owner = def,
                 };
                 try def.methods.put(self.allocator, method.function.name, callable);
+                try self.impl_methods.append(self.allocator, .{
+                    .type_name = def.qualified_name,
+                    .method_name = method.function.name,
+                    .decl = &method.function,
+                });
             }
+        }
+    }
+
+    /// Record which builtin operator traits this impl satisfies, including
+    /// supertraits, so lowering can resolve operator syntax without re-running
+    /// trait satisfaction itself.
+    fn recordBuiltinTraitImpls(self: *Checker, target: []const u8, implemented: *TraitDef) Error!void {
+        for (builtin_trait_names) |name| {
+            const required = self.traits.get(name) orelse continue;
+            if (!self.traitSatisfies(implemented, required, 0)) continue;
+            var exists = false;
+            for (self.builtin_impls.items) |existing| {
+                if (std.mem.eql(u8, existing.target, target) and
+                    std.mem.eql(u8, existing.trait_name, required.qualified_name))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (exists) continue;
+            try self.builtin_impls.append(self.allocator, .{
+                .target = target,
+                .trait_name = required.qualified_name,
+            });
         }
     }
 

@@ -153,3 +153,47 @@ test "compiles inline async function expressions" {
     try std.testing.expect(result.functionNamed("double") != null);
     try std.testing.expect(result.functionNamed("double__body") != null);
 }
+
+test "lowers custom operator and Index impl methods to calls" {
+    var result = try compile(
+        std.testing.allocator,
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\impl Add for Point:
+        \\    add <- (a: Point, b: Point) -> Point = Point { x: a.x + b.x, y: a.y + b.y }
+        \\impl Index for Point:
+        \\    index <- (p: Point, i: i32) -> i32 = p.x + i
+        \\sum <- () -> Point = Point { x: 1, y: 2 } + Point { x: 3, y: 4 }
+        \\get <- () -> i32:
+        \\    p := Point { x: 5, y: 6 }
+        \\    p[1]
+    ,
+        .{},
+    );
+    defer result.deinit();
+    // Two source functions plus lazily-compiled `add` and `index` methods.
+    try std.testing.expectEqual(@as(usize, 4), result.bytecode.functions.len);
+    try std.testing.expect(result.functionNamed("impl.Point.add") != null);
+    try std.testing.expect(result.functionNamed("impl.Point.index") != null);
+    try std.testing.expect(result.functionNamed("sum") != null);
+    try std.testing.expect(result.functionNamed("get") != null);
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+}
+
+test "does not compile unused impl methods" {
+    var result = try compile(
+        std.testing.allocator,
+        \\Point <- struct
+        \\    x: i32
+        \\    y: i32
+        \\impl Add for Point:
+        \\    add <- (a: Point, b: Point) -> Point = Point { x: a.x + b.x, y: a.y + b.y }
+        \\value <- () -> i32 = 7
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.bytecode.functions.len);
+    try std.testing.expect(result.functionNamed("impl.Point.add") == null);
+}
