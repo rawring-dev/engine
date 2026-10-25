@@ -2177,48 +2177,73 @@ const Checker = struct {
         _ = try self.checkBlock(body);
     }
 
+    /// Resolve one query projection to its component/reference type.  The
+    /// projection may name an `@Components` struct, a trait (opaque), or a
+    /// table column such as `entity_id`.
+    fn queryProjectionType(
+        self: *Checker,
+        source_ty: *types.Type,
+        projection: ast.QueryProjection,
+    ) !*types.Type {
+        const name = if (projection.path.segments.len > 0)
+            projection.path.segments[projection.path.segments.len - 1].name
+        else
+            "_";
+        const base: *types.Type = blk: {
+            if (self.componentTypeByName(name)) |component_ty| break :blk component_ty;
+            if (try self.fieldType(source_ty, name)) |field_ty| break :blk field_ty;
+            break :blk try self.store.make(.unknown);
+        };
+        return self.store.make(.{ .reference = .{
+            .mutable = projection.mutable,
+            .child = base,
+        } });
+    }
+
+    fn componentTypeByName(self: *Checker, name: []const u8) ?*types.Type {
+        for (self.components.items) |info| {
+            if (!std.mem.eql(u8, info.name, name) and
+                !std.mem.eql(u8, lastPathSegment(info.name), name)) continue;
+            const def = self.lookupQualifiedType(info.name) orelse self.lookupTypeDef(lastPathSegment(info.name)) orelse return null;
+            if (def.generics.len != 0) return null;
+            const node = self.store.make(.{ .named = .{ .name = def.qualified_name, .args = &.{} } }) catch return null;
+            return node;
+        }
+        return null;
+    }
+
     fn checkQuery(self: *Checker, query: ast.QueryParam) !*types.Type {
         const source_ty = try self.resolveType(query.from);
-        var fields_map = std.StringHashMapUnmanaged(*types.Type).empty;
-        var field_names = std.ArrayList([]const u8).empty;
-        var field_types = std.ArrayList(*types.Type).empty;
-
-        for (query.projections) |projection| {
+        var filter_names = std.ArrayList([]const u8).empty;
+        var filter_types = std.ArrayList(*types.Type).empty;
+        const projections = try self.allocator.alloc(*types.Type, query.projections.len);
+        for (query.projections, 0..) |projection, index| {
+            const reference = try self.queryProjectionType(source_ty, projection);
+            projections[index] = reference;
             const name = if (projection.path.segments.len > 0)
                 projection.path.segments[projection.path.segments.len - 1].name
             else
                 "_";
-            const ty = (try self.fieldType(source_ty, name)) orelse
-                try self.store.make(.unknown);
-            try fields_map.put(self.allocator, name, ty);
-            try field_names.append(self.allocator, name);
-            try field_types.append(self.allocator, ty);
+            try filter_names.append(self.allocator, name);
+            try filter_types.append(self.allocator, self.store.resolve(reference).reference.child);
         }
 
         if (query.filter) |filter_expr| {
             try self.enterScope();
             defer self.leaveScope();
-            for (field_names.items, field_types.items) |name, ty| {
+            for (filter_names.items, filter_types.items) |name, ty| {
                 _ = try self.declare(name, ty, false);
             }
             _ = try self.checkExpr(filter_expr, try self.store.make(.bool));
         }
-        // `where has Type`: resolve the presence type now; row filtering is
-        // executed later by the ECS task.
+        // `where has Type`: runtime presence filter; no compile-time row work.
         if (query.has) |has_ty| _ = try self.resolveType(has_ty);
 
-        const synthetic_name = try std.fmt.allocPrint(self.allocator, "__query_{d}", .{self.next_query_id});
-        self.next_query_id += 1;
-        const def = try self.allocator.create(TypeDef);
-        def.* = .{
-            .name = synthetic_name,
-            .kind = .struct_,
-            .item = undefined,
-            .generics = &.{},
-            .synthetic_fields = fields_map,
-        };
-        try self.type_defs.put(self.allocator, synthetic_name, def);
-        return self.store.make(.{ .named = .{ .name = synthetic_name, .args = &.{} } });
+        // Iteration element: one projection binds the projection reference;
+        // multiple projections bind a tuple of references in projection order.
+        if (projections.len == 0) return self.store.make(.unit);
+        if (projections.len == 1) return projections[0];
+        return self.makeTupleType(projections);
     }
 
     // ------------------------------------------------------------------
@@ -2288,7 +2313,8 @@ const Checker = struct {
                 // so moving them here would make `for (k, v) in m:` prohibit any
                 // later use of `m` (including inside the loop body).
                 const iterable = try self.checkExpr(loop.iterable, null);
-                if (self.store.resolve(iterable).* != .map) try self.markMoveValue(loop.iterable);
+                const iterable_resolved = self.store.resolve(iterable);
+                if (iterable_resolved.* != .map and iterable_resolved.* != .query) try self.markMoveValue(loop.iterable);
                 const element = try self.forElement(iterable, loop.pattern);
                 try self.enterScope();
                 try self.checkPattern(loop.pattern, element);
@@ -2409,6 +2435,31 @@ const Checker = struct {
     fn forElement(self: *Checker, ty: *types.Type, pattern: *ast.Pattern) !*types.Type {
         const resolved = self.store.resolve(ty);
         switch (resolved.*) {
+            .query => |query| {
+                const element = self.store.resolve(query.element);
+                switch (pattern.*) {
+                    .tuple => |items| {
+                        if (element.* != .tuple) {
+                            try self.report("query has a single projection; use `for row in query`", .{});
+                            return self.store.make(.unknown);
+                        }
+                        if (items.len != element.tuple.len) {
+                            try self.report("query tuple pattern has {d} elements, expected {d}", .{
+                                items.len, element.tuple.len,
+                            });
+                        }
+                        return element;
+                    },
+                    .binding, .wildcard => {
+                        if (element.* == .tuple) {
+                            try self.report("query has {d} projections; use `for (a, b, ...) in query`", .{element.tuple.len});
+                            return self.store.make(.unknown);
+                        }
+                        return element;
+                    },
+                    else => return self.iterableElement(ty),
+                }
+            },
             .map => |m| return switch (pattern.*) {
                 .binding, .wildcard => m.key,
                 .tuple => self.makeTupleType(&.{ m.key, m.value }),

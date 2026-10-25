@@ -383,17 +383,28 @@ fn taskEntry(task: *Task) callconv(.c) void {
 }
 
 fn callEntry(entry: usize, task_ptr: i64, args: []const i64) i64 {
+    // Async bodies receive the task pointer plus their compiled parameters.
+    // Systems with several world parameters (resources + queries + Commands)
+    // routinely exceed four, so every arity up to `max_args` is covered.
     const F0 = *const fn (i64) callconv(.c) i64;
     const F1 = *const fn (i64, i64) callconv(.c) i64;
     const F2 = *const fn (i64, i64, i64) callconv(.c) i64;
     const F3 = *const fn (i64, i64, i64, i64) callconv(.c) i64;
     const F4 = *const fn (i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F5 = *const fn (i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F6 = *const fn (i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F7 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F8 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
     return switch (args.len) {
         0 => @as(F0, @ptrFromInt(entry))(task_ptr),
         1 => @as(F1, @ptrFromInt(entry))(task_ptr, args[0]),
         2 => @as(F2, @ptrFromInt(entry))(task_ptr, args[0], args[1]),
         3 => @as(F3, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2]),
         4 => @as(F4, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3]),
+        5 => @as(F5, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4]),
+        6 => @as(F6, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5]),
+        7 => @as(F7, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
+        8 => @as(F8, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
         else => 0,
     };
 }

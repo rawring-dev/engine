@@ -1128,6 +1128,9 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     // `main` returns i32 0 on success after DeInit tears down window/scene.
     try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
     const camera_after = engine.cameraForTest();
+    const stats = engine.renderStats();
+    try std.testing.expect(stats.camera_updates > 0);
+    try std.testing.expect(stats.scene_draws > 0);
     try std.testing.expect(camera_after.eye[2] < camera_before.eye[2]);
     try std.testing.expect(camera_after.yaw > camera_before.yaw);
 
@@ -1138,4 +1141,90 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     try std.testing.expectEqual(@as(u32, 540), capture.height);
     try std.testing.expect(engine.captureIsNonBlack(capture));
     try std.testing.expect(engine.captureHasContent(capture));
+}
+
+test "JIT executes query projection iteration and mutable component writes" {
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\D <- struct
+        \\    c: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (
+        \\    items: select &mut C, &D from Components,
+        \\    singles: select &mut C from Components,
+        \\):
+        \\    for (c, d) in items:
+        \\        c.b = c.b + d.c
+        \\    for row in singles:
+        \\        row.b = row.b + 1
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    c0 := C { b: 1 }
+        \\    d0 := D { c: 10 }
+        \\    commands.add_row(Components, { c0, d0 })
+        \\    disown commands
+        \\    await Tick()
+        \\    0
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    const compiled_component = compiled.analysis.component("C").?;
+    const pair_component = compiled.analysis.component("D").?;
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "query-iteration");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    // Row created via Commands, then mutated through both query loops:
+    // c.b = 1 + d.c(10) = 11, then row.b = 11 + 1 = 12.
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_count());
+    const component_ptr = ecs.e7_ecs_component_get(0, compiled_component.id);
+    try std.testing.expect(component_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 12), aggregate.e7_load_i64(component_ptr));
+    const pair_ptr = ecs.e7_ecs_component_get(0, pair_component.id);
+    try std.testing.expect(pair_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 10), aggregate.e7_load_i64(pair_ptr));
+}
+
+test "JIT executes async functions with five or more parameters" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\sum5 <- async (a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 = a + b + c + d + e
+        \\run <- async () -> i32:
+        \\    task := sum5(1, 2, 3, 4, 5)
+        \\    await task
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "task-arity");
+    const Run = *const fn () callconv(.c) i64;
+    const run = try jit.get(Run, "run");
+    const task_handle = run();
+    try std.testing.expect(task_handle != 0);
+    try std.testing.expectEqual(@as(i64, 15), task.e7_task_await(task_handle));
 }

@@ -1758,6 +1758,7 @@ const Builder = struct {
         const iterable_ty = self.exprType(loop.iterable) orelse return error.UnsupportedFeature;
         const resolved = self.resolvedType(iterable_ty);
         switch (resolved.*) {
+            .query => try self.lowerForQuery(loop),
             .array => |array| {
                 // Iteration walks the flat element list; matrices do not have a
                 // meaningful single-index layout for that, so reject them
@@ -1769,6 +1770,66 @@ const Builder = struct {
             .map => try self.lowerForCollection(loop, .map),
             else => return error.UnsupportedFeature,
         }
+    }
+
+    /// Iterate an ECS query handle: `e7_ecs_query_next` drives the loop and
+    /// `e7_ecs_query_component(query, index)` binds each projected component
+    /// pointer into a local.  Aggregate component pointers are exactly the
+    /// reference representation used elsewhere, so field/index assignment
+    /// through a `&mut` projection reuses the ordinary reference lowering.
+    fn lowerForQuery(self: *Builder, loop: ast.ForStmt) Error!void {
+        const pattern = loop.pattern;
+        const pair = pattern.* == .tuple;
+        if (!pair and pattern.* != .binding and pattern.* != .wildcard) return error.UnsupportedFeature;
+        const projection_count: usize = if (pair) pattern.tuple.len else 1;
+
+        try self.enterScope();
+        defer self.leaveScope();
+
+        var binding_slots = try self.allocator.alloc(?u16, projection_count);
+        defer self.allocator.free(binding_slots);
+        if (pair) {
+            for (pattern.tuple, 0..) |item, index| {
+                binding_slots[index] = try self.forPatternSlot(item);
+            }
+        } else {
+            binding_slots[0] = try self.forPatternSlot(pattern);
+        }
+
+        const handle_slot = try self.allocLocal("<query>");
+        const row_slot = try self.allocLocal("<query_row>");
+        try self.lowerExpr(loop.iterable);
+        try self.emit(.{ .store_local = handle_slot });
+
+        const start = self.code.items.len;
+        try self.loops.append(self.allocator, .{ .breaks = .empty, .continues = .empty });
+        const loop_index = self.loops.items.len - 1;
+        defer _ = self.loops.pop();
+
+        try self.emit(.{ .load_local = handle_slot });
+        try self.runtimeCall(.ecs_query_next, 1);
+        try self.emit(.{ .store_local = row_slot });
+        // `query_next` returns entity_id + 1, or 0 when exhausted.
+        // `jump_if_false` branches to its target when the value is zero.
+        try self.emit(.{ .load_local = row_slot });
+        const end_jump = try self.emitJump(true);
+
+        for (binding_slots, 0..) |slot, index| {
+            const target = slot orelse continue;
+            try self.emit(.{ .load_local = handle_slot });
+            try self.push(@intCast(index));
+            try self.runtimeCall(.ecs_query_component, 2);
+            try self.emit(.{ .store_local = target });
+        }
+
+        try self.lowerBlockStatements(loop.body);
+        try self.emit(.{ .jump = @intCast(start) });
+
+        const break_target = self.code.items.len;
+        try self.patchLoop(&self.loops.items[loop_index], start, break_target);
+        try self.patch(end_jump);
+        // Query handles are snapshots; the runtime releases the handle when
+        // `query_next` reaches the end, so no explicit release is emitted.
     }
 
     fn lowerForRange(self: *Builder, loop: ast.ForStmt) Error!void {

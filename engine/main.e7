@@ -311,19 +311,29 @@ move_camera <- sys (
     time: &Time,
     controllers: select &mut Camera, &mut CameraController from Components,
 ):
-    # Placeholder until the query body can project mutable component fields.
-    ret
+    # Query iteration is live: tuple bindings are references into the ECS rows.
+    # Camera movement itself stays native (e7_engine_camera_update); applying
+    # these components to the camera needs f32 arithmetic (out of scope).
+    for (camera, controller) in controllers:
+        camera.fov_y
+        controller.move_speed
 
 @trigger(Update)
 spin_cube <- sys (
     transforms: select &mut Transform from Components where has CubeMesh,
     time: &Time,
 ):
-    ret
+    # `where has CubeMesh` is applied by the runtime query. Rotation updates
+    # need f32 arithmetic on `transform.rotation` (TODO).
+    for transform in transforms:
+        transform.rotation
 
 @trigger(Update)
 update_light <- sys (lights: select &mut PointLight from Components, time: &Time):
-    ret
+    # Iterating PointLight rows is wired; animated light placement needs f32
+    # arithmetic (TODO).
+    for light in lights:
+        light.position
 
 @trigger(PostUpdate)
 reset_input <- sys (input: res &mut Input):
@@ -340,7 +350,9 @@ reset_input <- sys (input: res &mut Input):
 render_scene <- sys (
     gpu: res &mut Gpu,
     window: res &mut Window,
-    time: res &Time,
+    time: &Time,
+    cubes: select &CubeMesh, &Transform from Components,
+    lights: select &PointLight from Components,
 ):
     # Apply native keyboard/mouse input to the FPS camera (WASD horizontal,
     # Q/E vertical, mouse look, Shift sprint) in the runtime helper, then draw
@@ -351,6 +363,14 @@ render_scene <- sys (
     elapsed_ms := now - time.start_ms
     e7_engine_camera_update(gpu.scene, 16)
     e7_engine_scene_draw(gpu.scene, 16, elapsed_ms, 2600, 3000, 2600)
+
+    # Query iteration is available here too; the native renderer currently owns
+    # the GPU scene, so cube/light rows are read but not consumed yet.
+    for (cube, cube_transform) in cubes:
+        cube
+        cube_transform
+    for light_row in lights:
+        light_row.position
 
     # Poll the frame limiter only after drawing so the captured/last frame is
     # the one the user sees. A window close request also exits.

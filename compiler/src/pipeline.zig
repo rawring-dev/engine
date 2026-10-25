@@ -171,10 +171,15 @@ pub fn loadProject(allocator: std.mem.Allocator, root_path: []const u8) ProjectE
     }
 
     const root_source = try readProjectFile(allocator, io, root_path);
-    errdefer allocator.free(root_source);
+    var root_source_owned = true;
+    errdefer if (root_source_owned) allocator.free(root_source);
     const root_path_owned = try allocator.dupe(u8, root_path);
-    errdefer allocator.free(root_path_owned);
+    var root_path_owned_flag = true;
+    errdefer if (root_path_owned_flag) allocator.free(root_path_owned);
     try files.append(allocator, .{ .path = root_path_owned, .source = root_source });
+    // The file list now owns both allocations; its errdefer frees them once.
+    root_source_owned = false;
+    root_path_owned_flag = false;
     var root_ast = try parseProjectFile(allocator, root_source);
     errdefer root_ast.deinit();
 
@@ -215,10 +220,15 @@ fn resolveExternalModules(
                 const filename = try std.fmt.allocPrint(allocator, "{s}.e7", .{module.name});
                 defer allocator.free(filename);
                 const path = try std.fs.path.join(allocator, &.{ directory, filename });
-                errdefer allocator.free(path);
+                var path_owned = true;
+                errdefer if (path_owned) allocator.free(path);
                 const source = try readProjectFile(allocator, io, path);
-                errdefer allocator.free(source);
+                var source_owned = true;
+                errdefer if (source_owned) allocator.free(source);
                 try files.append(allocator, .{ .path = path, .source = source });
+                // Ownership moved into the file list.
+                path_owned = false;
+                source_owned = false;
                 var child = try parseProjectFile(allocator, source);
                 errdefer child.deinit();
                 try resolveExternalModules(allocator, io, &child, directory, files, module_asts, depth + 1);
@@ -917,9 +927,67 @@ test "trigger systems may declare world parameters" {
     try bytecode.verify(std.testing.allocator, &plain.bytecode);
 }
 
-test "rejects query body projection but lowers resource fields" {
-    // Query handles are created but row field projection still needs entity
-    // iteration support; reject instead of miscompiling.
+test "lowers query projection iteration" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\D <- struct
+        \\    c: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tuple <- sys (items: select &mut C, &D from Components):
+        \\    for (c, d) in items:
+        \\        c.b = c.b + d.c
+        \\Single <- sys (items: select &mut C from Components):
+        \\    for row in items:
+        \\        row.b = row.b + 1
+        \\Wild <- sys (items: select &C from Components):
+        \\    for _ in items:
+        \\        0
+        \\Controls <- sys (items: select &mut C from Components):
+        \\    for row in items:
+        \\        if row.b > 0:
+        \\            break
+        \\        cont
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const Counter = struct {
+        fn count(function: *const bytecode.Function, wanted: bytecode.RuntimeFunction) usize {
+            var total: usize = 0;
+            for (function.code) |op| switch (op) {
+                .runtime_call => |call| {
+                    if (call.function == wanted) total += 1;
+                },
+                else => {},
+            };
+            return total;
+        }
+    };
+
+    const tuple_body = result.functionNamed("Tuple__body").?;
+    try std.testing.expectEqual(@as(usize, 1), Counter.count(tuple_body, .ecs_query_next));
+    try std.testing.expectEqual(@as(usize, 2), Counter.count(tuple_body, .ecs_query_component));
+
+    const single_body = result.functionNamed("Single__body").?;
+    try std.testing.expectEqual(@as(usize, 1), Counter.count(single_body, .ecs_query_next));
+    try std.testing.expectEqual(@as(usize, 1), Counter.count(single_body, .ecs_query_component));
+
+    // A wildcard binding still advances the iterator but fetches no projections.
+    const wild_body = result.functionNamed("Wild__body").?;
+    try std.testing.expectEqual(@as(usize, 1), Counter.count(wild_body, .ecs_query_next));
+    try std.testing.expectEqual(@as(usize, 0), Counter.count(wild_body, .ecs_query_component));
+
+    // Projecting fields directly off the query handle is still unsupported;
+    // bindings from iteration are the supported surface.
     try std.testing.expectError(error.UnsupportedFeature, compile(
         std.testing.allocator,
         \\@Components
@@ -934,23 +1002,9 @@ test "rejects query body projection but lowers resource fields" {
     ,
         .{},
     ));
-    try std.testing.expectError(error.UnsupportedFeature, compile(
-        std.testing.allocator,
-        \\@Components
-        \\C <- struct
-        \\    a: i32
-        \\Components <- table
-        \\    entity_id: usize,
-        \\    ...
-        \\Tick <- sys (q: select &a from Components):
-        \\    for row in q:
-        \\        row.a
-    ,
-        .{},
-    ));
 
-    // Resource parameters are real pointers now: field reads/writes lower.
-    var result = try compile(
+    // Resource parameters are real pointers: field reads/writes lower.
+    var resource_result = try compile(
         std.testing.allocator,
         \\@resource
         \\R <- struct
@@ -960,9 +1014,9 @@ test "rejects query body projection but lowers resource fields" {
     ,
         .{},
     );
-    defer result.deinit();
-    try std.testing.expect(result.analysis.ok());
-    try bytecode.verify(std.testing.allocator, &result.bytecode);
+    defer resource_result.deinit();
+    try std.testing.expect(resource_result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &resource_result.bytecode);
 }
 
 test "compiles the engine main/ui project from disk" {

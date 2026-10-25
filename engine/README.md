@@ -8,7 +8,7 @@ platform boundary (SDL3 and Vulkan) and the machinery needed to run scripts.
 engine/
 ├── main.e7        resources, components, systems, plugins, frame loop
 ├── ui.e7          Ui plugin, trait dependencies, UI ECS sample
-├── shaders/       Slang sources and checked-in SPIR-V
+├── shaders/       e7s shader sources and checked-in SPIR-V
 └── scene-preview.png
 ```
 
@@ -63,14 +63,19 @@ engine/
 
 ## Shaders
 
-`shaders/*.slang` are Slang sources compiled to SPIR-V. The build prefers
-`slangc`; the fallback uses `glslangValidator` on the same HLSL-compatible
-sources, and checked-in `.spv` files keep the demo runnable without a shader
-toolchain.
+`shaders/*.e7` are e7s shader sources.  `shaders/build.sh` transpiles them to
+Khronos Slang with [`transpiler/`](../transpiler/README.md), compiles the
+generated Slang to SPIR-V with `slangc`, and publishes the checked-in `.spv`
+files used by the runtime renderer.  Without `slangc`, the e7s sources are
+still transpiled (so source errors surface) and the checked-in SPIR-V is kept.
 
 ```sh
+zig build shaders          # from the repository root (also builds the e7s CLI)
 sh engine/shaders/build.sh
 ```
+
+See [`engine/shaders/README.md`](shaders/README.md) for the source table,
+toolchain resolution, and the 256-byte uniform layout.
 
 ## Native scene demo
 

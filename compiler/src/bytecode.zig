@@ -127,8 +127,8 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_flush,
             .ecs_plugin_active,
             .ecs_query_next,
-            .ecs_query_component,
             => 1,
+            .ecs_query_component => 2,
             .ecs_register_resource,
             .ecs_register_component,
             .ecs_commands_add_plugin,
@@ -513,9 +513,16 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 if (height < 1) return error.InvalidBytecode;
                 fallthrough = index + 1;
             },
-            .store_mem, .vec_get, .vec_row, .vec_binary, .vec_scalar, .map_get, .map_get_str, .str_concat, .str_eq, .str_char_at, .map_key_at, .map_value_at => {
+            .vec_get, .vec_row, .vec_binary, .vec_scalar, .map_get, .map_get_str, .str_concat, .str_eq, .str_char_at, .map_key_at, .map_value_at => {
                 if (height < 2) return error.InvalidBytecode;
                 next_height -= 1;
+                fallthrough = index + 1;
+            },
+            // `store_mem` pops the address and the value (the IR translator
+            // calls `e7_store_i64(ptr, value)` after two pops).
+            .store_mem => {
+                if (height < 2) return error.InvalidBytecode;
+                next_height -= 2;
                 fallthrough = index + 1;
             },
             .vec_get2 => {

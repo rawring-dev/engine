@@ -252,8 +252,8 @@ test "checks sys query and resource parameters" {
         \\    target: res &mut F
         \\):
         \\    target.a += update.a
-        \\    for q in queries:
-        \\        target.a += q.a
+        \\    for (a, b) in queries:
+        \\        target.a = target.a + *a + ((*b) as i32)
     );
 }
 
@@ -1096,7 +1096,7 @@ test "sys parameters are usable after await as fresh acquisitions" {
         \\Tick <- sys(q: select &a from S, target: res &mut S):
         \\    await noop()
         \\    for row in q:
-        \\        target.a = row.a
+        \\        target.a = *row
     );
 }
 
@@ -1569,4 +1569,66 @@ test "checks compiler-known engine intrinsics" {
     try expectDiagnostic(
         \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000)
     , "expects 6 argument");
+}
+
+test "checks query projection iteration patterns" {
+    try expectClean(
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\D <- struct
+        \\    c: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tuple <- sys (items: select &mut C, &D from Components):
+        \\    for (c, d) in items:
+        \\        c.b = c.b + d.c
+        \\Single <- sys (items: select &mut C from Components):
+        \\    for row in items:
+        \\        row.b = row.b + 1
+        \\Wild <- sys (items: select &C from Components):
+        \\    for _ in items:
+        \\        0
+    );
+    // A single binding cannot destructure a multi-projection query.
+    try expectDiagnostic(
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\@Components
+        \\D <- struct
+        \\    c: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (items: select &mut C, &D from Components):
+        \\    for row in items:
+        \\        0
+    , "query has 2 projections");
+    // Tuple arity must match the projection list.
+    try expectDiagnostic(
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (items: select &mut C from Components):
+        \\    for (a, b) in items:
+        \\        0
+    , "single projection");
+    // Shared projections are read-only.
+    try expectDiagnostic(
+        \\@Components
+        \\C <- struct
+        \\    b: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Tick <- sys (items: select &C from Components):
+        \\    for row in items:
+        \\        row.b = 1
+    , "cannot assign to immutable place");
 }
