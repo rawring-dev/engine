@@ -42,15 +42,30 @@ runtime package's dependency on `transpiler/`.
 
 | Offset | Field | Meaning |
 | --- | --- | --- |
-| 0 | `model_c0..c3` | model matrix columns (column-major) |
-| 64 | `view_c0..c3` | view matrix columns |
-| 128 | `proj_c0..c3` | projection matrix columns |
+| 0 | `model: [f32; 4, 4]` | column-major model matrix |
+| 64 | `view: [f32; 4, 4]` | column-major view matrix |
+| 128 | `proj: [f32; 4, 4]` | column-major projection matrix |
 | 192 | `camera_pos` | world-space eye position |
 | 208 | `light_pos` | world-space point light position |
 | 224 | `light_color` | rgb = colour, w = intensity |
 | 240 | `params` | rgb = ambient colour, w = ambient scale |
 
-Matrices are passed as explicit `float4` columns instead of a `float4x4`
-because constant-buffer packing rules are unambiguous this way.  The e7s
-source declares the buffer as `@binding(0, 0) scene: SceneUniform`; the
-transpiler emits `[[vk::binding(0, 0)]] ConstantBuffer<SceneUniform> scene;`.
+The e7s source declares regular matrix fields (`model: [f32; 4, 4]`) and
+uses matrix products (`scene.model * position`).  The transpiler emits
+`column_major` matrix fields and lowers the products to Slang `mul(...)`:
+
+```slang
+struct SceneUniform {
+    column_major float4x4 model;
+    column_major float4x4 view;
+    column_major float4x4 proj;
+    ...
+};
+[[vk::binding(0, 0)]] ConstantBuffer<SceneUniform> scene;
+```
+
+Host code uploads the matrices column-major (`Mat4 = [4][4]f32`, columns
+contiguous), which is exactly the `column_major` layout.  There is no need to
+split matrices into separate `float4` column fields.  `@row_major` and
+`@column_major` on an e7s matrix field override the default; see
+[`transpiler/docs/e7s.md`](../../transpiler/docs/e7s.md#storage-layout).
