@@ -110,6 +110,7 @@ attribute       = "@", path,
      @location(n)            varying location (struct fields)
      @builtin(name)          system-value semantic (struct fields)
      @flat                   nointerpolation varying (struct fields)
+     @row_major @column_major  matrix storage layout (struct fields)
      @inline                 force-inline function or impl method
    Resource declarations are top-level uninitialized declarations
    (`name: Type`) carrying the binding attributes. *)

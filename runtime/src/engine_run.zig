@@ -24,7 +24,6 @@ const Options = struct {
     project_explicit: bool = false,
     frames: i64 = 0,
     headless: bool = false,
-    orbit: bool = false,
     capture_path: ?[]const u8 = null,
     verbose: bool = false,
 };
@@ -38,8 +37,6 @@ pub fn main(init: std.process.Init) !void {
             const value = args.next() orelse return usageError("--frames requires a count");
             options.frames = std.fmt.parseInt(i64, value, 10) catch return usageError("invalid --frames count");
             if (options.frames < 0) return usageError("--frames must be non-negative");
-        } else if (std.mem.eql(u8, arg, "--orbit")) {
-            options.orbit = true;
         } else if (std.mem.eql(u8, arg, "--headless")) {
             options.headless = true;
         } else if (std.mem.eql(u8, arg, "--capture")) {
@@ -61,11 +58,7 @@ pub fn main(init: std.process.Init) !void {
     if (options.frames == 0 and options.capture_path != null) options.frames = 2;
     if (options.frames > 0) options.headless = true;
     if (!options.headless) {
-        if (options.orbit) {
-            std.debug.print("run-engine: orbit camera (mouse orbits target, WASD moves target), Esc/window close exits\n", .{});
-        } else {
-            std.debug.print("run-engine: first-person (WASD/QE move, mouse look), Esc/window close exits\n", .{});
-        }
+        std.debug.print("run-engine: first-person (WASD/QE move, mouse look, Shift sprint), Esc/window close exits\n", .{});
     }
 
     const allocator = std.heap.c_allocator;
@@ -77,7 +70,6 @@ pub fn main(init: std.process.Init) !void {
 
     engine.reset();
     engine.setHeadless(options.headless);
-    engine.setOrbit(options.orbit);
     engine.setMaxFrames(options.frames);
     engine.setCaptureEnabled(options.capture_path != null);
     defer engine.shutdown();
@@ -142,9 +134,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (options.verbose) {
         const stats = engine.renderStats();
-        std.debug.print("run-engine: camera_updates={d} scene_draws={d} frames={d}\n", .{
-            stats.camera_updates, stats.scene_draws, engine.frames(),
-        });
+        std.debug.print("run-engine: scene_draws={d} frames={d}\n", .{ stats.scene_draws, engine.frames() });
     }
     if (engine.lastFailure()) |message| {
         std.debug.print("run-engine: engine stopped: {s}\n", .{message});

@@ -9,9 +9,9 @@
 //! copies it back for headless validation.
 //!
 //! Matrix convention: matrices are column-major (`Mat4[col][row]`), matching
-//! the explicit `float4` column uniforms in `engine/shaders/*.e7`.  The
-//! projection targets Vulkan's [0, 1] clip depth and flips Y so world +Y is up
-//! on screen.
+//! the `column_major float4x4` fields emitted from `engine/shaders/*.e7`.
+//! The projection targets Vulkan's [0, 1] clip depth and flips Y so world +Y
+//! is up on screen.
 //!
 //! Everything here is single-threaded per `Scene`, same as `Surface`.
 
@@ -48,8 +48,9 @@ pub const Vertex = extern struct {
 pub const vertex_count = 24;
 pub const index_count = 36;
 
-/// Uniform block, std140-compatible and 256 bytes.  Each matrix is four
-/// explicit columns to keep HLSL/Slang constant-buffer packing unambiguous.
+/// Uniform block, std140-compatible and 256 bytes.  Matrices are stored as
+/// four contiguous columns (`Mat4[col][row]`), matching the `column_major`
+/// `[f32; 4, 4]` fields in `engine/shaders/cube.{vert,frag}.e7`.
 pub const Uniforms = extern struct {
     model: [4][4]f32,
     view: [4][4]f32,

@@ -512,3 +512,10 @@ test "matrix layout attributes reject non-matrix fields" {
         \\    @row_major value: f32
     , "only valid on matrix fields");
 }
+
+test "matrix element types must be floating point" {
+    try expectDiagnostic(std.testing.allocator,
+        \\S <- struct
+        \\    m: [i32; 2, 2]
+    , "f16, f32, or f64");
+}

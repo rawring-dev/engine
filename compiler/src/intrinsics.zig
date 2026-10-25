@@ -19,6 +19,8 @@ pub const ValueType = enum {
     /// Signed 32-bit integer (`i32`).
     i32_,
     bool_,
+    /// f64-bit-pattern float value (e7 `f32`/`f64` share this representation).
+    float_,
     /// Runtime string value (aggregate handle).
     str_,
     unit,
@@ -106,17 +108,39 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
-        // Packed as (dy << 32) | (dx & 0xffffffff) in pixels; reading clears.
-        .name = "e7_engine_mouse_delta",
+        // Accumulated horizontal mouse motion in pixels; reading clears it.
+        .name = "e7_engine_mouse_dx",
         .params = &.{},
         .result = .i64_,
     },
     .{
-        // Applies native input to the runtime FPS camera; delta in ms.
-        .name = "e7_engine_camera_update",
-        .params = &.{ .u64_, .i64_ },
+        // Accumulated vertical mouse motion in pixels; reading clears it.
+        .name = "e7_engine_mouse_dy",
+        .params = &.{},
         .result = .i64_,
     },
+
+    // Float helpers: values are f64 bit patterns stored in i64 slots.
+    .{ .name = "e7_f32_add", .params = &.{ .float_, .float_ }, .result = .float_ },
+    .{ .name = "e7_f32_sub", .params = &.{ .float_, .float_ }, .result = .float_ },
+    .{ .name = "e7_f32_mul", .params = &.{ .float_, .float_ }, .result = .float_ },
+    .{ .name = "e7_f32_div", .params = &.{ .float_, .float_ }, .result = .float_ },
+    .{ .name = "e7_f32_neg", .params = &.{.float_}, .result = .float_ },
+    .{ .name = "e7_f32_eq", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_ne", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_lt", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_le", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_gt", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_ge", .params = &.{ .float_, .float_ }, .result = .bool_ },
+    .{ .name = "e7_f32_sin", .params = &.{.float_}, .result = .float_ },
+    .{ .name = "e7_f32_cos", .params = &.{.float_}, .result = .float_ },
+    .{ .name = "e7_f32_sqrt", .params = &.{.float_}, .result = .float_ },
+    .{ .name = "e7_f32_abs", .params = &.{.float_}, .result = .float_ },
+    .{ .name = "e7_f32_clamp", .params = &.{ .float_, .float_, .float_ }, .result = .float_ },
+    .{ .name = "e7_f32_from_i64", .params = &.{.i64_}, .result = .float_ },
+    .{ .name = "e7_f32_to_i64", .params = &.{.float_}, .result = .i64_ },
+    .{ .name = "e7_f32_to_milli", .params = &.{.float_}, .result = .i64_ },
+    .{ .name = "e7_f32_from_milli", .params = &.{.i64_}, .result = .float_ },
 };
 
 pub fn lookup(name: []const u8) ?Function {

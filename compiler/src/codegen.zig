@@ -19,8 +19,9 @@
 //! `UnsupportedFeature`.
 //!
 //! Floats are stored as their f64 bit pattern in the uniform i64 slot
-//! representation; float literal initialization lowers, while float arithmetic
-//! is rejected rather than silently using integer ops.
+//! representation.  Float literals lower directly; float arithmetic,
+//! comparisons, unary negation, and int<->float `as` casts lower to the
+//! `e7_f32_*` runtime helpers (see `runtime/src/float.zig`).
 //!
 //! This is the compiler's real output path: `pipeline.zig` runs the parser,
 //! semantic analyzer, this lowering pass, and the bytecode fixed-point
@@ -2049,7 +2050,11 @@ const Builder = struct {
                 switch (unary.op) {
                     .negative => {
                         if (self.exprType(unary.operand)) |operand_ty| {
-                            if (self.resolvedType(operand_ty).* == .float) return error.UnsupportedFeature;
+                            if (self.numericClass(operand_ty) == .float) {
+                                try self.lowerExpr(unary.operand);
+                                try self.runtimeCall(.float_neg, 1);
+                                return;
+                            }
                             if (self.analysis.operatorMethod(operand_ty, "Neg", "neg")) |method| {
                                 try self.lowerExpr(unary.operand);
                                 try self.methodCall(method, 1);
@@ -2068,7 +2073,7 @@ const Builder = struct {
                 }
             },
             .binary => |binary| try self.lowerBinary(binary),
-            .cast => |cast| try self.lowerExpr(cast.expr),
+            .cast => |cast| try self.lowerCast(cast, expr),
             .call => |call| try self.lowerCall(call),
             .try_expr => |inner| {
                 try self.lowerExpr(inner);
@@ -2084,8 +2089,8 @@ const Builder = struct {
                 try self.emit(.{ .load_local = slot });
             },
             // Floats are stored as their f64 bit pattern in the uniform i64
-            // slot representation.  Float *arithmetic* is rejected below;
-            // literal initialization of resource/component fields works.
+            // slot representation; arithmetic/comparisons use the e7_f32_*
+            // runtime helpers.
             .float => |value| try self.push(@bitCast(value)),
             .range, .error_literal, .function => {
                 return error.UnsupportedFeature;
@@ -2133,13 +2138,84 @@ const Builder = struct {
         }
     }
 
+    const NumericClass = enum { integer, float, other };
+
+    /// Unresolved numeric literals are type variables carrying an integer or
+    /// float kind; classify them without forcing a concrete type.
+    fn numericClass(self: *Builder, ty: *types.Type) NumericClass {
+        var current = self.resolvedType(ty);
+        while (current.* == .variable) {
+            const variable = current.variable;
+            if (variable.binding) |binding| {
+                current = self.resolvedType(binding);
+                continue;
+            }
+            return switch (variable.kind) {
+                .float => .float,
+                .integer => .integer,
+                .any => .other,
+            };
+        }
+        return switch (current.*) {
+            .float => .float,
+            .int, .bool => .integer,
+            else => .other,
+        };
+    }
+
+    fn isIntegerLike(self: *Builder, ty: *types.Type) bool {
+        return self.numericClass(ty) == .integer;
+    }
+
+    /// Float binary operators lower to the `e7_f32_*` runtime helpers.  Both
+    /// operands are f64 bit patterns in i64 slots; comparisons return 0/1.
+    fn lowerFloatBinary(self: *Builder, binary: ast.Binary) Error!void {
+        try self.lowerExpr(binary.lhs);
+        try self.lowerExpr(binary.rhs);
+        const runtime_function: bytecode.RuntimeFunction = switch (binary.op) {
+            .add => .float_add,
+            .sub => .float_sub,
+            .mul => .float_mul,
+            .div => .float_div,
+            .eq => .float_eq,
+            .ne => .float_ne,
+            .lt => .float_lt,
+            .le => .float_le,
+            .gt => .float_gt,
+            .ge => .float_ge,
+            .mod, .xor_, .and_, .or_ => return error.UnsupportedFeature,
+        };
+        try self.runtimeCall(runtime_function, 2);
+    }
+
+    /// `as` casts: float<->float is a bit-copy, int<->float converts through the
+    /// runtime helpers, and other casts preserve the previous bit-copy behavior.
+    fn lowerCast(self: *Builder, cast: ast.Cast, expr: *ast.Expr) Error!void {
+        const target_ty = self.exprType(expr) orelse return error.UnsupportedFeature;
+        const source_ty = self.exprType(cast.expr) orelse return error.UnsupportedFeature;
+        const target_class = self.numericClass(target_ty);
+        const source_class = self.numericClass(source_ty);
+        try self.lowerExpr(cast.expr);
+        if (source_class == .float and target_class == .float) return;
+        if (source_class == .float and target_class == .integer) {
+            try self.runtimeCall(.float_to_i64, 1);
+            return;
+        }
+        if (source_class == .integer and target_class == .float) {
+            try self.runtimeCall(.float_from_i64, 1);
+            return;
+        }
+        // Integer<->integer and other casts keep their existing bit-copy
+        // semantics.
+    }
+
     fn lowerBinary(self: *Builder, binary: ast.Binary) Error!void {
         if (binary.op != .and_ and binary.op != .or_) {
-            if (self.exprType(binary.lhs)) |left_ty| {
-                if (self.resolvedType(left_ty).* == .float) return error.UnsupportedFeature;
-            }
-            if (self.exprType(binary.rhs)) |right_ty| {
-                if (self.resolvedType(right_ty).* == .float) return error.UnsupportedFeature;
+            const left_ty = self.exprType(binary.lhs) orelse return error.UnsupportedFeature;
+            const right_ty = self.exprType(binary.rhs) orelse return error.UnsupportedFeature;
+            if (self.numericClass(left_ty) == .float or self.numericClass(right_ty) == .float) {
+                try self.lowerFloatBinary(binary);
+                return;
             }
         }
         switch (binary.op) {

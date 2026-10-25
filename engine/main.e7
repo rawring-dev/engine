@@ -30,6 +30,11 @@ Input <- struct
     move_right: bool
     move_up: bool
     move_down: bool
+    sprint: bool
+    look_left: bool
+    look_right: bool
+    look_up: bool
+    look_down: bool
     look_dx: f32
     look_dy: f32
 
@@ -37,7 +42,7 @@ Input <- struct
 Time <- struct
     delta: f32
     elapsed: f32
-    # Integer clocks for the millisecond intrinsic ABI (f32 math is TODO).
+    # Integer clocks for the millisecond intrinsic ABI.
     now_ms: i64
     start_ms: i64
 
@@ -74,7 +79,11 @@ Commands <- struct
 
 @Components
 Camera <- struct
+    # World-space eye position in metres.
+    position: [f32; 3]
+    # Radians around +Y (0 looks down -Z).
     yaw: f32
+    # Radians; positive looks up.
     pitch: f32
     fov_y: f32
     near: f32
@@ -255,8 +264,9 @@ init_window <- sys (
         scale: [1.0, 1.0, 1.0],
     }
     camera := Camera {
+        position: [0.0, 1.8, 5.5]
         yaw: 0.0
-        pitch: 0.0
+        pitch: -0.14
         fov_y: 1.0471975512
         near: 0.1
         far: 100.0
@@ -285,25 +295,31 @@ init_window <- sys (
     commands.add_row(Components, { light })
 
 @trigger(FrameInit)
-poll_window <- sys (window: res &mut Window, input: res &mut Input):
+poll_window <- sys (window: res &mut Window):
     # Pump SDL events through the runtime. Window close sets quit_requested;
     # the main loop treats that as the frame-exit signal. The frame limiter
     # (`e7_engine_should_close`) is polled from Render after drawing.
     window.quit_requested = e7_engine_window_pump(window.handle) != 0
-    input.look_dx = 0.0
-    input.look_dy = 0.0
 
 @trigger(FrameInit)
-gather_input <- sys (window: res &Window, input: res &mut Input):
-    # WASD on the horizontal plane, Q/E vertical, mouse look.
-    input.move_forward = false
-    input.move_backward = false
-    input.move_left = false
-    input.move_right = false
-    input.move_up = false
-    input.move_down = false
-    input.look_dx = 0.0
-    input.look_dy = 0.0
+gather_input <- sys (input: res &mut Input):
+    # The runtime exposes only raw key state and accumulated mouse motion; all
+    # camera/input policy lives here. Logical key codes: 0 W, 1 S, 2 A, 3 D,
+    # 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.
+    input.move_forward = e7_engine_key_down(0) != 0
+    input.move_backward = e7_engine_key_down(1) != 0
+    input.move_left = e7_engine_key_down(2) != 0
+    input.move_right = e7_engine_key_down(3) != 0
+    input.move_up = e7_engine_key_down(4) != 0
+    input.move_down = e7_engine_key_down(5) != 0
+    input.sprint = e7_engine_key_down(6) != 0
+    input.look_left = e7_engine_key_down(7) != 0
+    input.look_right = e7_engine_key_down(8) != 0
+    input.look_up = e7_engine_key_down(9) != 0
+    input.look_down = e7_engine_key_down(10) != 0
+    # Guard against focus/VM mouse jumps; the delta itself is consumed here.
+    input.look_dx = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dx()), -600.0, 600.0)
+    input.look_dy = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dy()), -600.0, 600.0)
 
 @trigger(Update)
 move_camera <- sys (
@@ -311,12 +327,61 @@ move_camera <- sys (
     time: &Time,
     controllers: select &mut Camera, &mut CameraController from Components,
 ):
-    # Query iteration is live: tuple bindings are references into the ECS rows.
-    # Camera movement itself stays native (e7_engine_camera_update); applying
-    # these components to the camera needs f32 arithmetic (out of scope).
+    # First-person camera policy (the runtime only supplies raw input):
+    # mouse/arrow look, pitch clamp, then WASD/QE movement on a fixed 16ms step.
+    delta := 0.016
+    pitch_limit := 1.5533430343
     for (camera, controller) in controllers:
-        camera.fov_y
-        controller.move_speed
+        camera.yaw = camera.yaw + input.look_dx * controller.look_speed
+        camera.pitch = camera.pitch - input.look_dy * controller.look_speed
+        keyboard_look := 1.6 * delta
+        if input.look_left:
+            camera.yaw = camera.yaw - keyboard_look
+        if input.look_right:
+            camera.yaw = camera.yaw + keyboard_look
+        if input.look_up:
+            camera.pitch = camera.pitch + keyboard_look
+        if input.look_down:
+            camera.pitch = camera.pitch - keyboard_look
+        camera.pitch = e7_f32_clamp(camera.pitch, -pitch_limit, pitch_limit)
+
+        # Camera-relative basis: yaw 0 looks down -Z, +yaw turns toward +X.
+        sin_yaw := e7_f32_sin(camera.yaw)
+        cos_yaw := e7_f32_cos(camera.yaw)
+        forward_x := sin_yaw
+        forward_z := 0.0 - cos_yaw
+        right_x := cos_yaw
+        right_z := sin_yaw
+
+        dir_x := 0.0
+        dir_y := 0.0
+        dir_z := 0.0
+        if input.move_forward:
+            dir_x = dir_x + forward_x
+            dir_z = dir_z + forward_z
+        if input.move_backward:
+            dir_x = dir_x - forward_x
+            dir_z = dir_z - forward_z
+        if input.move_right:
+            dir_x = dir_x + right_x
+            dir_z = dir_z + right_z
+        if input.move_left:
+            dir_x = dir_x - right_x
+            dir_z = dir_z - right_z
+        if input.move_up:
+            dir_y = dir_y + 1.0
+        if input.move_down:
+            dir_y = dir_y - 1.0
+
+        speed := controller.move_speed * delta
+        if input.sprint:
+            speed = speed * 2.5
+        length := e7_f32_sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z)
+        if length > 0.000001:
+            scale := speed / length
+            camera.position[0] = camera.position[0] + dir_x * scale
+            camera.position[1] = camera.position[1] + dir_y * scale
+            camera.position[2] = camera.position[2] + dir_z * scale
 
 @trigger(Update)
 spin_cube <- sys (
@@ -343,6 +408,11 @@ reset_input <- sys (input: res &mut Input):
     input.move_right = false
     input.move_up = false
     input.move_down = false
+    input.sprint = false
+    input.look_left = false
+    input.look_right = false
+    input.look_up = false
+    input.look_down = false
     input.look_dx = 0.0
     input.look_dy = 0.0
 
@@ -353,15 +423,25 @@ render_scene <- sys (
     time: &Time,
     cubes: select &CubeMesh, &Transform from Components,
     lights: select &PointLight from Components,
+    cameras: select &Camera from Components,
 ):
-    # Apply native keyboard/mouse input to the FPS camera (WASD horizontal,
-    # Q/E vertical, mouse look, Shift sprint) in the runtime helper, then draw
-    # the spinning cube and point light. Query projection iteration (reading
-    # camera components from the table) remains a separate gap.
+    # Push the e7-owned camera into the renderer (milli-unit/milli-degree ABI),
+    # then draw the spinning cube and point light.
+    for camera in cameras:
+        yaw_degrees := camera.yaw * 57.2957795
+        pitch_degrees := camera.pitch * 57.2957795
+        e7_engine_scene_set_camera(
+            gpu.scene,
+            e7_f32_to_milli(camera.position[0]),
+            e7_f32_to_milli(camera.position[1]),
+            e7_f32_to_milli(camera.position[2]),
+            e7_f32_to_milli(yaw_degrees),
+            e7_f32_to_milli(pitch_degrees),
+        )
+
     # Units: scene helper delta in ms; cube angle in milli-radians.
     now := e7_engine_time_now_ms()
     elapsed_ms := now - time.start_ms
-    e7_engine_camera_update(gpu.scene, 16)
     e7_engine_scene_draw(gpu.scene, 16, elapsed_ms, 2600, 3000, 2600)
 
     # Query iteration is available here too; the native renderer currently owns
@@ -403,6 +483,11 @@ main <- async () -> i32:
         move_right: false,
         move_up: false,
         move_down: false,
+        sprint: false,
+        look_left: false,
+        look_right: false,
+        look_up: false,
+        look_down: false,
         look_dx: 0.0,
         look_dy: 0.0,
     })

@@ -136,9 +136,10 @@ shaders` (or `shaders/build.sh`, which delegates to the engine build) runs the
 e7s transpiler to produce Slang and compiles it with `slangc`.  This directory
 keeps only the generated SPIR-V (embedded by `assets.zig`) and falls back to
 the checked-in `.spv` files when no shader compiler is installed (verified for
-the SPIR-V magic number).  Matrices are passed as explicit `float4` columns so
-the constant-buffer layout is unambiguous; see `shaders/README.md` and
-`../engine/shaders/README.md` for the 256-byte layout.
+the SPIR-V magic number).  Its 256-byte uniform block stores matrices as
+column-major `[f32; 4, 4]` fields (e7s emits `column_major float4x4`), so host
+`Mat4[col][row]` data uploads directly; see `shaders/README.md` and
+`../engine/shaders/README.md` for the layout.
 
 The scene ABI is:
 

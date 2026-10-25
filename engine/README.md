@@ -42,13 +42,12 @@ engine/
   Tuple bindings are component references; `&mut` projections are writable.
 - Frame phases: `Init`, `FrameInit`, `PreUpdate`, `Update`, `PostUpdate`,
   `Render`, `DeInit`. `main` loops until `Window.quit_requested`.
-- Native input/camera: `e7_engine_window_pump` drains SDL keyboard/mouse, and
-  `e7_engine_camera_update` applies first-person WASD, Q/E, Shift, and mouse
-  look. Mouse look rotates the camera in place; the cube therefore moves across
-  the screen as you turn, which is expected first-person behavior. `--orbit`
-  switches the host to an optional orbit camera that keeps the cube centered.
-  This is temporary until f32 arithmetic lands and e7 can update the Camera
-  component itself; query iteration already reads the component fields.
+- Input and camera policy live in e7. `e7_engine_window_pump` only drains SDL
+  close/Escape events; `gather_input` reads raw keys and mouse deltas through
+  `e7_engine_key_down` / `e7_engine_mouse_dx` / `e7_engine_mouse_dy`; and
+  `move_camera` updates the Camera component in a query loop using e7 float
+  arithmetic and `e7_f32_sin/cos/clamp`. `render_scene` reads the Camera row and
+  calls `e7_engine_scene_set_camera`. 
 
 ## Running
 
@@ -67,10 +66,17 @@ Esc or window close exits.
 them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
 `slangc` (a checked-in SPIR-V fallback keeps builds working without it).
 
+## Runtime boundary
+
+`runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
+window lifecycle/event pumping, scene create/destroy/resize/set_camera/draw,
+time, raw key/mouse queries, and the host frame limiter/capture. Engine policy —
+input mapping, camera look/movement, frame phases, ECS queries, plugins and
+Commands — lives in `main.e7`.
+
 ## Compiler boundary
 
 Query projection iteration, ECS resources/components/plugins/Commands, project
-module loading, and the engine JIT host are implemented. Remaining work:
-f32 arithmetic for component-driven camera/rotation/light animation, trigger
-field binding, trait-object query projections, and early-break query handle
-release.
+module loading, float arithmetic/math, and the engine JIT host are implemented.
+Remaining work: trigger field binding, trait-object query projections, and
+early-break query handle release.

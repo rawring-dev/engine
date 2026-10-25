@@ -1130,8 +1130,8 @@ test "lowers compiler-known engine intrinsics to runtime calls" {
         \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
         \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 0, 2600, 3000, 2600)
         \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
-        \\mouse <- () -> i64 = e7_engine_mouse_delta()
-        \\move <- (scene: u64) -> i64 = e7_engine_camera_update(scene, 16)
+        \\mouse <- () -> i64 = e7_engine_mouse_dx()
+        \\mouse_y <- () -> i64 = e7_engine_mouse_dy()
     ,
         .{},
     );
@@ -1147,8 +1147,8 @@ test "lowers compiler-known engine intrinsics to runtime calls" {
         .{ .function = "camera", .intrinsic = .engine_scene_set_camera },
         .{ .function = "draw", .intrinsic = .engine_scene_draw },
         .{ .function = "held", .intrinsic = .engine_key_down },
-        .{ .function = "mouse", .intrinsic = .engine_mouse_delta },
-        .{ .function = "move", .intrinsic = .engine_camera_update },
+        .{ .function = "mouse", .intrinsic = .engine_mouse_dx },
+        .{ .function = "mouse_y", .intrinsic = .engine_mouse_dy },
     };
     for (expectations) |expectation| {
         const function = result.functionNamed(expectation.function).?;
@@ -1161,4 +1161,88 @@ test "lowers compiler-known engine intrinsics to runtime calls" {
         };
         try std.testing.expect(found);
     }
+}
+
+test "lowers float arithmetic, comparisons, casts, and math intrinsics" {
+    var result = try compile(
+        std.testing.allocator,
+        \\addf <- (a: f64, b: f64) -> f64 = a + b
+        \\subf <- (a: f64, b: f64) -> f64 = a - b
+        \\mulf <- (a: f64, b: f64) -> f64 = a * b
+        \\divf <- (a: f64, b: f64) -> f64 = a / b
+        \\negf <- (a: f64) -> f64 = -a
+        \\ltf <- (a: f64, b: f64) -> bool = a < b
+        \\lef <- (a: f64, b: f64) -> bool = a <= b
+        \\gtf <- (a: f64, b: f64) -> bool = a > b
+        \\gef <- (a: f64, b: f64) -> bool = a >= b
+        \\eqf <- (a: f64, b: f64) -> bool = a == b
+        \\nef <- (a: f64, b: f64) -> bool = a != b
+        \\castin <- (a: i32) -> f64 = a as f64
+        \\castout <- (x: f64) -> i64 = x as i64
+        \\castcopy <- (x: f32) -> f64 = x as f64
+        \\sinf <- (x: f64) -> f64 = e7_f32_sin(x)
+        \\cosf <- (x: f64) -> f64 = e7_f32_cos(x)
+        \\sqrtf <- (x: f64) -> f64 = e7_f32_sqrt(x)
+        \\absf <- (x: f64) -> f64 = e7_f32_abs(x)
+        \\clampf <- (x: f64, lo: f64, hi: f64) -> f64 = e7_f32_clamp(x, lo, hi)
+        \\millif <- (x: f64) -> i64 = e7_f32_to_milli(x)
+        \\frommilli <- (m: i64) -> f64 = e7_f32_from_milli(m)
+        \\toint <- (x: f64) -> i64 = e7_f32_to_i64(x)
+        \\fromint <- (i: i64) -> f64 = e7_f32_from_i64(i)
+        \\f32add <- (a: f32, b: f32) -> f32 = a + b
+        \\f32sin <- (x: f32) -> f32 = e7_f32_sin(x)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const expectations = [_]struct { function: []const u8, intrinsic: bytecode.RuntimeFunction }{
+        .{ .function = "addf", .intrinsic = .float_add },
+        .{ .function = "subf", .intrinsic = .float_sub },
+        .{ .function = "mulf", .intrinsic = .float_mul },
+        .{ .function = "divf", .intrinsic = .float_div },
+        .{ .function = "negf", .intrinsic = .float_neg },
+        .{ .function = "ltf", .intrinsic = .float_lt },
+        .{ .function = "lef", .intrinsic = .float_le },
+        .{ .function = "gtf", .intrinsic = .float_gt },
+        .{ .function = "gef", .intrinsic = .float_ge },
+        .{ .function = "eqf", .intrinsic = .float_eq },
+        .{ .function = "nef", .intrinsic = .float_ne },
+        .{ .function = "castin", .intrinsic = .float_from_i64 },
+        .{ .function = "castout", .intrinsic = .float_to_i64 },
+        .{ .function = "sinf", .intrinsic = .float_sin },
+        .{ .function = "cosf", .intrinsic = .float_cos },
+        .{ .function = "sqrtf", .intrinsic = .float_sqrt },
+        .{ .function = "absf", .intrinsic = .float_abs },
+        .{ .function = "clampf", .intrinsic = .float_clamp },
+        .{ .function = "millif", .intrinsic = .float_to_milli },
+        .{ .function = "frommilli", .intrinsic = .float_from_milli },
+        .{ .function = "toint", .intrinsic = .float_to_i64 },
+        .{ .function = "fromint", .intrinsic = .float_from_i64 },
+        .{ .function = "f32add", .intrinsic = .float_add },
+        .{ .function = "f32sin", .intrinsic = .float_sin },
+    };
+    for (expectations) |expectation| {
+        const function = result.functionNamed(expectation.function).?;
+        var found = false;
+        for (function.code) |op| switch (op) {
+            .runtime_call => |call| {
+                if (call.function == expectation.intrinsic) found = true;
+            },
+            else => {},
+        };
+        try std.testing.expect(found);
+    }
+
+    // float -> float cast is a no-op (no runtime conversion calls).
+    const copy = result.functionNamed("castcopy").?;
+    for (copy.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .float_from_i64, .float_to_i64 => return error.TestUnexpectedResult,
+            else => {},
+        },
+        else => {},
+    };
 }

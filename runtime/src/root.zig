@@ -15,6 +15,7 @@ pub const lease = @import("lease.zig");
 pub const aggregate = @import("aggregate.zig");
 pub const ecs = @import("ecs.zig");
 pub const engine = @import("engine.zig");
+pub const float = @import("float.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -59,6 +60,7 @@ test {
     _ = bytecode_ir;
     _ = ecs;
     _ = engine;
+    _ = float;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -1117,9 +1119,8 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     try jit.addBytecodeBytes(bytes, "engine-main");
     const Main = *const fn () callconv(.c) i64;
     const main_ctor = try jit.get(Main, "main");
-    // Synthetic native input: the compiled Render system calls
-    // e7_engine_camera_update each frame, so the camera must move.
-    const camera_before = engine.cameraForTest();
+    // Synthetic device input stands in for SDL.  Camera/input policy now runs
+    // in the compiled e7 systems, so the ECS Camera row is the observable.
     engine.injectKeyForTest(@intFromEnum(engine.Key.forward), true);
     engine.injectKeyForTest(@intFromEnum(engine.Key.sprint), true);
     engine.injectMouseDeltaForTest(120, 0);
@@ -1127,12 +1128,25 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     try std.testing.expect(handle != 0);
     // `main` returns i32 0 on success after DeInit tears down window/scene.
     try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
-    const camera_after = engine.cameraForTest();
     const stats = engine.renderStats();
-    try std.testing.expect(stats.camera_updates > 0);
     try std.testing.expect(stats.scene_draws > 0);
-    try std.testing.expect(camera_after.eye[2] < camera_before.eye[2]);
-    try std.testing.expect(camera_after.yaw > camera_before.yaw);
+
+    // Camera component slots: [0] position vector handle, [1] yaw, [2] pitch,
+    // then fov/near/far.  Floats are f64 bit patterns in i64 slots.
+    const camera_component = compiled.analysis.component("Camera").?;
+    const camera_ptr = ecs.e7_ecs_component_get(0, camera_component.id);
+    try std.testing.expect(camera_ptr != 0);
+    const loadFloat = struct {
+        fn get(base: i64, index: usize) f64 {
+            return @bitCast(aggregate.e7_load_i64(base + @as(i64, @intCast(index * 8))));
+        }
+    }.get;
+    const position_handle = aggregate.e7_load_i64(camera_ptr);
+    const position_z: f64 = @bitCast(aggregate.e7_vec_get(position_handle, 2));
+
+    try std.testing.expect(position_z < 5.5); // forward key moved -Z
+    try std.testing.expect(loadFloat(camera_ptr, 1) > 0.0); // mouse yaw
+    try std.testing.expect(loadFloat(camera_ptr, 2) < 0.0); // initial pitch
 
     try std.testing.expect(engine.frames() >= 2);
     var capture = engine.takeCapture() orelse return error.TestUnexpectedResult;
@@ -1227,4 +1241,106 @@ test "JIT executes async functions with five or more parameters" {
     const task_handle = run();
     try std.testing.expect(task_handle != 0);
     try std.testing.expectEqual(@as(i64, 15), task.e7_task_await(task_handle));
+}
+
+test "JIT computes float arithmetic, math intrinsics, and conversions" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\compute <- () -> i64:
+        \\    a := 5.0
+        \\    b := 2.0
+        \\    half := a / b
+        \\    three_five := half + 1.0
+        \\    s := e7_f32_sin(1.5707963267948966)
+        \\    c := e7_f32_cos(0.0)
+        \\    root := e7_f32_sqrt(9.0)
+        \\    absv := e7_f32_abs(-2.5)
+        \\    clamped := e7_f32_clamp(5.0, 0.0, 1.0)
+        \\    i := three_five as i64
+        \\    f := i as f64
+        \\    less := three_five < 4.0
+        \\    neq := three_five != 4.0
+        \\    total := e7_f32_to_milli(three_five) + e7_f32_to_milli(s) + e7_f32_to_milli(c)
+        \\    total = total + e7_f32_to_milli(root) + e7_f32_to_milli(absv) + e7_f32_to_milli(clamped)
+        \\    total = total + i + e7_f32_to_milli(f) + (less as i64) + (neq as i64)
+        \\    total
+        \\sinm <- () -> i64 = e7_f32_to_milli(e7_f32_sin(1.5707963267948966))
+        \\cosm <- () -> i64 = e7_f32_to_milli(e7_f32_cos(0.0))
+        \\sqrtm <- () -> i64 = e7_f32_to_milli(e7_f32_sqrt(9.0))
+        \\absm <- () -> i64 = e7_f32_to_milli(e7_f32_abs(-2.5))
+        \\clampm <- () -> i64 = e7_f32_to_milli(e7_f32_clamp(5.0, 0.0, 1.0))
+        \\tfm <- () -> i64 = e7_f32_to_milli(5.0 / 2.0 + 1.0)
+        \\casti <- () -> i64 = (5.0 / 2.0 + 1.0) as i64
+        \\castv <- () -> i64:
+        \\    a := 5.0
+        \\    b := 2.0
+        \\    half := a / b
+        \\    tf := half + 1.0
+        \\    tf as i64
+        \\fmill <- () -> i64:
+        \\    a := 5.0
+        \\    b := 2.0
+        \\    half := a / b
+        \\    tf := half + 1.0
+        \\    i := tf as i64
+        \\    e7_f32_to_milli(i as f64)
+        \\movement <- () -> i64 = e7_f32_to_milli(1.0 + 3.0 * 0.016)
+        \\roundtrip <- () -> i64 = e7_f32_to_milli(e7_f32_from_milli(1235))
+        \\comparisons <- () -> i64:
+        \\    a := 1.5
+        \\    b := 2.5
+        \\    sum := 0
+        \\    if a < b:
+        \\        sum = sum + 1
+        \\    if b > a:
+        \\        sum = sum + 1
+        \\    if a <= a:
+        \\        sum = sum + 1
+        \\    if b >= b:
+        \\        sum = sum + 1
+        \\    if a != b:
+        \\        sum = sum + 1
+        \\    if a == a:
+        \\        sum = sum + 1
+        \\    sum
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "float-math");
+
+    const Fn = *const fn () callconv(.c) i64;
+    const sinm = try jit.get(Fn, "sinm");
+    const cosm = try jit.get(Fn, "cosm");
+    const sqrtm = try jit.get(Fn, "sqrtm");
+    const absm = try jit.get(Fn, "absm");
+    const clampm = try jit.get(Fn, "clampm");
+    const tfm = try jit.get(Fn, "tfm");
+    const casti = try jit.get(Fn, "casti");
+    try std.testing.expectEqual(@as(i64, 1000), sinm());
+    try std.testing.expectEqual(@as(i64, 1000), cosm());
+    try std.testing.expectEqual(@as(i64, 3000), sqrtm());
+    try std.testing.expectEqual(@as(i64, 2500), absm());
+    try std.testing.expectEqual(@as(i64, 1000), clampm());
+    try std.testing.expectEqual(@as(i64, 3500), tfm());
+    try std.testing.expectEqual(@as(i64, 3), casti());
+    const castv = try jit.get(Fn, "castv");
+    const fmill = try jit.get(Fn, "fmill");
+    try std.testing.expectEqual(@as(i64, 3), castv());
+    try std.testing.expectEqual(@as(i64, 3000), fmill());
+    const compute = try jit.get(Fn, "compute");
+    // 3.5 + sin(pi/2) + cos(0) + sqrt(9) + |-2.5| + clamp(5,0,1) + 3 + 3
+    // in milli-units plus two comparison bits: 15005.
+    try std.testing.expectEqual(@as(i64, 15005), compute());
+    const movement = try jit.get(Fn, "movement");
+    try std.testing.expectEqual(@as(i64, 1048), movement());
+    const roundtrip = try jit.get(Fn, "roundtrip");
+    try std.testing.expectEqual(@as(i64, 1235), roundtrip());
+    const comparisons = try jit.get(Fn, "comparisons");
+    try std.testing.expectEqual(@as(i64, 6), comparisons());
 }

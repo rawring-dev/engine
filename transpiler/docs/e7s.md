@@ -331,7 +331,8 @@ var dir = float3(0.0, 1.0, 0.0);
 ### 3.3 Matrices — `[T; R, C]`
 
 A two-dimension fixed array type is a **matrix** with `R` rows and `C` columns.
-Only `f32` is supported, and `R, C` must each be 2..4.
+`R, C` must each be 2..4 and the element type must be a floating-point scalar
+(`f16`, `f32`, or `f64`; `f32` is the normal choice for shaders).
 
 | e7s | Slang |
 | --- | --- |
@@ -340,22 +341,70 @@ Only `f32` is supported, and `R, C` must each be 2..4.
 | `[f32; 4, 4]` | `float4x4` |
 | `[f32; 3, 4]` | `float3x4` (3 rows, 4 columns) |
 
-Matrices are **row-major**: `[f32; R, C]` maps to `floatRxC`, and
-`floatRxC(a, b, c, d, ...)` fills rows first. Indexing `m[i, j]` selects row
-`i`, column `j` and is emitted as `m[i][j]`; `m[i]` reads row `i` as a vector.
+Matrices are logically **row-major values**: `[f32; R, C]` maps to `floatRxC`,
+and a matrix literal/constructor fills rows first. Indexing `m[i, j]` selects
+row `i`, column `j` and is emitted as `m[i][j]`; `m[i]` reads row `i` as a
+vector.
 
-e7's `*` keeps e7's meaning for matrices: when either operand is a matrix the
+#### Storage layout
+
+A matrix **struct field** is emitted with an explicit Slang layout modifier:
+
+```e7s
+SceneUniform <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+```
+
+```slang
+struct SceneUniform {
+    column_major float4x4 model;
+    column_major float4x4 view;
+    column_major float4x4 proj;
+};
+```
+
+The default is `column_major`, matching Vulkan/std140 and the common
+column-major host matrix representation (`Mat4[col][row]` / GLM-style columns).
+This is the layout a `ConstantBuffer<T>` expects for matrices uploaded as four
+contiguous column vectors, so host code does **not** need to split a matrix into
+separate `float4` fields to get an unambiguous payload. The modifier is
+explicit, so e7s output does not depend on the compiler's default
+matrix-layout mode.
+
+Use `@row_major` on a field to select row-major storage instead, or
+`@column_major` to spell out the default. Both are field-only attributes and
+are valid only on matrix fields; using both on one field is a diagnostic.
+
+> Slang's matrix convention is transposed relative to SPIR-V's decoration
+> spelling: source-level `column_major` is emitted by slangc as the inverse
+> `RowMajor` SPIR-V member decoration. Do not infer the host byte layout from
+> the SPIR-V token alone — the e7s source-level layout is column-major, i.e.
+> memory offset 0/16/32/48 holds columns 0..3 of a `4x4` matrix.
+
+e7's `*` keeps e7's matrix meaning: when either operand is a matrix the
 transpiler emits `mul(lhs, rhs)` (`matrix * matrix`, `matrix * vector`,
 `vector * matrix`). Scalar/component-wise arithmetic with vectors is emitted
 unchanged (`scalar * vector`, `vector * scalar`, vector `*` vector). An
 explicit `mul(...)` call passes through unchanged.
 
 ```e7s
-clip := scene.mvp * [x, y, z, 1.0] as [f32; 4]
+position := [x, y, z, 1.0] as [f32; 4]
+clip := scene.proj * (scene.view * (scene.model * position))
 ```
 
 ```slang
-var clip = mul(scene.mvp, float4(x, y, z, 1.0));
+var position = float4(x, y, z, 1.0);
+var clip = mul(scene.proj, mul(scene.view, mul(scene.model, position)));
+```
+
+A local matrix literal also works, and `m[i]` / `m[i, j]` use logical rows:
+
+```e7s
+local := [[1.0, 0.0], [0.0, 1.0]] as [f32; 2, 2]
+row := local[0]          # [f32; 2] row 0
+value := local[1, 0]     # 0.0 (row 1, column 0)
 ```
 
 ### 3.4 User structs, generic parameters and unit results
@@ -633,7 +682,7 @@ parameter`).
 | `[x, y] as [f32; 2]` | `float2(x, y)` |
 | `[x, y, z] as [f32; 3]` | `float3(x, y, z)` |
 | `[x, y, z, w] as [f32; 4]` | `float4(x, y, z, w)` |
-| `[[a, b], [c, d]] as [f32; 2, 2]` | `float2x2(a, b, c, d)` (row-major) |
+| `[[a, b], [c, d]] as [f32; 2, 2]` | `float2x2(a, b, c, d)` (logical row order) |
 | `x: [f32; 3] <- [a, b, c]` | `float3 x = float3(a, b, c);` |
 | `ret [a, b, c]` (return type `[f32; 3]`) | `return float3(a, b, c);` |
 
@@ -744,6 +793,8 @@ struct fields and lower as follows.
 | `@location(n)` | struct field | `[[vk::location(n)]]` | Non-negative integer literal. Used on entry/varying interface fields. |
 | `@builtin(name)` | struct field | `: SV_Name` semantic (§8.5) | `name` is one of the listed identifiers; any other name is a diagnostic. A field cannot have both `@builtin` and `@location`. |
 | `@flat` | struct field | `nointerpolation` modifier before the type | Meaningful on varying fields; required on integer varyings. Do not use Slang's `[flat]`: it is accepted but silently ignored. |
+| `@column_major` | matrix struct field | `column_major` modifier before the matrix type | The default layout for matrix fields; may be written explicitly. Rejected on non-matrix fields and together with `@row_major`. |
+| `@row_major` | matrix struct field | `row_major` modifier before the matrix type | Opts into row-major storage instead of the default column-major layout. Rejected on non-matrix fields and together with `@column_major`. |
 
 Attribute placement is checked against a per-item allowlist; any other
 attribute (including `@Components`, `@trigger`, `@plugin`, `@derive`) is a
@@ -769,7 +820,7 @@ albedo: Texture2D<[f32; 4]>
 
 ```slang
 struct Frame {
-    float4x4 view_proj;
+    column_major float4x4 view_proj;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<Frame> frame;
@@ -1348,7 +1399,7 @@ vs_main <- (vertex: Vertex) -> Varying:
 module triangle_vert;
 
 struct Scene {
-    float4x4 mvp;
+    column_major float4x4 mvp;
     float4 tint;
 };
 
@@ -1416,8 +1467,8 @@ module files are written.
 | Impls | receiver `this` not first or not `&Type`/`&mut Type`, receiver type mismatch, unsupported method attributes | invalid impl |
 | Match | `match` as a value, guards (`Arm if cond:`), non-last wildcard | unsupported match form |
 | Imports | aliases (`use foo as bar;`), `self`/`super` imports, missing module file, import cycles, module name `core` (file stems are sanitized instead), duplicate module names | unsupported import / module error |
-| Attributes | `@binding` without a resource, `@push_constant` on a non-struct resource, `@binding`+`@push_constant` together, `@uniform`+`@push_constant`, `@uniform` on an explicit resource type, duplicate binding+set, `@location` duplicates/non-integer, `@builtin`+`@location` on one field, unknown `@builtin` name, unknown attribute, misplaced attribute | invalid attribute |
-| Types | `[f32; N]` with `N` outside 2..4, matrices with non-`f32` or out-of-range dimensions, `&T` outside receivers, struct casts, tuples | unsupported type |
+| Attributes | `@binding` without a resource, `@push_constant` on a non-struct resource, `@binding`+`@push_constant` together, `@uniform`+`@push_constant`, `@uniform` on an explicit resource type, duplicate binding+set, `@location` duplicates/non-integer, `@builtin`+`@location` on one field, matrix layout attributes on non-matrix fields or both layout attributes on one field, unknown `@builtin` name, unknown attribute, misplaced attribute | invalid attribute |
+| Types | `[f32; N]` with `N` outside 2..4, matrices with non-float elements or dimensions outside 2..4, `&T` outside receivers, struct casts, tuples | unsupported type |
 | Expressions | bare list literal with no vector/matrix context, missing/extra/duplicate struct-literal fields, non-constant constant initializer that Slang rejects, `match` as value | invalid expression |
 | Entry points | more than one stage attribute, entry scalar parameters, vertex output without `@builtin(position)`, compute entry not returning a unit type, `@compute` not three positive integers | invalid entry point |
 
@@ -1440,6 +1491,7 @@ All examples live in `transpiler/examples/`.
 | `generics_traits.e7` | traits/interfaces, supertrait, `[mutating]`, `impl`/extension, `@inline`, generic struct/function/impl with `where` | `generics_traits` (library unit) |
 | `resources.e7` | `@uniform`, `@push_constant`, `@resource`, `Texture2D`/`SamplerState`/`StructuredBuffer`, `@flat`, `@binding` | `resources`; `vs_main`, `fs_main` |
 | `consts.e7` | top-level constants, inline `mod`→`namespace`, `enum class`, scalar/vector math, casts | `consts`; `fs_main` (fragment) |
+| `matrices.e7` | regular `[f32; R, C]` matrix fields, default `column_major` layout, `@row_major` override, matrix-vector `*` → `mul`, row/column indexing | `matrices`; `vs_main` (vertex) |
 | `modules/main.e7` | external `mod math`, `use math::*`, imported helpers, two stages in one root | `main`; `vs_main`, `fs_main` |
 | `modules/math.e7` | `pub` module items, exported struct/constants/functions, `@inline` | `math` (module) |
 

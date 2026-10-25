@@ -66,8 +66,29 @@ pub const RuntimeFunction = enum(u8) {
     engine_scene_draw,
     engine_should_close,
     engine_key_down,
-    engine_mouse_delta,
-    engine_camera_update,
+    engine_mouse_dx,
+    engine_mouse_dy,
+    // Float helpers (f64 bit patterns in i64 slots; see runtime/src/float.zig).
+    float_add,
+    float_sub,
+    float_mul,
+    float_div,
+    float_neg,
+    float_eq,
+    float_ne,
+    float_lt,
+    float_le,
+    float_gt,
+    float_ge,
+    float_sin,
+    float_cos,
+    float_sqrt,
+    float_abs,
+    float_clamp,
+    float_from_i64,
+    float_to_i64,
+    float_to_milli,
+    float_from_milli,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -101,8 +122,28 @@ pub const RuntimeFunction = enum(u8) {
             .engine_scene_draw => "e7_engine_scene_draw",
             .engine_should_close => "e7_engine_should_close",
             .engine_key_down => "e7_engine_key_down",
-            .engine_mouse_delta => "e7_engine_mouse_delta",
-            .engine_camera_update => "e7_engine_camera_update",
+            .engine_mouse_dx => "e7_engine_mouse_dx",
+            .engine_mouse_dy => "e7_engine_mouse_dy",
+            .float_add => "e7_f32_add",
+            .float_sub => "e7_f32_sub",
+            .float_mul => "e7_f32_mul",
+            .float_div => "e7_f32_div",
+            .float_neg => "e7_f32_neg",
+            .float_eq => "e7_f32_eq",
+            .float_ne => "e7_f32_ne",
+            .float_lt => "e7_f32_lt",
+            .float_le => "e7_f32_le",
+            .float_gt => "e7_f32_gt",
+            .float_ge => "e7_f32_ge",
+            .float_sin => "e7_f32_sin",
+            .float_cos => "e7_f32_cos",
+            .float_sqrt => "e7_f32_sqrt",
+            .float_abs => "e7_f32_abs",
+            .float_clamp => "e7_f32_clamp",
+            .float_from_i64 => "e7_f32_from_i64",
+            .float_to_i64 => "e7_f32_to_i64",
+            .float_to_milli => "e7_f32_to_milli",
+            .float_from_milli => "e7_f32_from_milli",
         };
     }
 
@@ -143,10 +184,14 @@ pub const RuntimeFunction = enum(u8) {
             .engine_scene_destroy,
             .engine_key_down,
             => 1,
-            .engine_time_now_ms, .engine_should_close, .engine_mouse_delta => 0,
+            .engine_time_now_ms, .engine_should_close, .engine_mouse_dx, .engine_mouse_dy => 0,
             .engine_scene_set_camera => 6,
             .engine_scene_draw => 6,
-            .engine_camera_update => 2,
+            .float_add, .float_sub, .float_mul, .float_div => 2,
+            .float_eq, .float_ne, .float_lt, .float_le, .float_gt, .float_ge => 2,
+            .float_neg, .float_sin, .float_cos, .float_sqrt, .float_abs => 1,
+            .float_clamp => 3,
+            .float_from_i64, .float_to_i64, .float_to_milli, .float_from_milli => 1,
         };
     }
 
@@ -530,8 +575,19 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 next_height -= 2;
                 fallthrough = index + 1;
             },
-            .store_u8, .vec_set, .vec_set_row, .map_set, .map_set_str, .str_slice => {
+            // Set operations pop container + key/index + value and push nothing.
+            .vec_set, .vec_set_row, .map_set, .map_set_str => {
                 if (height < 3) return error.InvalidBytecode;
+                next_height -= 3;
+                fallthrough = index + 1;
+            },
+            .str_slice => {
+                if (height < 3) return error.InvalidBytecode;
+                next_height -= 2;
+                fallthrough = index + 1;
+            },
+            .store_u8 => {
+                if (height < 2) return error.InvalidBytecode;
                 next_height -= 2;
                 fallthrough = index + 1;
             },
@@ -855,7 +911,7 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         58 => .vec_set_row,
         59 => blk: {
             const raw = (cursor.take(1) orelse return error.InvalidBytecode)[0];
-            if (raw > @intFromEnum(RuntimeFunction.engine_camera_update)) return error.InvalidBytecode;
+            if (raw > @intFromEnum(RuntimeFunction.float_from_milli)) return error.InvalidBytecode;
             const function: RuntimeFunction = @enumFromInt(raw);
             const argc = cursor.readU16() orelse return error.InvalidBytecode;
             if (argc != function.arity()) return error.InvalidBytecode;

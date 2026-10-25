@@ -472,12 +472,11 @@ the columnar ECS world, JITs the e7 `main`, and runs the `Init`, `FrameInit`,
 `PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit` triggers. SDL
 window/input and Vulkan scene access are compiler-known intrinsics
 (`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
-[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Camera movement is currently
-applied by the native engine helper (`e7_engine_camera_update`) so e7 avoids
-float arithmetic. The default is first-person (mouse look rotates the camera in
-place); `--orbit` switches to an optional orbit camera that keeps the cube
-centered. Reading camera components through queries is available, but applying
-them back to the runtime camera awaits f32 arithmetic lowering.
+[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Camera/input policy now lives in e7: `gather_input` reads raw key/mouse
+intrinsics, `move_camera` updates the Camera component in a query loop with e7
+float arithmetic and trig, and `render_scene` passes the resulting camera to
+`e7_engine_scene_set_camera`. `runtime/src/engine.zig` is limited to
+SDL/Vulkan window/scene/time/input/frame-limit and capture facilities.
 [`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
 depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
 
@@ -522,7 +521,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 301 tests: scheduler 8, compiler 192, runtime 78,
+`zig build test` runs 306 tests: scheduler 8, compiler 194, runtime 81,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

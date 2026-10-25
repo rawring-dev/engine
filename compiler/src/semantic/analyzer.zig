@@ -3657,12 +3657,28 @@ const Checker = struct {
         return self.store.make(.{ .range = element });
     }
 
+    fn isFloatLike(self: *Checker, ty: *types.Type) bool {
+        var current = self.store.resolve(ty);
+        while (current.* == .variable) {
+            const variable = current.variable;
+            if (variable.binding) |binding| {
+                current = self.store.resolve(binding);
+                continue;
+            }
+            return variable.kind == .float;
+        }
+        return current.* == .float;
+    }
+
     fn intrinsicResultType(self: *Checker, spec: intrinsics.ValueType) Error!*types.Type {
         return switch (spec) {
             .i64_ => self.store.make(.{ .int = .i64 }),
             .u64_ => self.store.make(.{ .int = .u64 }),
             .i32_ => self.store.make(.{ .int = .i32 }),
             .bool_ => self.store.make(.bool),
+            // Intrinsics are generic over the float spelling: e7 f32 and f64
+            // share the f64 runtime representation.
+            .float_ => try self.store.floatVar(),
             .str_ => self.store.make(.string),
             .unit => self.store.make(.unit),
         };
@@ -3683,6 +3699,13 @@ const Checker = struct {
         for (call.args, 0..) |arg, index| {
             const actual = try self.checkMoveExpr(arg, null);
             if (index >= intrinsic.params.len) continue;
+            if (intrinsic.params[index] == .float_) {
+                if (!self.isFloatLike(actual)) {
+                    const name_of = try self.store.typeName(self.store.resolve(actual));
+                    try self.report("intrinsic `{s}` expects a float argument, found `{s}`", .{ name, name_of });
+                }
+                continue;
+            }
             const expected = try self.intrinsicResultType(intrinsic.params[index]);
             try self.expectAssignable(expected, actual, name);
         }

@@ -1,0 +1,34 @@
+# Regular e7s matrix syntax: [f32; R, C] fields and matrix-vector products.
+#
+# Matrix struct fields default to column-major storage in the generated Slang
+# (`column_major floatRxC`), matching Vulkan/std140 and column-major host
+# matrices.  `@row_major` selects row-major storage for a field instead.
+#
+# `*` with a matrix operand keeps e7's matrix meaning and lowers to Slang
+# `mul(lhs, rhs)`; `m[i, j]` indexes rows then columns.
+
+Scene <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+    @row_major basis: [f32; 3, 3]
+
+@binding(0, 0)
+scene: Scene
+
+In <- struct
+    @location(0) position: [f32; 4]
+
+Out <- struct
+    @builtin(position) clip: [f32; 4]
+    @location(0) tint: [f32; 3]
+
+@vertex
+vs_main <- (input: In) -> Out:
+    world := scene.model * input.position
+    view := scene.view * world
+    clip := scene.proj * view
+    tint := scene.basis * ([1.0, 0.5, 0.25] as [f32; 3])
+    local := [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] as [f32; 3, 3]
+    offset := local[0, 1]
+    ret Out{clip: clip + ([offset, 0.0, 0.0, 0.0] as [f32; 4]), tint: tint}

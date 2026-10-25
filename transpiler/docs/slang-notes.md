@@ -603,6 +603,41 @@ Intrinsics used by the e7s examples (`normalize`, `dot`, `length`, `max`,
 
 ---
 
+### 8.1 Matrix layout — verified decorations
+
+Matrix memory layout is or can be decided with field modifiers, and the
+*field* modifier wins over the `-matrix-layout-*` command-line mode:
+
+```slang
+struct M {
+    column_major float4x4 model;
+    row_major    float4x4 other;
+};
+[[vk::binding(0, 0)]] ConstantBuffer<M> cb;
+```
+
+Compiled with `-target spirv -profile spirv_1_3`, the emitted decorations are:
+
+| Source spelling | SPIR-V member decoration |
+| --- | --- |
+| `column_major float4x4` | `RowMajor` + `MatrixStride 16` |
+| `row_major float4x4` | `ColMajor` + `MatrixStride 16` |
+| no modifier (slangc default) | `RowMajor` + `MatrixStride 16` |
+
+The decoration token is **inverted** relative to the source spelling because
+Slang's matrix convention is transposed relative to SPIR-V's (Slang documents
+this: a source-level *row-major* layout emits `ColMajor`, source-level
+*column-major* emits `RowMajor`). To keep a `ConstantBuffer<T>` matrix field
+unambiguous and independent of compiler defaults, e7s emits an explicit
+`column_major` on every matrix struct field (or `row_major` with
+`@row_major`). The source-level column-major layout is what a column-major host
+matrix (`Mat4[col][row]`, 4 contiguous columns) uploads directly; the SPIR-V
+`RowMajor` token must not be read as host row-major bytes.
+
+Matrix values remain logically row-major (literals fill rows first;
+`m[i][j]` is row/column), and `mul(m, v)` is row·column = mathematical
+`M * v`. Changing the storage modifier does not change those value semantics.
+
 ## 9. Type mapping (verified spellings)
 
 | e7s | Slang |
@@ -677,13 +712,13 @@ These invalidate or refine the provisional output shape. Ordered by impact:
    colour: v}` must be reordered to declaration order and emitted as
    `Varying(c, v)`. Brace lists (`Varying{c, v}` / `{1.0, 2.0}`) do compile,
    but positional constructors are unambiguous.
-9. **Matrix/vector products:** `m * v` and `v * m` do not compile. Emit
-   `mul(m, v)` (and `mul(m, n)` for matrix products). The e7s examples already
-   spell `mul` explicitly; any generic operator lowering must special-case
-   matrix arithmetic. `m * n` compiles but is componentwise — not a substitute.
+9. **Matrix/vector products:** `m * v` and `v * m` do not compile in Slang.
+   e7s `*` on a matrix operand must lower to `mul(m, v)` (and `mul(m, n)` for
+   matrix products). `m * n` compiles but is componentwise — not a substitute.
 10. **Matrix constructors are row-major logical.** `float4x4(a,b,c,d, …)` fills
-    rows: `m[0] = (a,b,c,d)`; `mul` multiplies row·vector. This matches the
-    documented e7s `[f32; 4, 4]`/`mul` convention; state it in the docs.
+    rows: `m[0] = (a,b,c,d)`; `mul` multiplies row·vector. e7s emits explicit
+    `column_major` / `row_major` field modifiers so `ConstantBuffer` layout is
+    deterministic; see §8.1 (source `column_major` emits SPIR-V `RowMajor`).
 11. **Plain struct globals with bindings are a trap** (bindings can be silently
     merged/dropped when there are several). Always emit
     `ConstantBuffer<T>` for `@uniform`/plain struct resources, and

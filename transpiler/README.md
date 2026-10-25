@@ -54,7 +54,7 @@ sh tools/validate-examples.sh
 | --- | --- | --- |
 | functions | `name <- (a: f32) -> f32:` | `float name(float a) { ... }` |
 | structs | `Vec3 <- struct` | `struct Vec3 { ... };` |
-| fixed vectors/matrices | `[f32; 3]`, `[f32; 4, 4]` | `float3`, `float4x4` |
+| fixed vectors/matrices | `[f32; 3]`, `[f32; 4, 4]` | `float3`, `column_major float4x4` (struct fields) |
 | enums | `Mode <- enum` | `enum class Mode { ... };` |
 | interfaces | `trait IThing` | `interface IThing { ... };` |
 | trait impls / inherent impls | `impl IThing for S:` / `impl S:` | `extension S : IThing { ... }` / `extension S { ... }` |
@@ -95,7 +95,9 @@ results are rejected with a diagnostic.
   keeps working.
 - **Slang-shaped semantics.** The subset deliberately follows Slang values:
   fixed-size vectors/matrices, method receivers, interface/extension blocks,
-  constant buffers.  Trait requirements use e7 receivers (`&self`,
+  constant buffers.  Matrix struct fields get an explicit `column_major`
+  layout by default (matching Vulkan/std140 and column-major host matrices;
+  `@row_major` opts out), and matrix `*` lowers to `mul(...)`.  Trait requirements use e7 receivers (`&self`,
   `&mut self`); impl bodies name the receiver `this: &Type` / `this: &mut Type`
   and the transpiler drops it, leaving Slang's implicit `this`.  Methods
   without a `this` parameter become `static` extension methods.
@@ -139,7 +141,7 @@ results are rejected with a diagnostic.
 
 ```sh
 cd transpiler
-zig build test          # 20 end-to-end tests; no external tools required
+zig build test          # 23 end-to-end tests; no external tools required
 ```
 
 The golden tests exercise functions, structs, vectors/matrices, resources,

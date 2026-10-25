@@ -1557,8 +1557,8 @@ test "checks compiler-known engine intrinsics" {
         \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000, 2600, 3000, 2600)
         \\limit <- () -> i64 = e7_engine_should_close()
         \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
-        \\mouse <- () -> i64 = e7_engine_mouse_delta()
-        \\move <- (scene: u64) -> i64 = e7_engine_camera_update(scene, 16)
+        \\mouse <- () -> i64 = e7_engine_mouse_dx()
+        \\mouse_y <- () -> i64 = e7_engine_mouse_dy()
     );
     try expectDiagnostic(
         \\now <- () -> i64 = e7_engine_time_now_ms(1)
@@ -1631,4 +1631,22 @@ test "checks query projection iteration patterns" {
         \\    for row in items:
         \\        row.b = 1
     , "cannot assign to immutable place");
+}
+
+test "checks float arithmetic, comparisons, casts, and math intrinsics" {
+    try expectClean(
+        \\addf <- (a: f64, b: f64) -> f64 = a + b
+        \\negf <- (a: f64) -> f64 = -a
+        \\cmpf <- (a: f32, b: f32) -> bool = a < b
+        \\castin <- (a: i32) -> f64 = a as f64
+        \\castout <- (x: f64) -> i64 = x as i64
+        \\sinf <- (x: f64) -> f64 = e7_f32_sin(x)
+        \\clampf <- (x: f64, lo: f64, hi: f64) -> f64 = e7_f32_clamp(x, lo, hi)
+        \\millif <- (x: f64) -> i64 = e7_f32_to_milli(x)
+        \\f32math <- (x: f32, y: f32) -> f32 = e7_f32_sin(x) + y * y
+    );
+    // Intrinsic argument types are enforced.
+    try expectDiagnostic(
+        \\f <- (x: i64) -> f64 = e7_f32_sin(x)
+    , "expects a float argument");
 }

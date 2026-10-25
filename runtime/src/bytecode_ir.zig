@@ -95,6 +95,32 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
 fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
     for (function.code) |op| switch (op) {
         .vec_len, .str_len, .map_len => return true,
+        .runtime_call => |call| switch (call.function) {
+            // Float helpers expand into large constant-argument call chains;
+            // LLVM 23's InstCombine fixed-point verifier rejects the result.
+            .float_add,
+            .float_sub,
+            .float_mul,
+            .float_div,
+            .float_neg,
+            .float_eq,
+            .float_ne,
+            .float_lt,
+            .float_le,
+            .float_gt,
+            .float_ge,
+            .float_sin,
+            .float_cos,
+            .float_sqrt,
+            .float_abs,
+            .float_clamp,
+            .float_from_i64,
+            .float_to_i64,
+            .float_to_milli,
+            .float_from_milli,
+            => return true,
+            else => {},
+        },
         else => {},
     };
     return false;

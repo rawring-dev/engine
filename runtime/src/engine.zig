@@ -3,23 +3,28 @@
 //!
 //! These symbols are compiler-known (see `compiler/src/intrinsics.zig`) and are
 //! registered with the JIT by `orc.Jit.addBytecode`.  The engine helpers keep
-//! the C ABI small: window/scene handles are u64, everything else is an i64, and
-//! f32 values cross the boundary integer-scaled so e7 needs no float arithmetic:
+//! the C ABI small: window/scene handles are u64, everything else is an i64.
+//! Renderer-facing f32 values cross the boundary integer-scaled, and e7 converts
+//! with the `e7_f32_*` helpers:
 //!
 //!   * positions/eye/light: milli-units (world units x1000)
 //!   * camera yaw/pitch:    milli-degrees (degrees x1000)
 //!   * scene delta:         milliseconds
 //!   * cube angle:          milli-radians (radians x1000)
 //!
-//! Input is native: `e7_engine_window_pump` drains SDL events into an engine
-//! input state (WASD/QE/arrows/Shift, mouse motion, close/Escape), and
-//! `e7_engine_camera_update(scene, delta_ms)` applies FPS-style movement and
-//! mouse look to the runtime camera, then pushes it to the scene.  `--headless`
-//! hides the SDL window; rendering still goes through the offscreen capture
-//! target, so a frame can be captured and checked without a display.
-//! The frame limiter is host-configured (`setMaxFrames`) and polled once per
-//! frame from e7 via `e7_engine_should_close()`, which captures the current
-//! scene before signalling shutdown when the limit is reached.
+//! This module is deliberately *low level*: it owns SDL window/scene handles,
+//! event pumping, raw key/mouse state, the monotonic clock, the frame limiter,
+//! and capture.  All camera/input policy (sensitivity, pitch clamps, movement
+//! basis, frame delta) lives in `engine/main.e7`, which reads the raw state via
+//! `e7_engine_key_down`, `e7_engine_mouse_dx`, and `e7_engine_mouse_dy` and
+//! pushes its camera back through `e7_engine_scene_set_camera` with milli-unit
+//! integers.
+//!
+//! `--headless` hides the SDL window; rendering still goes through the
+//! offscreen capture target, so a frame can be captured and checked without a
+//! display.  The frame limiter is host-configured (`setMaxFrames`) and polled
+//! once per frame from e7 via `e7_engine_should_close()`, which captures the
+//! current scene before signalling shutdown when the limit is reached.
 
 const std = @import("std");
 const abi = @import("ffi/abi.zig");
@@ -32,17 +37,10 @@ const shader_assets = @import("shader_assets");
 const sdl = @import("ffi/sdl.zig");
 const c = sdl.c;
 
-const move_speed: f32 = 3.0;
-const sprint_multiplier: f32 = 2.5;
-const mouse_sensitivity: f32 = 0.0025;
-const keyboard_look_speed: f32 = 1.6;
-const max_frame_delta_ms: i64 = 100;
 /// Clamp one SDL mouse-motion event.  Relative mode should produce small
 /// deltas, but focus/window-manager transitions can report a single huge jump.
+/// Per-frame look policy (sensitivity, total clamp) lives in e7.
 const look_delta_limit: f32 = 250.0;
-/// Clamp the accumulated per-frame look delta so a stalled frame cannot spin
-/// the camera by an unbounded amount.
-const max_look_delta: f32 = 600.0;
 
 /// Logical action codes shared by SDL key mapping, `e7_engine_key_down`, and
 /// the headless input tests.
@@ -60,18 +58,12 @@ pub const Key = enum(i64) {
     look_down = 10, // Down arrow
 };
 
+const key_count = 11;
+
+/// Raw device state only: which logical keys are held and how far the mouse
+/// moved since the previous query.  e7 turns this into camera motion.
 const InputState = struct {
-    forward: bool = false,
-    back: bool = false,
-    left: bool = false,
-    right: bool = false,
-    up: bool = false,
-    down: bool = false,
-    sprint: bool = false,
-    look_left: bool = false,
-    look_right: bool = false,
-    look_up: bool = false,
-    look_down: bool = false,
+    keys: [key_count]bool = [_]bool{false} ** key_count,
     mouse_dx: f32 = 0.0,
     mouse_dy: f32 = 0.0,
 };
@@ -105,16 +97,7 @@ const State = struct {
     last_scene: u64 = 0,
     /// First host-visible failure (window/scene creation) for diagnostics.
     last_failure: ?[]const u8 = null,
-    /// Runtime FPS camera; movement/mouse look are applied by
-    /// `e7_engine_camera_update` so e7 needs no float arithmetic.
-    camera: renderer.Camera = .{},
-    /// Optional orbit mode for inspecting the scene.  First-person is the
-    /// default; `--orbit` (host) switches this on.
-    orbit: bool = false,
-    orbit_target: renderer.Vec3 = .{ 0.0, 0.0, 0.0 },
-    orbit_distance: f32 = 5.8,
     input: InputState = .{},
-    camera_updates: i64 = 0,
     scene_draws: i64 = 0,
 };
 
@@ -138,19 +121,7 @@ fn milliDegreesToRadians(value: i64) f32 {
 }
 
 fn setKeyLocked(key: Key, pressed: bool) void {
-    switch (key) {
-        .forward => state.input.forward = pressed,
-        .back => state.input.back = pressed,
-        .left => state.input.left = pressed,
-        .right => state.input.right = pressed,
-        .up => state.input.up = pressed,
-        .down => state.input.down = pressed,
-        .sprint => state.input.sprint = pressed,
-        .look_left => state.input.look_left = pressed,
-        .look_right => state.input.look_right = pressed,
-        .look_up => state.input.look_up = pressed,
-        .look_down => state.input.look_down = pressed,
-    }
+    state.input.keys[@intCast(@intFromEnum(key))] = pressed;
 }
 
 fn mapSdlKey(keycode: u32) ?Key {
@@ -212,61 +183,6 @@ fn pumpEventsLocked(window_handle: i64) void {
     }
 }
 
-/// Apply the current input state to the runtime camera and push it to `scene`.
-/// Requires `state.mutex`.
-fn cameraUpdateLocked(scene_handle: i64, delta_ms: i64) void {
-    const scene = renderer.registry.get(@intCast(scene_handle)) orelse return;
-    const clamped_ms = @max(@as(i64, 0), @min(delta_ms, max_frame_delta_ms));
-    const delta = @as(f32, @floatFromInt(clamped_ms)) / 1000.0;
-
-    const mouse_dx = std.math.clamp(state.input.mouse_dx, -max_look_delta, max_look_delta);
-    const mouse_dy = std.math.clamp(state.input.mouse_dy, -max_look_delta, max_look_delta);
-    state.camera.yaw += mouse_dx * mouse_sensitivity;
-    state.camera.pitch -= mouse_dy * mouse_sensitivity;
-    state.input.mouse_dx = 0.0;
-    state.input.mouse_dy = 0.0;
-    if (state.input.look_left) state.camera.yaw -= keyboard_look_speed * delta;
-    if (state.input.look_right) state.camera.yaw += keyboard_look_speed * delta;
-    if (state.input.look_up) state.camera.pitch += keyboard_look_speed * delta;
-    if (state.input.look_down) state.camera.pitch -= keyboard_look_speed * delta;
-    const pitch_limit = std.math.degreesToRadians(89.0);
-    state.camera.pitch = std.math.clamp(state.camera.pitch, -pitch_limit, pitch_limit);
-
-    const basis = renderer.cameraBasis(state.camera.yaw, 0.0);
-    const ground_forward = renderer.Vec3{ basis.forward[0], 0.0, basis.forward[2] };
-    const ground_right = renderer.Vec3{ basis.right[0], 0.0, basis.right[2] };
-    var direction = renderer.Vec3{ 0.0, 0.0, 0.0 };
-    if (state.input.forward) direction = vecAdd(direction, ground_forward);
-    if (state.input.back) direction = vecSub(direction, ground_forward);
-    if (state.input.right) direction = vecAdd(direction, ground_right);
-    if (state.input.left) direction = vecSub(direction, ground_right);
-    if (state.input.up) direction[1] += 1.0;
-    if (state.input.down) direction[1] -= 1.0;
-    const length = @sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
-    if (state.orbit) {
-        if (length > 1e-6) {
-            const speed = move_speed * (if (state.input.sprint) sprint_multiplier else 1.0) * delta;
-            for (0..3) |axis| state.orbit_target[axis] += direction[axis] / length * speed;
-        }
-        const forward = renderer.cameraBasis(state.camera.yaw, state.camera.pitch).forward;
-        for (0..3) |axis| state.camera.eye[axis] = state.orbit_target[axis] - forward[axis] * state.orbit_distance;
-    } else {
-        if (length > 1e-6) {
-            const speed = move_speed * (if (state.input.sprint) sprint_multiplier else 1.0) * delta;
-            for (0..3) |axis| state.camera.eye[axis] += direction[axis] / length * speed;
-        }
-    }
-    scene.setCamera(state.camera.eye, state.camera.yaw, state.camera.pitch);
-}
-
-fn vecAdd(a: renderer.Vec3, b: renderer.Vec3) renderer.Vec3 {
-    return .{ a[0] + b[0], a[1] + b[1], a[2] + b[2] };
-}
-
-fn vecSub(a: renderer.Vec3, b: renderer.Vec3) renderer.Vec3 {
-    return .{ a[0] - b[0], a[1] - b[1], a[2] - b[2] };
-}
-
 /// Headless tests: synthesize key/mouse input without an SDL device.
 pub fn injectKeyForTest(code: i64, pressed: bool) void {
     state.mutex.lock();
@@ -280,12 +196,6 @@ pub fn injectMouseDeltaForTest(dx: i64, dy: i64) void {
     defer state.mutex.unlock();
     state.input.mouse_dx += @floatFromInt(dx);
     state.input.mouse_dy += @floatFromInt(dy);
-}
-
-pub fn cameraForTest() renderer.Camera {
-    state.mutex.lock();
-    defer state.mutex.unlock();
-    return state.camera;
 }
 
 /// Extract the bytes of an e7 `str` value (aggregate: [len, bytes...]).
@@ -312,12 +222,7 @@ pub fn reset() void {
     state.capture_enabled = false;
     state.headless = true;
     state.last_failure = null;
-    state.camera = .{};
-    state.orbit = false;
-    state.orbit_target = .{ 0.0, 0.0, 0.0 };
-    state.orbit_distance = 5.8;
     state.input = .{};
-    state.camera_updates = 0;
     state.scene_draws = 0;
 }
 
@@ -326,12 +231,6 @@ pub fn lastFailure() ?[]const u8 {
     state.mutex.lock();
     defer state.mutex.unlock();
     return state.last_failure;
-}
-
-pub fn setOrbit(orbit: bool) void {
-    state.mutex.lock();
-    defer state.mutex.unlock();
-    state.orbit = orbit;
 }
 
 pub fn setHeadless(headless: bool) void {
@@ -352,12 +251,12 @@ pub fn setCaptureEnabled(enabled: bool) void {
     state.capture_enabled = enabled;
 }
 
-pub const RenderStats = struct { camera_updates: i64, scene_draws: i64 };
+pub const RenderStats = struct { scene_draws: i64 };
 
 pub fn renderStats() RenderStats {
     state.mutex.lock();
     defer state.mutex.unlock();
-    return .{ .camera_updates = state.camera_updates, .scene_draws = state.scene_draws };
+    return .{ .scene_draws = state.scene_draws };
 }
 
 pub fn frames() i64 {
@@ -500,42 +399,27 @@ pub export fn e7_engine_key_down(code: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
     if (code < 0 or code > @intFromEnum(Key.look_down)) return 0;
-    return switch (@as(Key, @enumFromInt(code))) {
-        .forward => @intFromBool(state.input.forward),
-        .back => @intFromBool(state.input.back),
-        .left => @intFromBool(state.input.left),
-        .right => @intFromBool(state.input.right),
-        .up => @intFromBool(state.input.up),
-        .down => @intFromBool(state.input.down),
-        .sprint => @intFromBool(state.input.sprint),
-        .look_left => @intFromBool(state.input.look_left),
-        .look_right => @intFromBool(state.input.look_right),
-        .look_up => @intFromBool(state.input.look_up),
-        .look_down => @intFromBool(state.input.look_down),
-    };
+    return @intFromBool(state.input.keys[@intCast(code)]);
 }
 
-/// Accumulated mouse motion since the previous read, packed as
-/// `(dy << 32) | (dx & 0xffffffff)` in pixels; reading clears it.
-pub export fn e7_engine_mouse_delta() callconv(.c) i64 {
+/// Accumulated horizontal mouse motion in pixels since the previous read;
+/// reading clears the horizontal accumulator.
+pub export fn e7_engine_mouse_dx() callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
-    const dx: i32 = @intFromFloat(state.input.mouse_dx);
-    const dy: i32 = @intFromFloat(state.input.mouse_dy);
+    const dx: i64 = @intFromFloat(state.input.mouse_dx);
     state.input.mouse_dx = 0.0;
-    state.input.mouse_dy = 0.0;
-    return (@as(i64, dy) << 32) | @as(i64, @intCast(@as(u32, @bitCast(dx))));
+    return dx;
 }
 
-/// Apply native/engine input to the FPS camera and push it to the scene.
-/// `delta_ms` is clamped to [0, 100] for stable movement after stalls.
-pub export fn e7_engine_camera_update(scene: i64, delta_ms: i64) callconv(.c) i64 {
+/// Accumulated vertical mouse motion in pixels since the previous read;
+/// reading clears the vertical accumulator.
+pub export fn e7_engine_mouse_dy() callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
-    if (renderer.registry.get(@intCast(scene)) == null) return -1;
-    cameraUpdateLocked(scene, delta_ms);
-    state.camera_updates += 1;
-    return 0;
+    const dy: i64 = @intFromFloat(state.input.mouse_dy);
+    state.input.mouse_dy = 0.0;
+    return dy;
 }
 
 pub export fn e7_engine_window_should_close(handle: i64) callconv(.c) i64 {
@@ -670,8 +554,8 @@ pub fn symbols() [14]Symbol {
         .{ .name = "e7_engine_scene_draw", .address = @intFromPtr(&e7_engine_scene_draw) },
         .{ .name = "e7_engine_should_close", .address = @intFromPtr(&e7_engine_should_close) },
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
-        .{ .name = "e7_engine_mouse_delta", .address = @intFromPtr(&e7_engine_mouse_delta) },
-        .{ .name = "e7_engine_camera_update", .address = @intFromPtr(&e7_engine_camera_update) },
+        .{ .name = "e7_engine_mouse_dx", .address = @intFromPtr(&e7_engine_mouse_dx) },
+        .{ .name = "e7_engine_mouse_dy", .address = @intFromPtr(&e7_engine_mouse_dy) },
     };
 }
 
@@ -689,16 +573,18 @@ test "engine frame limiter captures a headless frame" {
     const scene = e7_engine_scene_create(window);
     try std.testing.expect(scene != 0);
 
-    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0));
-    // Synthetic input drives the runtime camera (headless has no SDL device).
-    const camera_before = cameraForTest();
+    // The runtime only reports raw input; synthetic state stands in for SDL.
     injectKeyForTest(@intFromEnum(Key.forward), true);
-    injectMouseDeltaForTest(100, 0);
-    try std.testing.expectEqual(@as(i64, 0), e7_engine_camera_update(scene, 100));
+    injectMouseDeltaForTest(100, -40);
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_key_down(@intFromEnum(Key.forward)));
+    try std.testing.expectEqual(@as(i64, 100), e7_engine_mouse_dx());
+    try std.testing.expectEqual(@as(i64, -40), e7_engine_mouse_dy());
+    // Reads are destructive, so the next frame starts from zero.
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_mouse_dx());
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_mouse_dy());
     injectKeyForTest(@intFromEnum(Key.forward), false);
-    const camera_after = cameraForTest();
-    try std.testing.expect(camera_after.eye[2] < camera_before.eye[2]);
-    try std.testing.expect(camera_after.yaw > camera_before.yaw);
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_key_down(@intFromEnum(Key.forward)));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_camera(scene, 0, 1800, 5500, 0, -140));
 
     var frame: i64 = 0;
     while (frame < 2) : (frame += 1) {

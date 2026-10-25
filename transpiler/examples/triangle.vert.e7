@@ -28,6 +28,7 @@ scene: Scene
 
 @vertex
 vs_main <- (vertex: Vertex) -> Varying:
-    # `mul` keeps the matrix convention explicit: [f32; 4, 4] is row-major.
+    # `mul(m, v)` treats v as a column vector. Matrix fields default to
+    # column-major storage, matching the column-major host matrix upload.
     clip := mul(scene.mvp, [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] as [f32; 4])
     ret Varying{clip_position: clip, colour: vertex.colour * scene.tint}

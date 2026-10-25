@@ -89,7 +89,10 @@ fn writeArrayType(s: *Session, array: ast.ArrayType) Error!void {
         const cols = astx.intValue(columns_expr) orelse
             return s.fail("matrix column count must be an integer literal", .{});
         const element = astx.scalarSlangNameOf(array.element) orelse
-            return s.fail("matrix elements must be a scalar type in e7s", .{});
+            return s.fail("matrix elements must be a floating-point scalar type in e7s", .{});
+        if (!isFloatingScalar(element)) {
+            return s.fail("e7s matrices must have f16, f32, or f64 elements", .{});
+        }
         if (rows < 2 or rows > 4 or cols < 2 or cols > 4) {
             return s.fail("e7s matrices must have 2-4 rows and 2-4 columns", .{});
         }
@@ -188,6 +191,12 @@ pub fn isMatrixType(ty: *const ast.Type) bool {
         .array => |array| array.columns != null,
         else => false,
     };
+}
+
+fn isFloatingScalar(slang_name: []const u8) bool {
+    return std.mem.eql(u8, slang_name, "half") or
+        std.mem.eql(u8, slang_name, "float") or
+        std.mem.eql(u8, slang_name, "double");
 }
 
 pub fn isResourceType(s: *Session, ty: *const ast.Type) bool {
