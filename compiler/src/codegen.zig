@@ -783,11 +783,26 @@ const Builder = struct {
         const target_ty = self.exprType(index_expr.target) orelse return error.UnsupportedFeature;
         const resolved = self.resolvedType(target_ty);
         try self.lowerExpr(index_expr.target);
-        try self.lowerExpr(index_expr.index);
+        for (index_expr.indices) |index| try self.lowerExpr(index);
         switch (resolved.*) {
-            .array => |array| try self.emit(if (array.columns != null) .vec_row else .vec_get),
-            .map => |m| try self.emit(if (self.isStringType(m.key)) .map_get_str else .map_get),
+            .array => |array| {
+                if (array.columns != null) {
+                    switch (index_expr.indices.len) {
+                        1 => try self.emit(.vec_row),
+                        2 => try self.emit(.vec_get2),
+                        else => return error.UnsupportedFeature,
+                    }
+                } else {
+                    if (index_expr.indices.len != 1) return error.UnsupportedFeature;
+                    try self.emit(.vec_get);
+                }
+            },
+            .map => |m| {
+                if (index_expr.indices.len != 1) return error.UnsupportedFeature;
+                try self.emit(if (self.isStringType(m.key)) .map_get_str else .map_get);
+            },
             .named => {
+                if (index_expr.indices.len != 1) return error.UnsupportedFeature;
                 const method = self.analysis.operatorMethod(target_ty, "Index", "index") orelse
                     return error.UnsupportedFeature;
                 try self.methodCall(method, 2);
@@ -895,11 +910,25 @@ const Builder = struct {
                     const base_ty = self.exprType(target.index.target) orelse return error.UnsupportedFeature;
                     const resolved = self.resolvedType(base_ty);
                     try self.lowerExpr(target.index.target);
-                    try self.lowerExpr(target.index.index);
+                    for (target.index.indices) |index| try self.lowerExpr(index);
                     try self.lowerExpr(assign.value);
                     switch (resolved.*) {
-                        .array => try self.emit(.vec_set),
-                        .map => |m| try self.emit(if (self.isStringType(m.key)) .map_set_str else .map_set),
+                        .array => |array| {
+                            if (array.columns != null) {
+                                switch (target.index.indices.len) {
+                                    1 => try self.emit(.vec_set_row),
+                                    2 => try self.emit(.vec_set2),
+                                    else => return error.UnsupportedFeature,
+                                }
+                            } else {
+                                if (target.index.indices.len != 1) return error.UnsupportedFeature;
+                                try self.emit(.vec_set);
+                            }
+                        },
+                        .map => |m| {
+                            if (target.index.indices.len != 1) return error.UnsupportedFeature;
+                            try self.emit(if (self.isStringType(m.key)) .map_set_str else .map_set);
+                        },
                         else => return error.UnsupportedFeature,
                     }
                 } else {

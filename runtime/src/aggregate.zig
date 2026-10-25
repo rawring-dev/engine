@@ -166,6 +166,37 @@ pub export fn e7_vec_row(matrix: i64, row: i64) callconv(.c) i64 {
     return result;
 }
 
+pub export fn e7_vec_get2(matrix: i64, row: i64, column: i64) callconv(.c) i64 {
+    if (matrix == 0 or row < 0 or column < 0) return 0;
+    const rows = slots(matrix)[0];
+    const cols = slots(matrix)[1];
+    if (cols == 0 or row >= rows or column >= cols) return 0;
+    return slots(matrix + 16)[@intCast(row * cols + column)];
+}
+
+pub export fn e7_vec_set2(matrix: i64, row: i64, column: i64, value: i64) callconv(.c) void {
+    if (matrix == 0 or row < 0 or column < 0) return;
+    const rows = slots(matrix)[0];
+    const cols = slots(matrix)[1];
+    if (cols == 0 or row >= rows or column >= cols) return;
+    slots(matrix + 16)[@intCast(row * cols + column)] = value;
+}
+
+/// Copy `vector` into matrix row `row`.  Vectors whose length differs from the
+/// matrix column count are ignored, matching the out-of-range reads/writes of
+/// the scalar helpers.
+pub export fn e7_vec_set_row(matrix: i64, row: i64, vector: i64) callconv(.c) void {
+    if (matrix == 0 or row < 0 or vector == 0) return;
+    const rows = slots(matrix)[0];
+    const cols = slots(matrix)[1];
+    if (cols == 0 or row >= rows) return;
+    if (slots(vector)[1] != 0 or slots(vector)[0] != cols) return;
+    const src = slots(vector + 16);
+    const dst = slots(matrix + 16);
+    const start: usize = @intCast(row * cols);
+    for (0..@intCast(cols)) |i| dst[start + i] = src[i];
+}
+
 fn elementCount(rows: i64, cols: i64) i64 {
     return if (cols == 0) rows else rows * cols;
 }
@@ -374,7 +405,7 @@ pub export fn e7_map_set_str(map: i64, key: i64, value: i64) callconv(.c) void {
     e7_map_set(map, key, value);
 }
 
-pub fn symbols() [26]Symbol {
+pub fn symbols() [29]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -392,6 +423,9 @@ pub fn symbols() [26]Symbol {
         .{ .name = "e7_vec_get", .address = @intFromPtr(&e7_vec_get) },
         .{ .name = "e7_vec_set", .address = @intFromPtr(&e7_vec_set) },
         .{ .name = "e7_vec_row", .address = @intFromPtr(&e7_vec_row) },
+        .{ .name = "e7_vec_get2", .address = @intFromPtr(&e7_vec_get2) },
+        .{ .name = "e7_vec_set2", .address = @intFromPtr(&e7_vec_set2) },
+        .{ .name = "e7_vec_set_row", .address = @intFromPtr(&e7_vec_set_row) },
         .{ .name = "e7_vec_binary", .address = @intFromPtr(&e7_vec_binary) },
         .{ .name = "e7_vec_scalar", .address = @intFromPtr(&e7_vec_scalar) },
         .{ .name = "e7_map_new", .address = @intFromPtr(&e7_map_new) },
@@ -432,4 +466,44 @@ test "string slices, characters, and map entry accessors" {
     try std.testing.expectEqual(@as(i64, 90), e7_map_value_at(map, 1));
     try std.testing.expectEqual(@as(i64, 0), e7_map_key_at(map, 5));
     try std.testing.expectEqual(@as(i64, 0), e7_map_value_at(map, -1));
+}
+
+test "matrix two-dimensional access and row assignment" {
+    const matrix = e7_vec_new(2, 3);
+    e7_vec_set(matrix, 0, 1);
+    e7_vec_set(matrix, 1, 2);
+    e7_vec_set(matrix, 2, 3);
+    e7_vec_set(matrix, 3, 4);
+    e7_vec_set(matrix, 4, 5);
+    e7_vec_set(matrix, 5, 6);
+
+    try std.testing.expectEqual(@as(i64, 1), e7_vec_get2(matrix, 0, 0));
+    try std.testing.expectEqual(@as(i64, 2), e7_vec_get2(matrix, 0, 1));
+    try std.testing.expectEqual(@as(i64, 6), e7_vec_get2(matrix, 1, 2));
+    // Bounds: reads return 0 and writes are ignored.
+    try std.testing.expectEqual(@as(i64, 0), e7_vec_get2(matrix, 2, 0));
+    try std.testing.expectEqual(@as(i64, 0), e7_vec_get2(matrix, 0, 3));
+    try std.testing.expectEqual(@as(i64, 0), e7_vec_get2(matrix, -1, 0));
+    e7_vec_set2(matrix, 1, 0, 42);
+    try std.testing.expectEqual(@as(i64, 42), e7_vec_get2(matrix, 1, 0));
+    e7_vec_set2(matrix, 5, 0, 99);
+    e7_vec_set2(matrix, 0, 5, 99);
+    try std.testing.expectEqual(@as(i64, 42), e7_vec_get2(matrix, 1, 0));
+
+    const row = e7_vec_new(3, 0);
+    e7_vec_set(row, 0, 7);
+    e7_vec_set(row, 1, 8);
+    e7_vec_set(row, 2, 9);
+    e7_vec_set_row(matrix, 0, row);
+    try std.testing.expectEqual(@as(i64, 7), e7_vec_get2(matrix, 0, 0));
+    try std.testing.expectEqual(@as(i64, 9), e7_vec_get2(matrix, 0, 2));
+
+    // Wrong-width rows and out-of-range rows are ignored.
+    const short = e7_vec_new(2, 0);
+    e7_vec_set(short, 0, 100);
+    e7_vec_set(short, 1, 101);
+    e7_vec_set_row(matrix, 0, short);
+    e7_vec_set_row(matrix, 7, row);
+    try std.testing.expectEqual(@as(i64, 7), e7_vec_get2(matrix, 0, 0));
+    try std.testing.expectEqual(@as(i64, 9), e7_vec_get2(matrix, 0, 2));
 }

@@ -182,6 +182,50 @@ test "compiles map and vector iteration and container builtins" {
     try std.testing.expect(saw_str_len and saw_str_slice and saw_str_char_at);
 }
 
+test "compiles matrix two-dimensional indexing and row assignment" {
+    var result = try compile(
+        std.testing.allocator,
+        \\elem <- (m: [i32; 2, 3]) -> i32 = m[0, 1]
+        \\write_elem <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[1, 0] = 42
+        \\    m[1, 0]
+        \\write_row <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[0] = [7, 8, 9]
+        \\    m[0, 2]
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const read_body = result.functionNamed("elem").?;
+    var saw_get2 = false;
+    for (read_body.code) |op| switch (op) {
+        .vec_get2 => saw_get2 = true,
+        else => {},
+    };
+    try std.testing.expect(saw_get2);
+
+    const write_body = result.functionNamed("write_elem").?;
+    var saw_set2 = false;
+    for (write_body.code) |op| switch (op) {
+        .vec_set2 => saw_set2 = true,
+        else => {},
+    };
+    try std.testing.expect(saw_set2);
+
+    const row_body = result.functionNamed("write_row").?;
+    var saw_set_row = false;
+    for (row_body.code) |op| switch (op) {
+        .vec_set_row => saw_set_row = true,
+        else => {},
+    };
+    try std.testing.expect(saw_set_row);
+}
+
 test "rejects semantically invalid source before lowering" {
     try std.testing.expectError(error.SemanticFailed, compile(
         std.testing.allocator,

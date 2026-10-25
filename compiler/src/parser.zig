@@ -1639,9 +1639,20 @@ const Parser = struct {
                 },
                 .lbracket => {
                     _ = self.advance();
-                    const index = try self.parseExpression();
+                    var indices = std.ArrayList(*ast.Expr).empty;
+                    if (self.at(.rbracket)) {
+                        return self.fail("expected index expression inside `[`");
+                    }
+                    while (true) {
+                        try indices.append(self.allocator, try self.parseExpression());
+                        if (self.match(.comma) == null) break;
+                        if (self.at(.rbracket)) break;
+                    }
                     _ = try self.expect(.rbracket, "expected `]` after index");
-                    expr = try self.createExpr(.{ .index = .{ .target = expr, .index = index } });
+                    expr = try self.createExpr(.{ .index = .{
+                        .target = expr,
+                        .indices = try indices.toOwnedSlice(self.allocator),
+                    } });
                 },
                 .question => {
                     _ = self.advance();
@@ -2396,6 +2407,7 @@ test "parses subscript, list, block expressions, and numeric separators" {
         \\    a := [1_000, 2]
         \\    b := { 1 }
         \\    a[0]
+        \\    a[1, 0]
     ;
     var tree = try expectAst(source);
     defer tree.deinit();
@@ -2403,6 +2415,11 @@ test "parses subscript, list, block expressions, and numeric separators" {
     try std.testing.expect(block.entries[0].stmt.*.binding.value.* == .list);
     try std.testing.expect(block.entries[1].stmt.*.binding.value.* == .block);
     try std.testing.expect(block.entries[2].stmt.*.expr.* == .index);
+    const one = block.entries[2].stmt.*.expr.index;
+    try std.testing.expectEqual(@as(usize, 1), one.indices.len);
+    const two = block.entries[3].stmt.*.expr.index;
+    try std.testing.expectEqual(@as(usize, 2), two.indices.len);
+    try std.testing.expect(two.indices[0].* == .int and two.indices[1].* == .int);
 }
 
 test "parses visibility scopes, external modules, and aliased imports" {

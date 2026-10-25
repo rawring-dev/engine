@@ -355,6 +355,72 @@ test "JIT lowers strings, vectors, matrices, maps, and unsafe raw pointers" {
     try std.testing.expectEqual(@as(i64, 22), (try jit.get(Read, "advance"))(slots));
 }
 
+test "JIT reads, writes, and row-assigns matrix elements" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\mat_read <- (m: [i32; 2, 3]) -> i32 = m[0, 1]
+        \\mat_row_read <- (m: [i32; 2, 3]) -> [i32; 3] = m[1]
+        \\mat_nested_read <- (m: [i32; 2, 3]) -> i32 = m[0][1]
+        \\mat_write <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[1, 0] = 42
+        \\    m[1, 0]
+        \\mat_row <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[1] = [7, 8, 9]
+        \\    m[1, 2]
+        \\mat_row_dynamic <- (row: [i32]) -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[0] = row
+        \\    m[0, 1]
+        \\mat_bounds_read <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[9, 9]
+        \\mat_bounds_write <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[9, 9] = 123
+        \\    m[0, 0]
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const serialized = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(serialized);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(serialized, "matrix-indexing");
+
+    const IntFn = *const fn () callconv(.c) i64;
+    const MatrixFn = *const fn (i64) callconv(.c) i64;
+
+    const matrix = aggregate.e7_vec_new(2, 3);
+    for (0..6) |i| aggregate.e7_vec_set(matrix, @intCast(i), @intCast(i + 1));
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(MatrixFn, "mat_read"))(matrix));
+    try std.testing.expectEqual(@as(i64, 2), (try jit.get(MatrixFn, "mat_nested_read"))(matrix));
+    const row_view = (try jit.get(MatrixFn, "mat_row_read"))(matrix);
+    try std.testing.expectEqual(@as(i64, 3), aggregate.e7_vec_len(row_view));
+    try std.testing.expectEqual(@as(i64, 6), aggregate.e7_vec_get(row_view, 2));
+
+    try std.testing.expectEqual(@as(i64, 42), (try jit.get(IntFn, "mat_write"))());
+    try std.testing.expectEqual(@as(i64, 9), (try jit.get(IntFn, "mat_row"))());
+    try std.testing.expectEqual(@as(i64, 0), (try jit.get(IntFn, "mat_bounds_read"))());
+    try std.testing.expectEqual(@as(i64, 1), (try jit.get(IntFn, "mat_bounds_write"))());
+
+    const RowFn = *const fn (i64) callconv(.c) i64;
+    const row_fn = try jit.get(RowFn, "mat_row_dynamic");
+    const row = aggregate.e7_vec_new(3, 0);
+    aggregate.e7_vec_set(row, 0, 10);
+    aggregate.e7_vec_set(row, 1, 11);
+    aggregate.e7_vec_set(row, 2, 12);
+    try std.testing.expectEqual(@as(i64, 11), row_fn(row));
+    // A row whose length does not match the column count is ignored.
+    const short = aggregate.e7_vec_new(2, 0);
+    aggregate.e7_vec_set(short, 0, 99);
+    aggregate.e7_vec_set(short, 1, 98);
+    try std.testing.expectEqual(@as(i64, 2), row_fn(short));
+}
+
 test "JIT executes map and vector iteration and string container builtins" {
     var compiled = try compiler.pipeline.compile(
         std.testing.allocator,

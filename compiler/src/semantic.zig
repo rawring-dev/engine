@@ -1074,6 +1074,38 @@ test "matrix indexing yields a row vector" {
     );
 }
 
+test "matrix two-dimensional indexing and row assignment" {
+    try expectClean(
+        \\elem <- (m: [i32; 2, 3]) -> i32 = m[0, 1]
+        \\write_elem <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[1, 0] = 7
+        \\    m[1, 0]
+        \\write_row <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[0] = [7, 8, 9]
+        \\    m[0, 2]
+    );
+}
+
+test "reports invalid matrix indexing and row assignment" {
+    try expectDiagnostic(
+        \\f <- (v: [i32; 3]) -> i32 = v[0, 1]
+    , "cannot index a vector with 2 indices");
+    try expectDiagnostic(
+        \\f <- (m: map[i32, i32]) -> i32 = m[0, 1]
+    , "map indexing takes a single key");
+    try expectDiagnostic(
+        \\f <- (m: [i32; 2, 3]) -> i32 = m[0, 1, 2]
+    , "too many indices for matrix");
+    try expectDiagnostic(
+        \\f <- () -> i32:
+        \\    m := [[1, 2, 3], [4, 5, 6]]
+        \\    m[0] = [1, 2]
+        \\    m[0, 0]
+    , "type mismatch");
+}
+
 test "supports unsafe blocks, raw deref, and uninitialized declarations" {
     try expectClean(
         \\T <- struct

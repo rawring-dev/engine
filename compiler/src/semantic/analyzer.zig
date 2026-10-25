@@ -209,7 +209,9 @@ const Scope = struct {
 
 const Projection = union(enum) {
     field: []const u8,
-    index,
+    /// Number of subscript indices in this projection: 1 for `v[i]`/`m[i]`
+    /// (matrix rows), 2 for `m[i, j]`.
+    index: usize,
     deref,
 };
 
@@ -982,15 +984,10 @@ const Checker = struct {
             .index => |index_expr| {
                 const base = try self.placeOf(index_expr.target) orelse return null;
                 const base_ty = self.store.resolve(try self.placeType(base));
-                const key_ty: ?*types.Type = switch (base_ty.*) {
-                    .map => |m| m.key,
-                    .named => if (self.implementsTrait(base_ty, "Index")) null else try self.store.make(.{ .int = .usize }),
-                    else => try self.store.make(.{ .int = .usize }),
-                };
-                if (key_ty) |key| _ = try self.checkExpr(index_expr.index, key);
+                try self.checkIndexKeys(base_ty, index_expr.indices);
                 const path = try self.allocator.alloc(Projection, base.path.len + 1);
                 @memcpy(path[0..base.path.len], base.path);
-                path[base.path.len] = .index;
+                path[base.path.len] = .{ .index = index_expr.indices.len };
                 return self.makePlace(base.root, path);
             },
             .unary => |unary| {
@@ -1010,20 +1007,32 @@ const Checker = struct {
         for (place.path) |projection| {
             ty = switch (projection) {
                 .field => |name| (try self.fieldType(ty, name)) orelse return try self.store.make(.unknown),
-                .index => blk: {
+                .index => |count| blk: {
                     const resolved = self.store.resolve(ty);
                     break :blk switch (resolved.*) {
-                        .array => |a| if (a.columns != null)
-                            try self.makeArrayType(a.element, a.columns, null)
-                        else
-                            a.element,
-                        .map => |m| m.value,
-                        .string => resolved,
+                        .array => |a| try self.arrayIndexType(a, count),
+                        .map => |m| blk2: {
+                            if (count != 1) {
+                                try self.report("map indexing takes a single key, found {d} indices", .{count});
+                                break :blk2 try self.store.make(.unknown);
+                            }
+                            break :blk2 m.value;
+                        },
+                        .string => blk2: {
+                            if (count != 1) {
+                                try self.report("string indexing takes a single index, found {d}", .{count});
+                                break :blk2 try self.store.make(.unknown);
+                            }
+                            break :blk2 resolved;
+                        },
                         .unknown => resolved,
-                        .named => if (self.implementsTrait(resolved, "Index"))
-                            (self.customOperatorMethod(resolved, "index", 2) orelse try self.store.make(.unknown))
-                        else
-                            try self.store.make(.unknown),
+                        .named => if (self.implementsTrait(resolved, "Index")) blk2: {
+                            if (count != 1) {
+                                try self.report("custom `Index` implementations take a single index, found {d}", .{count});
+                                break :blk2 try self.store.make(.unknown);
+                            }
+                            break :blk2 self.customOperatorMethod(resolved, "index", 2) orelse try self.store.make(.unknown);
+                        } else try self.store.make(.unknown),
                         else => try self.store.make(.unknown),
                     };
                 },
@@ -1085,7 +1094,7 @@ const Checker = struct {
                     ty = (try self.fieldType(ty, name)) orelse return false;
                     ty = self.store.resolve(ty);
                 },
-                .index => {
+                .index => |count| {
                     while (self.store.resolve(ty).* == .reference) {
                         const ref = self.store.resolve(ty).reference;
                         if (!ref.mutable) return false;
@@ -1102,10 +1111,15 @@ const Checker = struct {
                     }
                     ty = switch (ty.*) {
                         .array => |a| if (a.columns != null)
-                            try self.makeArrayType(a.element, a.columns, null)
+                            (if (count == 1)
+                                try self.makeArrayType(a.element, a.columns, null)
+                            else
+                                self.store.resolve(a.element))
+                        else if (count == 1)
+                            self.store.resolve(a.element)
                         else
-                            self.store.resolve(a.element),
-                        .map => |m| m.value,
+                            ty,
+                        .map => |m| if (count == 1) m.value else ty,
                         .string => ty,
                         else => return false,
                     };
@@ -2071,7 +2085,7 @@ const Checker = struct {
                     const base_ty = try self.placeType(base);
                     try self.recordPlaceTypes(index_expr.target, base_ty);
                 }
-                _ = try self.checkExpr(index_expr.index, null);
+                for (index_expr.indices) |index| _ = try self.checkExpr(index, null);
             },
             .unary => |unary| {
                 if (unary.op == .deref) {
@@ -3259,32 +3273,58 @@ const Checker = struct {
         return self.store.make(.unknown);
     }
 
-    fn checkIndex(self: *Checker, index_expr: ast.Index) !*types.Type {
-        var temp = ast.Expr{ .index = index_expr };
-        var index_checked = false;
-        if (try self.placeOf(&temp)) |place| {
-            try self.checkRead(place);
-            index_checked = true;
+    /// Check every subscript expression against the type it indexes into.
+    /// Maps use their key type for the single key; matrices and vectors use
+    /// integer indices, and custom `Index` implementations accept one argument.
+    fn checkIndexKeys(self: *Checker, base_ty: *types.Type, indices: []*ast.Expr) !void {
+        const key_ty: ?*types.Type = switch (base_ty.*) {
+            .map => |m| m.key,
+            .named => if (self.implementsTrait(base_ty, "Index")) null else try self.store.make(.{ .int = .usize }),
+            else => try self.store.make(.{ .int = .usize }),
+        };
+        for (indices, 0..) |index, i| {
+            var expected = key_ty;
+            if (i > 0 and expected != null) expected = try self.store.make(.{ .int = .usize });
+            _ = try self.checkExpr(index, expected);
         }
-        const target_ty = self.store.resolve(try self.checkExpr(index_expr.target, null));
-        if (!index_checked) {
-            const key_ty: ?*types.Type = switch (target_ty.*) {
-                .map => |m| m.key,
-                .named => if (self.implementsTrait(target_ty, "Index")) null else try self.store.make(.{ .int = .usize }),
-                else => try self.store.make(.{ .int = .usize }),
-            };
-            if (key_ty) |key| _ = try self.checkExpr(index_expr.index, key);
+    }
+
+    fn arrayIndexType(self: *Checker, array: types.Array, count: usize) !*types.Type {
+        if (array.columns != null) {
+            if (count == 1) return self.makeArrayType(array.element, array.columns, null);
+            if (count == 2) return array.element;
+            try self.report("too many indices for matrix: expected 1 or 2, found {d}", .{count});
+            return self.store.make(.unknown);
         }
+        if (count == 1) return array.element;
+        try self.report("cannot index a vector with {d} indices; expected 1", .{count});
+        return self.store.make(.unknown);
+    }
+
+    fn indexResultType(self: *Checker, target_ty: *types.Type, count: usize) !*types.Type {
         return switch (target_ty.*) {
-            .array => |array| if (array.columns != null)
-                try self.makeArrayType(array.element, array.columns, null)
-            else
-                array.element,
-            .map => |m| m.value,
-            .string => target_ty,
+            .array => |array| try self.arrayIndexType(array, count),
+            .map => |m| blk: {
+                if (count != 1) {
+                    try self.report("map indexing takes a single key, found {d} indices", .{count});
+                    break :blk try self.store.make(.unknown);
+                }
+                break :blk m.value;
+            },
+            .string => blk: {
+                if (count != 1) {
+                    try self.report("string indexing takes a single index, found {d}", .{count});
+                    break :blk try self.store.make(.unknown);
+                }
+                break :blk target_ty;
+            },
             .unknown => target_ty,
             .named => blk: {
                 if (self.implementsTrait(target_ty, "Index")) {
+                    if (count != 1) {
+                        try self.report("custom `Index` implementations take a single index, found {d}", .{count});
+                        break :blk try self.store.make(.unknown);
+                    }
                     if (self.customOperatorMethod(target_ty, "index", 2)) |result| break :blk result;
                 }
                 const name = try self.store.typeName(target_ty);
@@ -3297,6 +3337,20 @@ const Checker = struct {
                 break :blk self.store.make(.unknown);
             },
         };
+    }
+
+    fn checkIndex(self: *Checker, index_expr: ast.Index) !*types.Type {
+        var temp = ast.Expr{ .index = index_expr };
+        var index_checked = false;
+        if (try self.placeOf(&temp)) |place| {
+            try self.checkRead(place);
+            index_checked = true;
+        }
+        // Always check the target so codegen can look up its recorded type,
+        // even when the whole index expression is already a valid place.
+        const target_ty = self.store.resolve(try self.checkExpr(index_expr.target, null));
+        if (!index_checked) try self.checkIndexKeys(target_ty, index_expr.indices);
+        return self.indexResultType(target_ty, index_expr.indices.len);
     }
 
     fn errorValueType(self: *Checker, path: ast.Path) !*types.Type {
@@ -3433,7 +3487,11 @@ fn exprUsesName(expr: *ast.Expr, name: []const u8) bool {
             break :blk false;
         },
         .field => |field| exprUsesName(field.target, name),
-        .index => |index| exprUsesName(index.target, name) or exprUsesName(index.index, name),
+        .index => |index| blk: {
+            if (exprUsesName(index.target, name)) break :blk true;
+            for (index.indices) |subscript| if (exprUsesName(subscript, name)) break :blk true;
+            break :blk false;
+        },
         .try_expr => |inner| exprUsesName(inner, name),
     };
 }

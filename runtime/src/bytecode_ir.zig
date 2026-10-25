@@ -48,6 +48,9 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_get(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare void @e7_vec_set(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_row(i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare i64 @e7_vec_get2(i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_vec_set2(i64, i64, i64, i64)\n");
+    try translator.out.appendSlice(allocator, "declare void @e7_vec_set_row(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_binary(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_vec_scalar(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_map_new()\n");
@@ -381,6 +384,33 @@ const Translator = struct {
                 const result = self.fresh();
                 try self.line("  {s} = call i64 @e7_vec_row(i64 {s}, i64 {s})", .{ result, vec, idx });
                 try self.pushValue(result);
+            },
+            .vec_get2 => {
+                const column = try self.popValue();
+                const row = try self.popValue();
+                const matrix = try self.popValue();
+                const result = self.fresh();
+                try self.line("  {s} = call i64 @e7_vec_get2(i64 {s}, i64 {s}, i64 {s})", .{
+                    result, matrix, row, column,
+                });
+                try self.pushValue(result);
+            },
+            .vec_set2 => {
+                const value = try self.popValue();
+                const column = try self.popValue();
+                const row = try self.popValue();
+                const matrix = try self.popValue();
+                try self.line("  call void @e7_vec_set2(i64 {s}, i64 {s}, i64 {s}, i64 {s})", .{
+                    matrix, row, column, value,
+                });
+            },
+            .vec_set_row => {
+                const row_vector = try self.popValue();
+                const row = try self.popValue();
+                const matrix = try self.popValue();
+                try self.line("  call void @e7_vec_set_row(i64 {s}, i64 {s}, i64 {s})", .{
+                    matrix, row, row_vector,
+                });
             },
             .vec_binary => |code| {
                 const b = try self.popValue();

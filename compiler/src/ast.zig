@@ -499,7 +499,8 @@ pub const FieldAccess = struct {
 
 pub const Index = struct {
     target: *Expr,
-    index: *Expr,
+    /// One or more comma-separated subscript expressions: `m[i]`, `m[i, j]`.
+    indices: []*Expr,
 };
 
 // ---------------------------------------------------------------------------

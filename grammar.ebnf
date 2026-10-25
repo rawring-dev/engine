@@ -456,7 +456,7 @@ argument_list   = expression, { ",", expression }, [ "," ] ;
 
 field_access    = ".", IDENT ;
 
-index           = "[", expression, "]" ;
+index           = "[", expression, { ",", expression }, [ "," ], "]" ;
 
 primary         = literal
                 | map_literal

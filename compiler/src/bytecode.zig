@@ -67,6 +67,9 @@ pub const Op = union(enum) {
     vec_get,
     vec_set,
     vec_row,
+    vec_get2,
+    vec_set2,
+    vec_set_row,
     vec_binary: u8,
     vec_scalar: u8,
     map_new,
@@ -356,9 +359,19 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 next_height -= 1;
                 fallthrough = index + 1;
             },
-            .store_u8, .vec_set, .map_set, .map_set_str, .str_slice => {
+            .vec_get2 => {
                 if (height < 3) return error.InvalidBytecode;
                 next_height -= 2;
+                fallthrough = index + 1;
+            },
+            .store_u8, .vec_set, .vec_set_row, .map_set, .map_set_str, .str_slice => {
+                if (height < 3) return error.InvalidBytecode;
+                next_height -= 2;
+                fallthrough = index + 1;
+            },
+            .vec_set2 => {
+                if (height < 4) return error.InvalidBytecode;
+                next_height -= 3;
                 fallthrough = index + 1;
             },
             .local_addr => {
@@ -572,6 +585,9 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
         .map_len => 53,
         .map_key_at => 54,
         .map_value_at => 55,
+        .vec_get2 => 56,
+        .vec_set2 => 57,
+        .vec_set_row => 58,
     };
     try out.append(allocator, tag);
     switch (op) {
@@ -663,6 +679,9 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         53 => .map_len,
         54 => .map_key_at,
         55 => .map_value_at,
+        56 => .vec_get2,
+        57 => .vec_set2,
+        58 => .vec_set_row,
         else => error.InvalidBytecode,
     };
 }
@@ -726,4 +745,46 @@ test "bytecode verification rejects bad jumps" {
     defer module.deinit();
     module.functions[0].code[0] = .{ .jump = 999 };
     try std.testing.expectError(error.InvalidBytecode, verify(std.testing.allocator, &module));
+}
+
+test "bytecode round-trips matrix indexing ops" {
+    const code = try std.testing.allocator.alloc(Op, 15);
+    code[0] = .{ .push_i64 = 1 }; // matrix
+    code[1] = .{ .push_i64 = 0 }; // row
+    code[2] = .{ .push_i64 = 1 }; // column
+    code[3] = .vec_get2;
+    code[4] = .{ .push_i64 = 1 };
+    code[5] = .{ .push_i64 = 0 };
+    code[6] = .{ .push_i64 = 9 };
+    code[7] = .vec_set2;
+    code[8] = .{ .push_i64 = 1 };
+    code[9] = .{ .push_i64 = 0 };
+    code[10] = .{ .push_i64 = 1 }; // row vector
+    code[11] = .vec_set_row;
+    code[12] = .{ .push_i64 = 0 };
+    code[13] = .add;
+    code[14] = .ret;
+    const functions = try std.testing.allocator.alloc(Function, 1);
+    functions[0] = .{
+        .name = try std.testing.allocator.dupe(u8, "matrix"),
+        .params = 0,
+        .locals = 0,
+        .max_stack = 16,
+        .code = code,
+    };
+    var module = Module{
+        .allocator = std.testing.allocator,
+        .functions = functions,
+        .entry = 0,
+    };
+    defer module.deinit();
+    try verify(std.testing.allocator, &module);
+    const bytes = try encode(std.testing.allocator, &module);
+    defer std.testing.allocator.free(bytes);
+    var decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit();
+    try verify(std.testing.allocator, &decoded);
+    try std.testing.expect(decoded.functions[0].code[3] == .vec_get2);
+    try std.testing.expect(decoded.functions[0].code[7] == .vec_set2);
+    try std.testing.expect(decoded.functions[0].code[11] == .vec_set_row);
 }
