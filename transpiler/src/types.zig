@@ -181,6 +181,15 @@ pub fn isUserStruct(s: *Session, ty: *const ast.Type) bool {
     return s.program.findStruct(last) != null;
 }
 
+/// True for `[T; R, C]` matrix types (R, C are not validated here; the type
+/// emitter reports shape errors).
+pub fn isMatrixType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .array => |array| array.columns != null,
+        else => false,
+    };
+}
+
 pub fn isResourceType(s: *Session, ty: *const ast.Type) bool {
     _ = s;
     const path = astx.typePath(ty) orelse return false;

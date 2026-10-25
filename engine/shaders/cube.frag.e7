@@ -4,18 +4,9 @@
 # cube.frag.spv.
 
 SceneUniform <- struct
-    model_c0: [f32; 4]
-    model_c1: [f32; 4]
-    model_c2: [f32; 4]
-    model_c3: [f32; 4]
-    view_c0: [f32; 4]
-    view_c1: [f32; 4]
-    view_c2: [f32; 4]
-    view_c3: [f32; 4]
-    proj_c0: [f32; 4]
-    proj_c1: [f32; 4]
-    proj_c2: [f32; 4]
-    proj_c3: [f32; 4]
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
     camera_pos: [f32; 4]
     light_pos: [f32; 4]
     light_color: [f32; 4]

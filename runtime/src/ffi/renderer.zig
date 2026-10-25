@@ -233,10 +233,14 @@ pub fn matLookAt(eye: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
     const right = vNormalize(vCross(forward, up_hint));
     const up = vCross(right, forward);
     const back = vScale(forward, -1.0);
+    // Column-major storage: the view transform's rows are right/up/back, so
+    // its columns are the transposed basis.  (Previously the basis was stored
+    // as columns, which coincidentally worked only for axis-aligned yaw=0 but
+    // translated the eye whenever pitch changed.)
     var m = matIdentity();
-    m[0] = .{ right[0], right[1], right[2], 0.0 };
-    m[1] = .{ up[0], up[1], up[2], 0.0 };
-    m[2] = .{ back[0], back[1], back[2], 0.0 };
+    m[0] = .{ right[0], up[0], back[0], 0.0 };
+    m[1] = .{ right[1], up[1], back[1], 0.0 };
+    m[2] = .{ right[2], up[2], back[2], 0.0 };
     m[3] = .{ -vDot(right, eye), -vDot(up, eye), -vDot(back, eye), 1.0 };
     return m;
 }
@@ -858,6 +862,18 @@ test "view matrix is right-handed and rotates around the camera eye" {
 
     const look = matLookAt(eye, .{ 0.0, 1.5, 0.0 }, .{ 0.0, 1.0, 0.0 });
     try std.testing.expectApproxEqAbs(view0[0][0], look[0][0], 1e-5);
+
+    // Pitch must rotate the camera around the eye, not translate it: the eye
+    // stays at the view-space origin for every pitch.
+    const pitched = matView(eye, 0.0, std.math.degreesToRadians(35.0));
+    const eye_pitched = Vec3{
+        pitched[0][0] * eye[0] + pitched[1][0] * eye[1] + pitched[2][0] * eye[2] + pitched[3][0],
+        pitched[0][1] * eye[0] + pitched[1][1] * eye[1] + pitched[2][1] * eye[2] + pitched[3][1],
+        pitched[0][2] * eye[0] + pitched[1][2] * eye[1] + pitched[2][2] * eye[2] + pitched[3][2],
+    };
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), eye_pitched[0], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), eye_pitched[1], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), eye_pitched[2], 1e-5);
 }
 
 test "cube geometry is consistent" {

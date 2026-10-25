@@ -148,6 +148,8 @@ fn emitField(s: *Session, field: ast.Field, struct_public: bool) Error!void {
     var location: ?i64 = null;
     var semantic: ?[]const u8 = null;
     var flat = false;
+    var layout_row_major = false;
+    var layout_column_major = false;
 
     for (field.attributes) |attribute| {
         const name = astx.pathLast(attribute.path);
@@ -163,6 +165,12 @@ fn emitField(s: *Session, field: ast.Field, struct_public: bool) Error!void {
         } else if (std.mem.eql(u8, name, "flat")) {
             if (attribute.args.len != 0) return s.fail("@flat takes no arguments", .{});
             flat = true;
+        } else if (std.mem.eql(u8, name, "row_major")) {
+            if (attribute.args.len != 0) return s.fail("@row_major takes no arguments", .{});
+            layout_row_major = true;
+        } else if (std.mem.eql(u8, name, "column_major")) {
+            if (attribute.args.len != 0) return s.fail("@column_major takes no arguments", .{});
+            layout_column_major = true;
         } else {
             return s.fail("attribute `@{s}` is not supported on struct fields in e7s", .{name});
         }
@@ -171,11 +179,31 @@ fn emitField(s: *Session, field: ast.Field, struct_public: bool) Error!void {
     if (semantic != null and location != null) {
         return s.fail("a field cannot have both @builtin and @location", .{});
     }
+    if (layout_row_major and layout_column_major) {
+        return s.fail("a matrix field cannot have both @row_major and @column_major", .{});
+    }
+
+    const is_matrix = types.isMatrixType(field.ty);
+    if ((layout_row_major or layout_column_major) and !is_matrix) {
+        return s.fail("matrix layout attributes are only valid on matrix fields", .{});
+    }
 
     if (struct_public) try s.out.raw("public ", .{});
     _ = field.visibility;
     if (flat) try s.out.raw("nointerpolation ", .{});
     if (location) |index| try s.out.raw("[[vk::location({d})]] ", .{index});
+    if (is_matrix) {
+        // e7s matrices are stored column-major in resources, matching Vulkan's
+        // std140 convention and the engine's column-major host matrices.  The
+        // explicit modifier keeps the layout independent of the compiler's
+        // default matrix-layout mode.  `@row_major` opts into row-major
+        // storage instead.
+        if (layout_row_major) {
+            try s.out.raw("row_major ", .{});
+        } else {
+            try s.out.raw("column_major ", .{});
+        }
+    }
     try types.writeType(s, field.ty);
     try s.out.raw(" {s}", .{field.name});
     if (semantic) |name| try s.out.raw(" : {s}", .{name});

@@ -135,7 +135,7 @@ test "transpiles resources, bindings, and entry points" {
         \\module main;
         \\
         \\struct SceneUniform {
-        \\    float4x4 mvp;
+        \\    column_major float4x4 mvp;
         \\    float3 eye;
         \\};
         \\
@@ -486,4 +486,29 @@ test "sanitizes dotted module names" {
     const core = try api.sanitizeModuleName(allocator, "core");
     defer allocator.free(core);
     try std.testing.expectEqualStrings("core_", core);
+}
+
+test "matrix fields emit explicit column-major layout by default" {
+    try expectContains(
+        std.testing.allocator,
+        \\Matrices <- struct
+        \\    model: [f32; 4, 4]
+        \\    @row_major view: [f32; 4, 4]
+        \\
+        \\@binding(0, 0)
+        \\mats: Matrices
+    ,
+        &.{
+            "column_major float4x4 model;",
+            "row_major float4x4 view;",
+            "ConstantBuffer<Matrices> mats;",
+        },
+    );
+}
+
+test "matrix layout attributes reject non-matrix fields" {
+    try expectDiagnostic(std.testing.allocator,
+        \\S <- struct
+        \\    @row_major value: f32
+    , "only valid on matrix fields");
 }
