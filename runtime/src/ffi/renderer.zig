@@ -224,16 +224,27 @@ pub fn cameraBasis(yaw: f32, pitch: f32) CameraBasis {
     return .{ .forward = forward, .right = right, .up = up };
 }
 
+/// Right-handed look-at view matrix (column-vector convention).  The camera
+/// looks down world -Z at yaw 0, with +X to the right and +Y up; this is the
+/// single source of truth for view handedness and is shared by the yaw/pitch
+/// path and the orbit path.
+pub fn matLookAt(eye: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
+    const forward = vNormalize(.{ target[0] - eye[0], target[1] - eye[1], target[2] - eye[2] });
+    const right = vNormalize(vCross(forward, up_hint));
+    const up = vCross(right, forward);
+    const back = vScale(forward, -1.0);
+    var m = matIdentity();
+    m[0] = .{ right[0], right[1], right[2], 0.0 };
+    m[1] = .{ up[0], up[1], up[2], 0.0 };
+    m[2] = .{ back[0], back[1], back[2], 0.0 };
+    m[3] = .{ -vDot(right, eye), -vDot(up, eye), -vDot(back, eye), 1.0 };
+    return m;
+}
+
 /// World-to-view matrix for an FPS camera (column-vector convention).
 pub fn matView(eye: Vec3, yaw: f32, pitch: f32) Mat4 {
     const basis = cameraBasis(yaw, pitch);
-    const back = vScale(basis.forward, -1.0);
-    var m = matIdentity();
-    m[0] = .{ basis.right[0], basis.right[1], basis.right[2], 0.0 };
-    m[1] = .{ basis.up[0], basis.up[1], basis.up[2], 0.0 };
-    m[2] = .{ back[0], back[1], back[2], 0.0 };
-    m[3] = .{ -vDot(basis.right, eye), -vDot(basis.up, eye), -vDot(back, eye), 1.0 };
-    return m;
+    return matLookAt(eye, .{ eye[0] + basis.forward[0], eye[1] + basis.forward[1], eye[2] + basis.forward[2] }, .{ 0.0, 1.0, 0.0 });
 }
 
 /// Vulkan projection: maps view-space -near to clip z=0 and -far to z=1 and
@@ -826,6 +837,27 @@ test "camera basis and matrices match Vulkan conventions" {
     const far_z = proj[2][2] * -100.0 + proj[3][2];
     const far_w = proj[2][3] * -100.0;
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), far_z / far_w, 1e-4);
+}
+
+test "view matrix is right-handed and rotates around the camera eye" {
+    const eye = Vec3{ 0.0, 1.5, 5.5 };
+    // At yaw 0, +X is screen-right: a point to the right of the eye has
+    // positive view X.
+    const right_point = Vec3{ 1.0, 1.5, 5.0 };
+    const view0 = matView(eye, 0.0, 0.0);
+    const right_view_x = view0[0][0] * right_point[0] + view0[1][0] * right_point[1] + view0[2][0] * right_point[2] + view0[3][0];
+    try std.testing.expect(right_view_x > 0.0);
+
+    // Yaw +30 must rotate the camera toward +X (clockwise from above in a
+    // right-handed system): an object straight ahead initially lands on the
+    // left side of the view, not the right.
+    const ahead = Vec3{ 0.0, 1.5, 0.5 };
+    const view30 = matView(eye, std.math.degreesToRadians(30.0), 0.0);
+    const ahead_x = view30[0][0] * ahead[0] + view30[1][0] * ahead[1] + view30[2][0] * ahead[2] + view30[3][0];
+    try std.testing.expect(ahead_x < 0.0);
+
+    const look = matLookAt(eye, .{ 0.0, 1.5, 0.0 }, .{ 0.0, 1.0, 0.0 });
+    try std.testing.expectApproxEqAbs(view0[0][0], look[0][0], 1e-5);
 }
 
 test "cube geometry is consistent" {

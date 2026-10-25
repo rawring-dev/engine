@@ -105,12 +105,14 @@ const State = struct {
     last_scene: u64 = 0,
     /// First host-visible failure (window/scene creation) for diagnostics.
     last_failure: ?[]const u8 = null,
-    /// Orbit camera state: the camera looks at `camera_target` from
-    /// `camera_distance`.  Mouse look orbits around the target and WASD moves
-    /// the target, so the cube stays centered while the camera rotates.
+    /// Runtime FPS camera; movement/mouse look are applied by
+    /// `e7_engine_camera_update` so e7 needs no float arithmetic.
     camera: renderer.Camera = .{},
-    camera_target: renderer.Vec3 = .{ 0.0, 1.0, 0.0 },
-    camera_distance: f32 = 5.8,
+    /// Optional orbit mode for inspecting the scene.  First-person is the
+    /// default; `--orbit` (host) switches this on.
+    orbit: bool = false,
+    orbit_target: renderer.Vec3 = .{ 0.0, 0.0, 0.0 },
+    orbit_distance: f32 = 5.8,
     input: InputState = .{},
     camera_updates: i64 = 0,
     scene_draws: i64 = 0,
@@ -230,10 +232,6 @@ fn cameraUpdateLocked(scene_handle: i64, delta_ms: i64) void {
     const pitch_limit = std.math.degreesToRadians(89.0);
     state.camera.pitch = std.math.clamp(state.camera.pitch, -pitch_limit, pitch_limit);
 
-    // Orbit around the target: the view direction is the camera yaw/pitch and
-    // the eye is placed `camera_distance` behind the target.  Mouse look
-    // changes yaw/pitch, so the target (cube) remains centered instead of
-    // sliding across the screen.
     const basis = renderer.cameraBasis(state.camera.yaw, 0.0);
     const ground_forward = renderer.Vec3{ basis.forward[0], 0.0, basis.forward[2] };
     const ground_right = renderer.Vec3{ basis.right[0], 0.0, basis.right[2] };
@@ -245,13 +243,19 @@ fn cameraUpdateLocked(scene_handle: i64, delta_ms: i64) void {
     if (state.input.up) direction[1] += 1.0;
     if (state.input.down) direction[1] -= 1.0;
     const length = @sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
-    if (length > 1e-6) {
-        const speed = move_speed * (if (state.input.sprint) sprint_multiplier else 1.0) * delta;
-        for (0..3) |axis| state.camera_target[axis] += direction[axis] / length * speed;
+    if (state.orbit) {
+        if (length > 1e-6) {
+            const speed = move_speed * (if (state.input.sprint) sprint_multiplier else 1.0) * delta;
+            for (0..3) |axis| state.orbit_target[axis] += direction[axis] / length * speed;
+        }
+        const forward = renderer.cameraBasis(state.camera.yaw, state.camera.pitch).forward;
+        for (0..3) |axis| state.camera.eye[axis] = state.orbit_target[axis] - forward[axis] * state.orbit_distance;
+    } else {
+        if (length > 1e-6) {
+            const speed = move_speed * (if (state.input.sprint) sprint_multiplier else 1.0) * delta;
+            for (0..3) |axis| state.camera.eye[axis] += direction[axis] / length * speed;
+        }
     }
-
-    const view = renderer.cameraBasis(state.camera.yaw, state.camera.pitch).forward;
-    for (0..3) |axis| state.camera.eye[axis] = state.camera_target[axis] - view[axis] * state.camera_distance;
     scene.setCamera(state.camera.eye, state.camera.yaw, state.camera.pitch);
 }
 
@@ -309,8 +313,9 @@ pub fn reset() void {
     state.headless = true;
     state.last_failure = null;
     state.camera = .{};
-    state.camera_target = .{ 0.0, 1.0, 0.0 };
-    state.camera_distance = 5.8;
+    state.orbit = false;
+    state.orbit_target = .{ 0.0, 0.0, 0.0 };
+    state.orbit_distance = 5.8;
     state.input = .{};
     state.camera_updates = 0;
     state.scene_draws = 0;
@@ -321,6 +326,12 @@ pub fn lastFailure() ?[]const u8 {
     state.mutex.lock();
     defer state.mutex.unlock();
     return state.last_failure;
+}
+
+pub fn setOrbit(orbit: bool) void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    state.orbit = orbit;
 }
 
 pub fn setHeadless(headless: bool) void {
