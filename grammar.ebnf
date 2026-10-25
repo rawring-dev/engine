@@ -47,10 +47,17 @@
 
    Reserved words:
      if elif else match loop break cont for in while ret
-     use mod pub struct enum table trigger sys impl
-     async await spawn detach cancel unsafe
+     use mod pub struct enum table trigger sys plugin impl
+     async await spawn detach cancel disown unsafe
      select from where res as not and or xor
      true false nil mut raw crate self super
+
+   Contextual words:
+     query    only begins a query expression when followed by a reference
+              type (`await query &mut Commands`); otherwise it is an ordinary
+              identifier.
+     has      only follows `where` in a query parameter (`where has Type`);
+              otherwise it is an ordinary identifier.
 
    `!` is the error-value prefix.  Boolean negation is the word `not`;
    `and`, `or`, and `xor` are the boolean infix operators.  There is no
@@ -80,6 +87,7 @@ item_kind       = use_decl
                 | enum_decl
                 | table_decl
                 | trigger_decl
+                | plugin_decl
                 | function_decl
                 | sys_decl
                 | trait_decl
@@ -103,8 +111,11 @@ use_tree        = use_path, [ "as", IDENT ]
 
 use_path        = path_root, { "::", IDENT } ;
 
+(* `mod foo;` and the newline-terminated `mod foo` both reference an external
+   module; `{ ... }` is an inline module body. *)
 mod_decl        = "mod", IDENT,
-                  ( ";" | "{", { item, [ separator ] }, "}" ) ;
+                  ( ";" | NEWLINE | EOF
+                  | "{", { item, [ separator ] }, "}" ) ;
 
 
 (* --------------------------------------------------------------------------
@@ -153,6 +164,16 @@ table_decl      = IDENT, [ generic_params ],
 
 trigger_decl    = IDENT, [ generic_params ],
                   "<-", "trigger", [ where_clause ], record_body ;
+
+(* Plugins are world-registration descriptors.  A body is optional and holds
+   member declarations, typically `init <- sys (...)`.  Members are collected
+   in the plugin's scope; executing `commands.add_plugin(Ui)` is later ECS
+   work.  `@plugin(Ui)` marks resources/systems owned by the plugin. *)
+plugin_decl     = IDENT, [ generic_params ],
+                  "<-", "plugin", [ where_clause ], [ plugin_body ] ;
+
+plugin_body     = [ ":" ], ( NEWLINE, INDENT, { item, [ separator ] }, DEDENT
+                           | "{", { item, [ separator ] }, "}" ) ;
 
 function_decl   = IDENT, [ generic_params ], "<-", [ "async" ],
                   "(", [ param_list ], ")", "->", type,
@@ -282,6 +303,7 @@ statement       = binding_decl
                 | uninitialized_decl
                 | unsafe_stmt
                 | ret_stmt
+                | disown_stmt
                 | break_stmt
                 | cont_stmt
                 | while_stmt
@@ -290,6 +312,10 @@ statement       = binding_decl
                 | expr_or_assign ;
 
 ret_stmt        = "ret", [ expression ] ;
+
+(* `disown commands` releases the caller's world lease.  Parsed and checked as
+   a no-op until the Commands/plugin execution task lands. *)
+disown_stmt     = "disown", expression ;
 
 break_stmt      = "break" ;
 
@@ -422,8 +448,10 @@ type_args       = "<", type, { ",", type }, [ "," ], ">" ;
    sys parameters — queries and resources are contextual here
    -------------------------------------------------------------------------- *)
 
-sys_param_list  = sys_param, { ",", sys_param }, [ "," ] ;
+sys_param_list  = sys_param, { [ ",", ] sys_param }, [ "," ] ;
 
+(* Newlines inside `( ... )` are suppressed by the lexer, so one parameter per
+   line does not require a trailing comma (`render_scene` in engine/main.e7). *)
 sys_param       = normal_param | query_param | resource_param ;
 
 (* Normal parameters keep an explicit type, so a plain reference parameter is
@@ -431,11 +459,14 @@ sys_param       = normal_param | query_param | resource_param ;
 normal_param    = IDENT, ":", type ;
 
 (* `select` projections accept shared and mutable references; the source
-   aggregate is a type (`Components` in the engine sample). *)
+   aggregate is a type (`Components` in the engine sample).  A `where` clause is
+   either a boolean expression over projected fields or a `has` presence filter:
+       select &mut Transform from Components where has CubeMesh
+   The presence type is stored separately from expression filters. *)
 query_param     = IDENT, ":", "select",
                   query_projection, { ",", query_projection },
                   "from", type,
-                  [ "where", expression ] ;
+                  [ "where", ( "has", type | expression ) ] ;
 
 (* Projection functions, aggregates, and computed projections are a planned
    extension; the first grammar accepts reference projections only.  A
@@ -485,7 +516,12 @@ unary           = "not", unary
                 | "spawn", unary
                 | "detach", unary
                 | "cancel", unary
+                | query_expr
                 | cast ;
+
+(* `query` is contextual: this alternative applies only when the next token is
+   `&`, so bindings/fields named `query` keep working. *)
+query_expr      = "query", "&", [ "mut" ], type ;
 
 cast            = postfix, { "as", type } ;
 
@@ -507,9 +543,17 @@ primary         = literal
                 | path
                 | list
                 | brace_block
+                | row_literal
                 | if_expr
                 | match_expr
                 | "(", expression, ")" ;
+
+(* Anonymous row value for `commands.add_row(Table, { a, b, c })`.  A brace
+   expression with a comma directly inside it is a row literal; `{ expr }`,
+   `{ stmt; stmt }`, and `{}` remain block expressions.  This is the one
+   context where an unlabeled brace list is not a block. *)
+row_literal     = "{", expression, ",", expression,
+                  { ",", expression }, [ "," ], "}" ;
 
 struct_literal  = path, "{", [ field_init_list ], "}" ;
 

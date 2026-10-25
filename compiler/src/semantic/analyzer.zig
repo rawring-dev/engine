@@ -311,6 +311,10 @@ const Checker = struct {
             .sys => try self.collectSys(item, prefix),
             .impl => try self.impl_items.append(self.allocator, .{ .item = item, .prefix = prefix }),
             .mod => |m| if (m.items) |items| try self.collectModule(items, try self.childModule(prefix, m.name)),
+            // A plugin body is a scoped collection of member declarations
+            // (`init <- sys (...)` in the engine sample).  The plugin name owns
+            // the scope; world-registration semantics are a later ECS task.
+            .plugin_decl => |p| try self.collectModule(p.items, try self.childModule(prefix, p.name)),
             .use, .binding, .uninitialized => {},
         }
     }
@@ -927,6 +931,11 @@ const Checker = struct {
                 const child = try self.childModule(prefix, m.name);
                 try self.collectModule(items, child);
                 try self.checkModuleItems(items, child);
+            },
+            .plugin_decl => |p| {
+                const child = try self.childModule(prefix, p.name);
+                try self.collectModule(p.items, child);
+                try self.checkModuleItems(p.items, child);
             },
             .use => {},
         }
@@ -1947,6 +1956,9 @@ const Checker = struct {
             }
             _ = try self.checkExpr(filter_expr, try self.store.make(.bool));
         }
+        // `where has Type`: resolve the presence type now; row filtering is
+        // executed later by the ECS task.
+        if (query.has) |has_ty| _ = try self.resolveType(has_ty);
 
         const synthetic_name = try std.fmt.allocPrint(self.allocator, "__query_{d}", .{self.next_query_id});
         self.next_query_id += 1;
@@ -2058,6 +2070,12 @@ const Checker = struct {
             },
             .uninitialized => |decl| {
                 try self.checkUninitialized(decl);
+                return null;
+            },
+            // `disown commands` is a world-lease operation; the front end
+            // accepts it and the lease runtime is a later ECS task.
+            .disown => |expr| {
+                _ = try self.checkExpr(expr, null);
                 return null;
             },
         }
@@ -2450,6 +2468,11 @@ const Checker = struct {
                     },
                 };
             },
+            // Front-end modeling only: `query &mut Commands` behaves like an
+            // awaitable world lease.  Execution/lowering is owned by the ECS
+            // task, so codegen rejects it explicitly.
+            .query => |query| try self.checkQueryExpr(query),
+            .row_literal => |items| try self.checkRowLiteral(items),
         };
 
         const recorded = try self.record(expr, ty);
@@ -2462,6 +2485,19 @@ const Checker = struct {
         return ty;
     }
 
+    fn checkQueryExpr(self: *Checker, query: ast.QueryExpr) !*types.Type {
+        const lease = try self.resolveType(query.ty);
+        // `await query ...` unwraps the same Task shape as an async call.
+        return self.asyncTaskType(lease);
+    }
+
+    fn checkRowLiteral(self: *Checker, items: []*ast.Expr) !*types.Type {
+        for (items) |item| _ = try self.checkMoveExpr(item, null);
+        // A row is a runtime table shape; semantics stays opaque until the ECS
+        // execution task defines row layout.
+        return self.store.make(.unknown);
+    }
+
     fn checkPath(self: *Checker, path: ast.Path) !*types.Type {
         if (path.segments.len == 1) {
             const segment = path.segments[0];
@@ -2472,6 +2508,20 @@ const Checker = struct {
             if (self.lookupTypeDef(segment.name)) |def| {
                 if (def.kind == .trigger_) {
                     return self.triggerCallableType(def, segment);
+                }
+                // Unit-struct constructor shorthand: a zero-field struct/table
+                // name in value position is the value itself (`mesh := CubeMesh`).
+                if ((def.kind == .struct_ or def.kind == .table_) and def.fields.len == 0) {
+                    const args = try self.resolveTypeArgs(segment.args);
+                    if (args.len != def.generics.len) {
+                        try self.report("type `{s}` expects {d} type argument(s), found {d}", .{
+                            def.qualified_name, def.generics.len, args.len,
+                        });
+                    }
+                    return self.store.make(.{ .named = .{
+                        .name = def.qualified_name,
+                        .args = args,
+                    } });
                 }
             }
             if (self.lookupFunction(segment.name)) |callable| {
@@ -3589,6 +3639,7 @@ fn stmtUsesName(stmt: *ast.Stmt, name: []const u8) bool {
         .assign => |assign| placeUsesName(assign.target, name) or exprUsesName(assign.value, name),
         .unsafe_block => |block| blockUsesName(block, name),
         .uninitialized => false,
+        .disown => |expr| exprUsesName(expr, name),
     };
 }
 
@@ -3663,6 +3714,11 @@ fn exprUsesName(expr: *ast.Expr, name: []const u8) bool {
             break :blk false;
         },
         .try_expr => |inner| exprUsesName(inner, name),
+        .query => false,
+        .row_literal => |items| blk: {
+            for (items) |item| if (exprUsesName(item, name)) break :blk true;
+            break :blk false;
+        },
     };
 }
 

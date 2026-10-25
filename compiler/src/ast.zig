@@ -33,6 +33,7 @@ pub const ItemKind = union(enum) {
     enum_decl: EnumDecl,
     table_decl: TableDecl,
     trigger_decl: TriggerDecl,
+    plugin_decl: PluginDecl,
     function: FunctionDecl,
     sys: SysDecl,
     impl: ImplDecl,
@@ -163,7 +164,8 @@ pub const UseGroup = struct {
 
 pub const ModDecl = struct {
     name: []const u8,
-    /// `null` for `mod foo;`, otherwise the inline module body.
+    /// `null` for an external module reference.  External modules may be
+    /// terminated by `;` (`mod foo;`) or by a newline/EOF (`mod foo`).
     items: ?[]*Item,
 };
 
@@ -194,6 +196,17 @@ pub const TriggerDecl = struct {
     generics: []GenericParam,
     where_clause: ?WhereClause,
     fields: []Field,
+};
+
+/// `Name <- plugin` with an optional body of member declarations (typically
+/// `init <- sys (...)`).  Members are collected in the plugin's own scope; the
+/// plugin itself is a world-registration descriptor whose execution is owned by
+/// a later ECS task.
+pub const PluginDecl = struct {
+    name: []const u8,
+    generics: []GenericParam,
+    where_clause: ?WhereClause,
+    items: []*Item,
 };
 
 pub const EnumDecl = struct {
@@ -266,6 +279,10 @@ pub const QueryParam = struct {
     projections: []QueryProjection,
     from: *Type,
     filter: ?*Expr,
+    /// `where has Type` presence filter.  Kept separate from `filter` so
+    /// semantics can distinguish "row contains component" from a boolean
+    /// expression over projected fields.
+    has: ?*Type = null,
 };
 
 pub const QueryProjection = struct {
@@ -354,6 +371,10 @@ pub const Stmt = union(enum) {
     assign: AssignStmt,
     unsafe_block: *Block,
     uninitialized: UninitializedDecl,
+    /// `disown commands`: releases the caller's claim on a world lease
+    /// (typically a `Commands` handle produced by `await query`).  Front-end
+    /// only for now: semantics/back ends treat it as a no-op.
+    disown: *Expr,
 };
 
 pub const UninitializedDecl = struct {
@@ -420,6 +441,18 @@ pub const Expr = union(enum) {
     field: FieldAccess,
     index: Index,
     try_expr: *Expr,
+    /// `query &mut Commands`: produces a task-like world lease.  Lowering is
+    /// deferred to the ECS execution task; the front end models it so the
+    /// `await query ...` DX parses and type-checks.
+    query: QueryExpr,
+    /// `{ a, b, c }` in expression position: an anonymous row value used by
+    /// `commands.add_row(Table, { ... })`.
+    row_literal: []*Expr,
+};
+
+pub const QueryExpr = struct {
+    /// Requested lease type, normally a reference (`&mut Commands`).
+    ty: *Type,
 };
 
 pub const StructLiteral = struct {

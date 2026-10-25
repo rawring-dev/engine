@@ -624,3 +624,55 @@ test "keeps zero-parameter trigger systems and rejects parameterized ones" {
         .{},
     ));
 }
+
+test "compiles disown as a no-op and unit-struct constructors" {
+    var result = try compile(
+        std.testing.allocator,
+        \\CubeMesh <- struct
+        \\make_mesh <- () -> CubeMesh = CubeMesh
+        \\release <- () -> i32:
+        \\    value := 1
+        \\    disown value
+        \\    value
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const make = result.functionNamed("make_mesh").?;
+    var saw_alloc = false;
+    for (make.code) |op| switch (op) {
+        .alloc => saw_alloc = true,
+        else => {},
+    };
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(result.functionNamed("release") != null);
+}
+
+test "rejects ECS query and row constructs at lowering" {
+    // Query leases are front-end only until the Commands/plugin ECS task.
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\Commands <- struct
+        \\    id: usize
+        \\main <- async () -> i32:
+        \\    commands := (await query &mut Commands)?
+        \\    0
+    ,
+        .{},
+    ));
+
+    // Row literals likewise parse/type-check but have no bytecode yet.
+    try std.testing.expectError(error.UnsupportedFeature, compile(
+        std.testing.allocator,
+        \\Components <- table
+        \\    entity_id: usize
+        \\main <- () -> i32:
+        \\    row := { 1, 2 }
+        \\    0
+    ,
+        .{},
+    ));
+}

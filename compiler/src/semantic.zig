@@ -1384,3 +1384,31 @@ test "checks sys reference parameter modifiers" {
         \\    ret
     );
 }
+
+test "collects plugin members as scoped declarations" {
+    try expectClean(
+        \\Empty <- plugin
+        \\Ui <- plugin
+        \\    helper <- () -> i32 = 1
+        \\value <- () -> i32 = 1
+    );
+}
+
+test "resolves query presence filters" {
+    try expectClean(
+        \\CubeMesh <- struct
+        \\Components <- table
+        \\    entity_id: usize
+        \\move <- sys (
+        \\    cubes: select &entity_id from Components where has CubeMesh,
+        \\):
+        \\    ret
+    );
+}
+
+test "accepts unit-struct constructor shorthand" {
+    try expectClean(
+        \\CubeMesh <- struct
+        \\mesh <- () -> CubeMesh = CubeMesh
+    );
+}

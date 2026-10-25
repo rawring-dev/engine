@@ -468,6 +468,24 @@ test "newlines inside brackets are ignored" {
     });
 }
 
+test "lexes ECS surface keywords and table ellipsis" {
+    const source =
+        \\Ui <- plugin
+        \\disown commands
+        \\Components <- table
+        \\    ...
+    ;
+    const result = try lex(std.testing.allocator, source);
+    defer std.testing.allocator.free(result.tokens);
+    try std.testing.expect(result.diagnostic == null);
+    try expectKinds(result.tokens, &.{
+        .identifier,     .bind_immutable, .kw_plugin, .newline,
+        .kw_disown,      .identifier,     .newline,   .identifier,
+        .bind_immutable, .kw_table,       .newline,   .indent,
+        .ellipsis,       .newline,        .dedent,    .eof,
+    });
+}
+
 test "tab indentation is rejected" {
     const result = try lex(std.testing.allocator, "if x:\n\ty\n");
     try std.testing.expect(result.diagnostic != null);

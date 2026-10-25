@@ -1189,6 +1189,8 @@ const Builder = struct {
             .uninitialized => |decl| {
                 _ = try self.allocLocal(decl.name);
             },
+            // Front-end world-lease release; no bytecode until the ECS task.
+            .disown => {},
         }
     }
 
@@ -1395,10 +1397,25 @@ const Builder = struct {
             .nil => try self.push(0),
             .path => |path| {
                 if (path.segments.len == 1) {
-                    const slot = self.local(path.segments[0].name) orelse return error.UnsupportedFeature;
-                    if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
-                    try self.emit(.{ .load_local = slot });
-                    return;
+                    if (self.local(path.segments[0].name)) |slot| {
+                        if (self.isOpaqueSlot(slot)) return error.OpaqueHandleAccess;
+                        try self.emit(.{ .load_local = slot });
+                        return;
+                    }
+                    // Unit-struct constructor shorthand: `mesh := CubeMesh`.
+                    // A zero-field struct/table value is an empty aggregate.
+                    if (self.exprType(expr)) |ty| {
+                        if (self.namedBase(ty)) |named| {
+                            if (self.structFields(named.name)) |fields| {
+                                if (fields.len == 0) {
+                                    try self.push(0);
+                                    try self.emit(.alloc);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    return error.UnsupportedFeature;
                 }
                 const enum_name = path.segments[0].name;
                 const def = self.enums.get(enum_name) orelse return error.UnsupportedFeature;
@@ -1463,6 +1480,9 @@ const Builder = struct {
             .range, .float, .error_literal, .function => {
                 return error.UnsupportedFeature;
             },
+            // ECS front-end constructs: execution/lowering is owned by the
+            // later Commands/plugin ECS task.
+            .query, .row_literal => return error.UnsupportedFeature,
         }
     }
 

@@ -274,6 +274,7 @@ const Parser = struct {
                 .kw_table => return .{ .table_decl = try self.parseTableAfterName(name, generics) },
                 .kw_trigger => return .{ .trigger_decl = try self.parseTriggerAfterName(name, generics) },
                 .kw_sys => return .{ .sys = try self.parseSysAfterName(name, generics) },
+                .kw_plugin => return .{ .plugin_decl = try self.parsePluginAfterName(name, generics) },
                 .kw_trait => return .{ .trait_decl = try self.parseTraitAfterName(name, generics) },
                 else => {},
             }
@@ -451,7 +452,14 @@ const Parser = struct {
         if (self.match(.semicolon) != null) {
             return .{ .name = name, .items = null };
         }
-        _ = try self.expect(.lbrace, "expected `;` or `{` after module name");
+        // `mod ui` followed by a newline or EOF is an external module
+        // reference (the DX spelling in engine/main.e7).  A `{` introduces an
+        // inline body instead.
+        switch (self.peek().kind) {
+            .newline, .dedent, .eof => return .{ .name = name, .items = null },
+            else => {},
+        }
+        _ = try self.expect(.lbrace, "expected `;`, a newline, or `{` after module name");
         var items = std.ArrayList(*ast.Item).empty;
         self.skipBraceNoise();
         while (!self.at(.rbrace) and !self.at(.eof)) {
@@ -500,6 +508,51 @@ const Parser = struct {
         return .{ .name = name, .generics = generics, .where_clause = where_clause, .fields = fields };
     }
 
+    /// `Name <- plugin` with an optional body of member items.  Members are
+    /// ordinary declarations; the engine sample only uses `init <- sys (...)`.
+    fn parsePluginAfterName(
+        self: *Parser,
+        name: []const u8,
+        generics: []ast.GenericParam,
+    ) ParserError!ast.PluginDecl {
+        _ = try self.expect(.kw_plugin, "expected `plugin`");
+        const where_clause = try self.parseOptionalWhereClause();
+        const items = try self.parsePluginBody();
+        return .{
+            .name = name,
+            .generics = generics,
+            .where_clause = where_clause,
+            .items = items,
+        };
+    }
+
+    fn parsePluginBody(self: *Parser) ParserError![]*ast.Item {
+        _ = self.match(.colon);
+        if (self.match(.lbrace) != null) {
+            var items = std.ArrayList(*ast.Item).empty;
+            self.skipBraceNoise();
+            while (!self.at(.rbrace) and !self.at(.eof)) {
+                try items.append(self.allocator, try self.parseItem());
+                self.skipBraceNoise();
+            }
+            _ = try self.expect(.rbrace, "expected `}` after plugin body");
+            return items.toOwnedSlice(self.allocator);
+        }
+        // A bare `Name <- plugin` is valid: a plugin with no members.
+        if (self.match(.newline) == null) return &.{};
+        if (!self.at(.indent)) return &.{};
+        _ = self.advance();
+        var items = std.ArrayList(*ast.Item).empty;
+        while (true) {
+            self.skipSeparators();
+            if (self.at(.dedent) or self.at(.eof)) break;
+            if (self.at(.indent)) return self.fail("unexpected indentation in plugin body");
+            try items.append(self.allocator, try self.parseItem());
+        }
+        _ = try self.expect(.dedent, "expected dedent after plugin body");
+        return items.toOwnedSlice(self.allocator);
+    }
+
     fn parseRecordBody(self: *Parser) ParserError![]ast.Field {
         _ = self.match(.colon);
         if (self.match(.lbrace) != null) {
@@ -508,7 +561,10 @@ const Parser = struct {
             return fields;
         }
         _ = try self.expect(.newline, "expected newline or `{` after aggregate declaration");
-        _ = try self.expect(.indent, "expected indented field list");
+        // `Trigger <- trigger` with no indented fields is a valid empty body;
+        // the next declaration follows at the enclosing indentation.
+        if (!self.at(.indent)) return &.{};
+        _ = self.advance();
         const fields = try self.parseFields(.dedent, false);
         _ = try self.expect(.dedent, "expected dedent after fields");
         return fields;
@@ -941,8 +997,16 @@ const Parser = struct {
         if (!self.at(.rparen)) {
             while (true) {
                 try params.append(self.allocator, try self.parseSysParam());
-                if (self.match(.comma) == null) break;
+                if (self.match(.comma) != null) {
+                    if (self.at(.rparen)) break;
+                    continue;
+                }
                 if (self.at(.rparen)) break;
+                // The engine samples write one parameter per line without
+                // trailing commas.  Newlines inside `(` are suppressed by the
+                // lexer, so a parameter start is simply the next identifier.
+                if (self.at(.identifier)) continue;
+                return self.fail("expected `,` or `)` after sys parameter");
             }
         }
         _ = try self.expect(.rparen, "expected `)` after sys parameters");
@@ -978,12 +1042,23 @@ const Parser = struct {
         }
         _ = try self.expect(.kw_from, "expected `from` in query");
         const from = try self.parseType();
-        const filter = if (self.match(.kw_where) != null) try self.parseExpression() else null;
+        var filter: ?*ast.Expr = null;
+        var has: ?*ast.Type = null;
+        if (self.match(.kw_where) != null) {
+            // `where has Type` is a presence filter, not a boolean expression.
+            if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "has")) {
+                _ = self.advance();
+                has = try self.parseType();
+            } else {
+                filter = try self.parseExpression();
+            }
+        }
         return .{
             .name = name,
             .projections = try projections.toOwnedSlice(self.allocator),
             .from = from,
             .filter = filter,
+            .has = has,
         };
     }
 
@@ -1331,6 +1406,7 @@ const Parser = struct {
                 _ = self.advance();
                 break :blk self.createStmt(.{ .unsafe_block = try self.parseBlock() }, start);
             },
+            .kw_disown => self.parseDisown(),
             .identifier => if (self.looksLikeBinding())
                 self.parseBindingStmt()
             else if (self.looksLikeUninitializedDecl())
@@ -1397,6 +1473,13 @@ const Parser = struct {
         _ = try self.expect(.kw_ret, "expected `ret`");
         if (self.atExprEnd()) return self.createStmt(.{ .ret = null }, start);
         return self.createStmt(.{ .ret = try self.parseExpression() }, start);
+    }
+
+    fn parseDisown(self: *Parser) ParserError!*ast.Stmt {
+        const start = self.index;
+        _ = try self.expect(.kw_disown, "expected `disown`");
+        if (self.atExprEnd()) return self.fail("expected a lease expression after `disown`");
+        return self.createStmt(.{ .disown = try self.parseExpression() }, start);
     }
 
     fn parseWhile(self: *Parser) ParserError!*ast.Stmt {
@@ -1710,6 +1793,16 @@ const Parser = struct {
                 .operand = try self.parseUnary(options),
             } });
         }
+        if (self.at(.identifier) and std.mem.eql(u8, self.peek().lexeme, "query") and
+            self.peekAt(1).kind == .amp)
+        {
+            // `await query &mut Commands` — `query` is contextual so the word
+            // remains usable as an ordinary binding/field name.
+            _ = self.advance();
+            return self.createExpr(.{ .query = .{
+                .ty = try self.parseType(),
+            } });
+        }
         if (self.match(.kw_not) != null) {
             return self.createExpr(.{ .unary = .{
                 .op = .not,
@@ -1849,7 +1942,10 @@ const Parser = struct {
                 return expr;
             },
             .lbracket => return self.parseListExpr(),
-            .lbrace => return self.createExpr(.{ .block = try self.parseBraceBlock() }),
+            .lbrace => {
+                if (self.looksLikeRowLiteral()) return self.parseRowLiteral();
+                return self.createExpr(.{ .block = try self.parseBraceBlock() });
+            },
             .kw_async => {
                 _ = self.advance();
                 if (!self.looksLikeFunctionSignatureAt(self.index)) return self.fail("expected async function parameters");
@@ -1883,6 +1979,58 @@ const Parser = struct {
         }
         _ = try self.expect(.rbracket, "expected `]` after list");
         return self.createExpr(.{ .list = try items.toOwnedSlice(self.allocator) });
+    }
+
+    /// Distinguish `{ a, b, c }` (anonymous row value) from a block expression.
+    /// A row literal has at least one comma directly inside the braces, outside
+    /// any nested `()`/`[]`/`{}`.  `{ expr }`, `{ stmt; stmt }`, and `{}` stay
+    /// blocks, so existing block expressions are unchanged.
+    fn looksLikeRowLiteral(self: *const Parser) bool {
+        if (self.peek().kind != .lbrace) return false;
+        var brace_depth: usize = 0;
+        var paren_depth: usize = 0;
+        var bracket_depth: usize = 0;
+        var i = self.index;
+        while (i < self.tokens.len) : (i += 1) {
+            switch (self.tokens[i].kind) {
+                .lbrace => brace_depth += 1,
+                .rbrace => {
+                    if (brace_depth == 0) return false;
+                    brace_depth -= 1;
+                    if (brace_depth == 0) return false;
+                },
+                .lparen => paren_depth += 1,
+                .rparen => {
+                    if (paren_depth > 0) paren_depth -= 1;
+                },
+                .lbracket => bracket_depth += 1,
+                .rbracket => {
+                    if (bracket_depth > 0) bracket_depth -= 1;
+                },
+                .comma => {
+                    if (brace_depth == 1 and paren_depth == 0 and bracket_depth == 0) return true;
+                },
+                .eof => return false,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn parseRowLiteral(self: *Parser) ParserError!*ast.Expr {
+        _ = try self.expect(.lbrace, "expected `{`");
+        var items = std.ArrayList(*ast.Expr).empty;
+        while (true) {
+            self.skipBraceNoise();
+            if (self.at(.rbrace) or self.at(.eof)) break;
+            try items.append(self.allocator, try self.parseExpression());
+            if (self.match(.comma) != null) continue;
+            self.skipBraceNoise();
+            if (self.at(.rbrace)) break;
+            return self.fail("expected `,` or `}` in row literal");
+        }
+        _ = try self.expect(.rbrace, "expected `}` after row literal");
+        return self.createExpr(.{ .row_literal = try items.toOwnedSlice(self.allocator) });
     }
 
     fn parseStructLiteral(self: *Parser, path: ast.Path) ParserError!*ast.Expr {
@@ -2819,4 +2967,192 @@ test "parses sys reference parameter modifiers" {
     const q_plain = sys.params[5].query;
     try std.testing.expect(!q_plain.projections[0].mutable);
     try std.testing.expectEqualStrings("a", q_plain.projections[0].path.segments[0].name);
+}
+
+test "parses external modules without semicolons and plugin declarations" {
+    var tree = try expectAst(
+        \\mod ui
+        \\Ui <- plugin
+        \\    init <- sys (
+        \\        commands: &mut Commands
+        \\    ):
+        \\        ret
+        \\@plugin(Ui)
+        \\@resource
+        \\UINode <- struct
+        \\    pos: [f32; 2]
+    );
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), tree.module.items.len);
+    const module = tree.module.items[0].kind.mod;
+    try std.testing.expectEqualStrings("ui", module.name);
+    try std.testing.expect(module.items == null);
+
+    const plugin = tree.module.items[1].kind.plugin_decl;
+    try std.testing.expectEqualStrings("Ui", plugin.name);
+    try std.testing.expectEqual(@as(usize, 1), plugin.items.len);
+    const init = plugin.items[0].kind.sys;
+    try std.testing.expectEqualStrings("init", init.name);
+    try std.testing.expectEqual(@as(usize, 1), init.params.len);
+    const commands = init.params[0].normal;
+    try std.testing.expectEqualStrings("commands", commands.name);
+    try std.testing.expect(commands.ty.* == .reference and commands.ty.reference.mutable);
+    try std.testing.expectEqualStrings("Commands", commands.ty.reference.child.path.segments[0].name);
+
+    const ui_node = tree.module.items[2];
+    try std.testing.expectEqual(@as(usize, 2), ui_node.attributes.len);
+    try std.testing.expectEqualStrings("plugin", ui_node.attributes[0].path.segments[0].name);
+    try std.testing.expectEqualStrings("resource", ui_node.attributes[1].path.segments[0].name);
+}
+
+test "parses empty plugin bodies and newline-terminated external modules" {
+    var tree = try expectAst(
+        \\mod audio
+        \\Ui <- plugin
+    );
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 2), tree.module.items.len);
+    try std.testing.expect(tree.module.items[0].kind.mod.items == null);
+    try std.testing.expectEqual(@as(usize, 0), tree.module.items[1].kind.plugin_decl.items.len);
+}
+
+test "parses await query leases, disown statements, and row literals" {
+    var tree = try expectAst(
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(Ui)
+        \\    disown commands
+        \\    commands.add_row(Components, { camera_transform, camera, controller })
+        \\    cube_mesh := CubeMesh
+        \\    { 1 }
+        \\    0
+    );
+    defer tree.deinit();
+
+    const block = tree.module.items[0].kind.function.body.block;
+    try std.testing.expectEqual(@as(usize, 7), block.entries.len);
+
+    const lease = block.entries[0].stmt.*.binding.value;
+    try std.testing.expect(lease.* == .prefix);
+    try std.testing.expectEqual(ast.PrefixOp.await_, lease.prefix.op);
+    try std.testing.expect(lease.prefix.operand.* == .query);
+    const query_ty = lease.prefix.operand.query.ty;
+    try std.testing.expect(query_ty.* == .reference and query_ty.reference.mutable);
+    try std.testing.expectEqualStrings("Commands", query_ty.reference.child.path.segments[0].name);
+
+    try std.testing.expect(block.entries[1].stmt.*.expr.* == .call);
+    try std.testing.expect(block.entries[2].stmt.* == .disown);
+    try std.testing.expectEqualStrings("commands", block.entries[2].stmt.disown.path.segments[0].name);
+
+    const add_row = block.entries[3].stmt.*.expr.call;
+    try std.testing.expectEqual(@as(usize, 2), add_row.args.len);
+    try std.testing.expect(add_row.args[1].* == .row_literal);
+    try std.testing.expectEqual(@as(usize, 3), add_row.args[1].row_literal.len);
+
+    // `cube_mesh := CubeMesh` parses as a unit-struct constructor value.
+    const cube = block.entries[4].stmt.*.binding.value;
+    try std.testing.expect(cube.* == .path);
+    try std.testing.expectEqualStrings("CubeMesh", cube.path.segments[0].name);
+
+    // `{ 1 }` has no top-level comma, so it stays a block expression.
+    try std.testing.expect(block.entries[5].stmt.*.expr.* == .block);
+}
+
+test "parses table ellipsis with component attributes" {
+    var tree = try expectAst(
+        \\@Components
+        \\Camera <- struct
+        \\    yaw: f32
+        \\    pitch: f32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ... # automatically collects all @Components types
+    );
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), tree.module.items.len);
+    const camera = tree.module.items[0];
+    try std.testing.expectEqual(@as(usize, 1), camera.attributes.len);
+    try std.testing.expectEqualStrings("Components", camera.attributes[0].path.segments[0].name);
+    const table = tree.module.items[1].kind.table_decl;
+    try std.testing.expect(table.has_ellipsis);
+    try std.testing.expectEqual(@as(usize, 1), table.fields.len);
+    try std.testing.expectEqualStrings("entity_id", table.fields[0].name);
+}
+
+test "parses query presence filters and newline-separated sys parameters" {
+    var tree = try expectAst(
+        \\Components <- table
+        \\    entity_id: usize
+        \\move_camera <- sys (
+        \\    input: &Input,
+        \\    controllers: select &mut Camera, &mut CameraController from Components,
+        \\):
+        \\    ret
+        \\spin_cube <- sys (
+        \\    transforms: select &mut Transform from Components where has CubeMesh,
+        \\    time: &Time,
+        \\):
+        \\    ret
+        \\render_scene <- sys (
+        \\    gpu: res &mut Gpu,
+        \\    camera: &Camera,
+        \\
+        \\    cubes: select &CubeMesh, &Transform from Components
+        \\    lights: select &PointLight from Components
+        \\):
+        \\    ret
+    );
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), tree.module.items.len);
+    const move_camera = tree.module.items[1].kind.sys;
+    try std.testing.expectEqual(@as(usize, 2), move_camera.params.len);
+    const controllers = move_camera.params[1].query;
+    try std.testing.expectEqual(@as(usize, 2), controllers.projections.len);
+    try std.testing.expect(controllers.projections[0].mutable);
+    try std.testing.expectEqualStrings("Camera", controllers.projections[0].path.segments[0].name);
+    try std.testing.expectEqualStrings("CameraController", controllers.projections[1].path.segments[0].name);
+
+    const spin = tree.module.items[2].kind.sys;
+    const transforms = spin.params[0].query;
+    try std.testing.expect(transforms.has != null);
+    try std.testing.expect(transforms.filter == null);
+    try std.testing.expectEqualStrings("CubeMesh", transforms.has.?.path.segments[0].name);
+
+    const render = tree.module.items[3].kind.sys;
+    try std.testing.expectEqual(@as(usize, 4), render.params.len);
+    try std.testing.expect(render.params[0] == .resource);
+    try std.testing.expectEqual(@as(usize, 2), render.params[2].query.projections.len);
+    try std.testing.expectEqual(@as(usize, 1), render.params[3].query.projections.len);
+    try std.testing.expectEqualStrings("lights", render.params[3].query.name);
+}
+
+test "parses empty trigger bodies and rejects stray field assignment" {
+    var tree = try expectAst(
+        \\Init <- trigger
+        \\DeInit <- trigger
+        \\run <- () -> i32:
+        \\    ret 0
+    );
+    defer tree.deinit();
+    try std.testing.expectEqual(@as(usize, 3), tree.module.items.len);
+    try std.testing.expectEqual(@as(usize, 0), tree.module.items[0].kind.trigger_decl.fields.len);
+
+    const diagnostic = try expectParseDiagnostic(
+        \\S <- struct
+        \\    pitch: f32
+        \\make <- () -> S:
+        \\    S {
+        \\        pitch: = 0.0
+        \\    }
+    );
+    try std.testing.expect(diagnostic.message.len > 0);
+
+    const row_diagnostic = try expectParseDiagnostic(
+        \\f <- () -> i32:
+        \\    { a, b c }
+    );
+    try std.testing.expect(row_diagnostic.message.len > 0);
 }
