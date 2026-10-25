@@ -415,10 +415,11 @@ run <- async () -> Bytes:
 - [`lease.zig`](runtime/src/lease.zig) tracks exclusive leases. A task releases
   its held leases when it suspends at `await`, reacquires them on resume, and
   releases them permanently when its body returns.
-- Normal `sys` declarations lower as async constructor/body pairs and can be
-  called with normal parameters. Query/resource parameters are opaque i64
-  handles that may be forwarded; projection, iteration, and borrowing of those
-  handles are explicitly rejected.
+- Normal `sys` declarations lower as async constructor/body pairs. Systems
+  receive ECS resources, query handles, and `Commands` through generated
+  prologues; `select` handles can be iterated with
+  `for (a, b) in query` / `for row in query`, binding mutable or shared
+  component references.
 - Trigger declarations are callable with normal function-call syntax and return
   an awaitable task.
 - Trigger execution spawns all systems registered with `@trigger(...)`, waits
@@ -430,11 +431,9 @@ run <- async () -> Bytes:
   `?` propagates it as the implicit `Cancelled` error.
 - `detach` moves a task out of structured ownership and schedules it.
 
-Current async limits: query/resource projection and iteration in `sys` bodies
-are rejected because synthetic query row layout is analyzer-private; query,
-resource, and normal params are not yet bound from trigger fields, so
-parameterized trigger systems remain unsupported; task thread affinity,
-task-local reference affinity, structured-scope/drop tracking, and running-task
+Current async limits: trigger fields are not bound into system parameters;
+trait-object query projections stay opaque; task thread affinity, task-local
+reference affinity, structured-scope/drop tracking, and running-task
 cancellation are not yet implemented; async function expressions are lowered
 only when bound at top level.
 
@@ -458,25 +457,27 @@ sample UI/ECS surface:
   SPIR-V for the cube/point-light pipeline; `shaders/build.sh` runs the e7s
   transpiler and `slangc` to regenerate the runtime assets.
 
-The native runtime side is a real Vulkan forward renderer and demo:
+The e7 engine project runs directly through the JIT host:
 
 ```sh
-zig build run-scene                 # interactive: WASD, Q/E, mouse look
-zig build run-scene -- --frames 120
-zig build run-scene -- --headless --capture /tmp/scene.ppm
-zig build shaders                   # e7s -> Slang -> SPIR-V (slangc or fallback)
+zig build run-engine                     # interactive: WASD, Q/E, Shift, mouse look
+zig build run-engine -- --frames 120
+zig build run-engine -- --headless --capture /tmp/engine.ppm
+zig build shaders                        # e7s -> Slang -> SPIR-V
+zig build run-scene                      # native renderer demo/fallback
 ```
 
-[`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) deploys SPIR-V
-shader modules, a depth-tested raster pipeline, cube mesh, point light, and
-host-visible uniforms; [`runtime/src/scene_demo.zig`](runtime/src/scene_demo.zig)
-owns the temporary native frame loop. The native scene ABI is
-`e7_scene_create/destroy/resize/set_camera/draw/capture`; the e7 resource
-wrappers (`Gpu`, `ShaderDeploy`, `RasterPipeline`, `Mesh`,
-`gpu_deploy_raster_pipeline`, `gpu_deploy_compute_pipeline`) are the extension
-points for moving that loop into e7. The native demo is the executable proof
-of the pipeline while mutable query/resource system bodies are still a
-compiler-codegen gap.
+`run-engine` loads `engine/main.e7` + `engine/ui.e7` as a project, initializes
+the columnar ECS world, JITs the e7 `main`, and runs the `Init`, `FrameInit`,
+`PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit` triggers. SDL
+window/input and Vulkan scene access are compiler-known intrinsics
+(`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
+[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Camera movement is currently
+applied by the native engine helper (`e7_engine_camera_update`) so e7 avoids
+float arithmetic; reading camera components through queries is available, but
+applying them back to the runtime camera awaits f32 arithmetic lowering.
+[`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
+depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
 
 ![engine scene](engine/scene-preview.png)
 
@@ -519,7 +520,8 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs the workspace test suite:
+`zig build test` runs 298 tests: scheduler 8, compiler 192, runtime 78,
+transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
   minimization, two-view block recovery, dimension validation;
@@ -551,7 +553,9 @@ a minimal JIT usage example.
   keys), map/vector/string iteration, container methods, aggregate references,
   unsafe raw pointers, uninitialized locals, normal sys lowering, lease
   release/reacquire, a Vulkan cube/point-light scene renderer (headless
-  capture and JIT scene ABI), filesystem sandbox
+  capture and JIT scene ABI), ECS resources/rows/Commands/plugins/queries,
+  executable e7 engine project (headless capture + injected input/camera),
+  filesystem sandbox
   escapes, STDIO file/line handling and JITed stderr writes, TCP/UDP loopback,
   HTTP request/response, SDL window lifecycle, Vulkan device probing, QUIC
   client/server handshake and stream exchange, WebRTC
@@ -561,12 +565,11 @@ a minimal JIT usage example.
 ## Next steps
 
 1. Add expression-level spans and multi-label diagnostics.
-2. Add ECS/plugin/Commands runtime semantics and expose synthetic query/
-   resource layout metadata to codegen so `engine/main.e7` systems can run
-   directly; bind trigger fields to system parameters and complete
-   trait-method receiver lowering.
-3. Move the native scene loop into e7 (`gpu_*` wrappers), add task-local
-   reference affinity, structured scopes, and running-task cancellation.
+2. Add f32 arithmetic lowering so e7 can own camera/rotation/light animation,
+   bind trigger fields to system parameters, and complete trait-method receiver
+   lowering/object-safe trait queries.
+3. Add task-local reference affinity, structured scopes, and running-task
+   cancellation; release early-break query handles promptly.
 4. Feed runtime profile counters into iterative pipeline selection.
 5. Enforce visibility and add trait method signatures/bodies plus object-safe
    trait values.
