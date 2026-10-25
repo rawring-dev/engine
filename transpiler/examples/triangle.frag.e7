@@ -1,0 +1,27 @@
+# Triangle fragment stage (e7s).
+#
+# The fragment shader re-declares the stage interface: e7s has no cross-file
+# type identity, so FragInput must match the vertex stage's Varying struct
+# attribute for attribute.
+
+# Material constants (set 0, binding 0). Plain struct -> ConstantBuffer<T>.
+Material <- struct
+    base_colour: [f32; 4]
+    ambient: [f32; 4]
+
+# Fragment input: builtin position plus the interpolated colour varying.
+FragInput <- struct
+    @builtin(position) frag_coord: [f32; 4]
+    @location(0) colour: [f32; 4]
+
+# Fragment output: one colour attachment at location 0.
+FragOutput <- struct
+    @location(0) colour: [f32; 4]
+
+@binding(0, 0)
+material: Material
+
+@fragment
+fs_main <- (input: FragInput) -> FragOutput:
+    lit := input.colour * material.base_colour
+    ret FragOutput{colour: [lit.r, lit.g, lit.b, 1.0] as [f32; 4]}

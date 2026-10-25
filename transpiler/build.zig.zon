@@ -1,0 +1,19 @@
+.{
+    .name = .transpiler,
+    .version = "0.1.0",
+    .fingerprint = 0xd0b3abc5c3c9930d,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .compiler = .{ .path = "../compiler" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "testdata",
+        "examples",
+        "docs",
+        "tools",
+        "README.md",
+    },
+}

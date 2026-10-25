@@ -1,0 +1,50 @@
+# Root translation unit for the multi-file example (e7s).
+#
+# `mod math` references the sibling file math.e7. `use math::*;` becomes
+# `import math;` and makes the module's public items available unqualified.
+
+mod math
+use math::*;
+
+Scene <- struct
+    mvp: [f32; 4, 4]
+    light_dir: [f32; 3]
+
+Vertex <- struct
+    @location(0) position: [f32; 3]
+    @location(1) normal: [f32; 3]
+
+Varying <- struct
+    @builtin(position) clip_position: [f32; 4]
+    @location(0) normal: [f32; 3]
+    @location(1) uv: [f32; 2]
+
+FragInput <- struct
+    @builtin(position) frag_coord: [f32; 4]
+    @location(0) normal: [f32; 3]
+    @location(1) uv: [f32; 2]
+
+FragOutput <- struct
+    @location(0) colour: [f32; 4]
+
+@binding(0, 0)
+scene: Scene
+
+@vertex
+vs_main <- (vertex: Vertex) -> Varying:
+    clip := mul(
+        scene.mvp,
+        [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] as [f32; 4],
+    )
+    ret Varying{
+        clip_position: clip,
+        normal: vertex.normal,
+        uv: [0.0, 0.0] as [f32; 2],
+    }
+
+@fragment
+fs_main <- (input: FragInput) -> FragOutput:
+    n := normalize_safe(input.normal, 1.0e-5)
+    diffuse := max(dot3(n, scene.light_dir), 0.0)
+    shade := [diffuse, diffuse, diffuse, 1.0] as [f32; 4]
+    ret FragOutput{colour: shade}

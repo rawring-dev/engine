@@ -1,0 +1,81 @@
+# Resource declarations and binding extensions (e7s).
+#
+# Lowering rules illustrated here:
+#   * plain user-struct resource -> ConstantBuffer<T>
+#   * @uniform                   -> same ConstantBuffer<T> lowering, explicit
+#   * @push_constant             -> [[vk::push_constant]] ConstantBuffer<T>
+#   * Texture2D / SamplerState / StructuredBuffer pass through unchanged,
+#     with their e7 type arguments mapped to Slang types.
+#   * @flat on a varying field emits Slang `nointerpolation`.
+
+# @resource is an optional documentation tag on structs/resources; it is
+# erased during lowering.
+@resource
+Frame <- struct
+    view_proj: [f32; 4, 4]
+    camera_pos: [f32; 3]
+
+DrawPush <- struct
+    model_index: u32
+    alpha: f32
+
+Instance <- struct
+    position: [f32; 3]
+    scale: f32
+
+# @uniform is the explicit spelling of the default struct-resource lowering.
+@uniform
+@binding(0, 0)
+frame: Frame
+
+# Push constants take no @binding; the block is wrapped in a push-constant
+# ConstantBuffer.
+@push_constant
+push: DrawPush
+
+# Explicit Slang resource types pass through. [f32; 4] maps to float4.
+@binding(1, 0)
+albedo: Texture2D<[f32; 4]>
+
+@binding(2, 0)
+albedo_sampler: SamplerState
+
+@binding(3, 0)
+instances: StructuredBuffer<Instance>
+
+Vertex <- struct
+    @location(0) position: [f32; 3]
+    @location(1) uv: [f32; 2]
+
+Varying <- struct
+    @builtin(position) clip_position: [f32; 4]
+    @flat @location(1) instance_id: u32
+    @location(0) uv: [f32; 2]
+
+FragInput <- struct
+    @builtin(position) frag_coord: [f32; 4]
+    @flat @location(1) instance_id: u32
+    @location(0) uv: [f32; 2]
+
+FragOutput <- struct
+    @location(0) colour: [f32; 4]
+
+@vertex
+vs_main <- (vertex: Vertex) -> Varying:
+    instance := instances[push.model_index]
+    world := [
+        vertex.position.x * instance.scale + instance.position.x,
+        vertex.position.y * instance.scale + instance.position.y,
+        vertex.position.z * instance.scale + instance.position.z,
+    ] as [f32; 3]
+    clip := mul(
+        frame.view_proj,
+        [world.x, world.y, world.z, 1.0] as [f32; 4],
+    )
+    ret Varying{clip_position: clip, instance_id: push.model_index, uv: vertex.uv}
+
+@fragment
+fs_main <- (input: FragInput) -> FragOutput:
+    base := albedo.Sample(albedo_sampler, input.uv)
+    tint := [base.r, base.g, base.b, push.alpha] as [f32; 4]
+    ret FragOutput{colour: tint}

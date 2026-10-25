@@ -1,0 +1,55 @@
+# Traits, interfaces, generics, and impl blocks (e7s).
+#
+# `trait` maps to a Slang `interface`; `impl` maps to a Slang `extension`.
+# Trait requirements use e7 receivers (&self / &mut self). Impl methods declare
+# the receiver as a first parameter named `this`; the transpiler drops it
+# because the Slang method receiver is the implicit `this`.
+#
+# This file has no stage attribute, so it transpiles to a Slang library unit
+# that other translation units can import.
+
+PI: f32 := 3.14159265
+TAU: f32 := 6.28318531
+
+# A base trait (Slang interface) with required method signatures.
+trait IShape
+    area <- (&self) -> f32
+    circumference <- (&self) -> f32
+
+# Supertrait: every IShaded implementor must also implement IShape.
+trait IShaded : IShape
+    albedo <- (&self) -> [f32; 3]
+    shade <- (&mut self, amount: f32) -> nil
+
+Circle <- struct
+    radius: f32
+    colour: [f32; 3]
+
+# impl Trait for Type maps to `extension Type : Trait`.
+impl IShape for Circle:
+    @inline
+    area <- (this: &Circle) -> f32 = PI * this.radius * this.radius
+    circumference <- (this: &Circle) -> f32 = TAU * this.radius
+
+impl IShaded for Circle:
+    albedo <- (this: &Circle) -> [f32; 3] = this.colour
+    shade <- (this: &mut Circle, amount: f32) -> nil:
+        this.colour = this.colour * amount
+
+# Generic struct with a where bound on its parameter.
+Pair<T> <- struct where T: IShape
+    first: T
+    second: T
+
+# Generic function: the bound lets the body call IShape methods on T.
+sum_area<T> <- (a: T, b: T) -> f32 where T: IShape:
+    ret a.area() + b.area()
+
+# Generic inherent impl: no `for` clause, so it is an extension on Pair<T>.
+impl<T> Pair<T> where T: IShape:
+    combined_area <- (this: &Pair<T>) -> f32 = this.first.area() + this.second.area()
+
+# A concrete function used by hosts that import the transpiled library.
+area_of_unit_circle <- () -> f32:
+    circle := Circle{radius: 1.0, colour: [1.0, 0.5, 0.25] as [f32; 3]}
+    ret sum_area(circle, circle)

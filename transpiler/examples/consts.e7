@@ -1,0 +1,54 @@
+# Top-level constants, enums, and scalar/vector math (e7s).
+#
+# `name: Type := expr` at file scope becomes a Slang `static const`. An inline
+# `mod name { ... }` becomes a Slang `namespace name { ... }`; its items are
+# referenced with `name::item`.
+
+PI: f32 := 3.14159265
+TAU: f32 := 6.28318531
+MAX_LIGHTS: u32 := 8
+GRAVITY: [f32; 3] := [0.0, -9.81, 0.0] as [f32; 3]
+
+# Inline module -> namespace units { ... }. Names are qualified in e7s source.
+mod units {
+    pub MILLI: f32 := 0.001
+    pub to_metres <- (milli: f32) -> f32 = milli * MILLI
+    pub luminance <- (colour: [f32; 3]) -> f32 = dot(colour, [0.2126, 0.7152, 0.0722] as [f32; 3])
+}
+
+# Unit-only enums map to Slang enums; payload variants are unsupported.
+Tone <- enum
+    Linear
+    Gamma
+    Aces
+
+# Scalar math with constants and ordinary operators.
+wrap_angle <- (angle: f32) -> f32:
+    ret angle - TAU * floor(angle / TAU)
+
+tone_curve <- (tone: Tone, value: f32) -> f32:
+    scaled: f32 <- value
+    if tone == Tone::Linear:
+        scaled = value
+    elif tone == Tone::Gamma:
+        scaled = pow(value, 2.2)
+    else:
+        scaled = value * 0.8
+    ret scaled
+
+FragInput <- struct
+    @builtin(position) frag_coord: [f32; 4]
+    @location(0) uv: [f32; 2]
+
+FragOutput <- struct
+    @location(0) colour: [f32; 4]
+
+@fragment
+fs_main <- (input: FragInput) -> FragOutput:
+    angle := wrap_angle(input.uv.x * TAU * 8.0)
+    wave := sin(angle) * 0.5 + 0.5
+    base := [wave, wave * 0.5, 1.0 - wave, 1.0] as [f32; 4]
+    lum := units::luminance([base.r, base.g, base.b] as [f32; 3])
+    scale := units::to_metres(MAX_LIGHTS as f32)
+    curved := tone_curve(Tone::Gamma, lum) * (1.0 + scale)
+    ret FragOutput{colour: [curved, curved, curved, 1.0] as [f32; 4]}

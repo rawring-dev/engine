@@ -1,0 +1,35 @@
+# Compute stage: storage-buffer update (e7s).
+#
+# `@compute(x, y, z)` becomes [shader("compute")] plus [numthreads(x, y, z)].
+# The dispatch id struct carries the SV_DispatchThreadID builtin.
+
+Particle <- struct
+    position: [f32; 3]
+    velocity: [f32; 3]
+
+SimParams <- struct
+    dt: f32
+    gravity: [f32; 3]
+    count: u32
+
+# Uniform parameters (set 0, binding 0) -> ConstantBuffer<SimParams>.
+@binding(0, 0)
+params: SimParams
+
+# Storage buffer (set 0, binding 1) -> RWStructuredBuffer<Particle>.
+@binding(1, 0)
+particles: RWStructuredBuffer<Particle>
+
+# A builtin is a struct field tagged with @builtin.
+DispatchId <- struct
+    @builtin(dispatch_thread_id) tid: [u32; 3]
+
+@compute(64, 1, 1)
+cs_update <- (id: DispatchId) -> nil:
+    index := id.tid.x
+    if index >= params.count:
+        ret
+    # Integrate one particle. Reads and writes go through the storage buffer;
+    # e7s has no local reference/pointer values.
+    particles[index].velocity = particles[index].velocity + params.gravity * params.dt
+    particles[index].position = particles[index].position + particles[index].velocity * params.dt

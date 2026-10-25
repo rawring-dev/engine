@@ -2,3 +2,6 @@ target
 .zig-cache/
 zig-pkg/
 zig-out/
+
+# Local toolchain downloads (Slang compiler used for validation)
+.tooling/

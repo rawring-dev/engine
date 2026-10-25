@@ -1,0 +1,23 @@
+# Sibling module imported by main.e7 (e7s).
+#
+# main.e7 declares `mod math`; the transpiler loads this file and emits
+# math.slang with `module math;`. `pub` items are exported.
+
+pub Vec3 <- struct
+    x: f32
+    y: f32
+    z: f32
+
+pub PI: f32 := 3.14159265
+
+@inline
+pub dot3 <- (a: [f32; 3], b: [f32; 3]) -> f32 = a.x * b.x + a.y * b.y + a.z * b.z
+
+pub length_sq <- (v: [f32; 3]) -> f32 = dot3(v, v)
+
+pub normalize_safe <- (v: [f32; 3], eps: f32) -> [f32; 3]:
+    len_sq := length_sq(v)
+    if len_sq <= eps * eps:
+        ret [0.0, 0.0, 1.0] as [f32; 3]
+    inv_len := 1.0 / sqrt(len_sq)
+    ret v * inv_len
