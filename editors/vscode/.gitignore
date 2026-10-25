@@ -1,0 +1,10 @@
+> Generated and vendored artifacts stay out of git (see editors/README.md).
+node_modules/
+dist/
+*.vsix
+
+# Local npm cache used by test/run.sh (works even when $HOME is read-only).
+.npm-cache/
+
+# npm noise
+npm-debug.log*

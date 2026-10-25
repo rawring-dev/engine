@@ -1,0 +1,11 @@
+# Sources only: the VSIX is a declarative extension (grammar + language config +
+# snippets).  Development-only files and generated artifacts are excluded.
+.vscodeignore
+.gitignore
+package-lock.json
+test/**
+node_modules/**
+dist/**
+.npm-cache/**
+*.vsix
+npm-debug.log*

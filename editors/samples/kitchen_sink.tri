@@ -1,0 +1,240 @@
+# engine7 kitchen sink
+#
+# This file is the shared fixture for the Neovim and VS Code syntax
+# highlighting tests.  It exercises every construct in grammar.ebnf:
+# layout and brace bodies, items, statements, patterns, types, and
+# expressions.  It is checked against the compiler's parser, so editing it
+# means editing the editor tests too.
+
+# ---------------------------------------------------------------------------
+# Modules, imports, and use trees
+# ---------------------------------------------------------------------------
+
+use crate::ecs::World;
+use std::collections::{Map, Set};
+use super::math::*;
+use std::io::println as print_line;
+
+mod math {
+    pub Vec3 <- struct {
+        x: f32
+        y: f32
+        z: f32
+    }
+
+    pub dot <- (a: &Vec3, b: &Vec3) -> f32 {
+        ret a.x * b.x + a.y * b.y + a.z * b.z
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Attributes, visibility, and aggregate declarations
+# ---------------------------------------------------------------------------
+
+@derive(Debug, Clone)
+@component(Position, Velocity)
+pub(crate) Body <- struct:
+    pub id: u64
+    @serialize
+    pub mass: f32
+    pub position: Vec3
+    pub velocity: Vec3
+    awake: bool
+
+pub(self) LocalOnly <- struct:
+    value: i32
+
+pub(in crate::ecs) Hidden <- struct:
+    value: i32
+
+pub Color <- enum:
+    Red
+    Green
+    Blue
+    Custom(value: f32)
+    Rgb { r: u8, g: u8, b: u8 }
+
+@table("entities")
+pub Entity <- table:
+    id: u64
+    position: Vec3
+    velocity: Vec3
+    ...
+
+@trigger(Update)
+pub Update <- trigger:
+    dt: f32
+    frame: u64
+
+pub pair<T> <- struct where T: Clone:
+    first: T
+    second: T
+
+pub trait Drawable: Debug + Clone;
+
+impl Drawable for Body:
+    @inline
+    pub draw <- (body: &Body) -> ():
+        print_line(body.id)
+
+impl<T: Clone> pair<T> where T: Clone:
+    swap <- (value: &pair<T>) -> pair<T>:
+        ret pair<T>{first: value.second, second: value.first}
+
+pub Types <- struct:
+    inferred_error: !i32
+    optional: ?i32
+    mutable_ref: &mut Vec3
+    reference: &Vec3
+    boxed: *Vec3
+    raw_pointer: *raw Vec3
+    callback: (i32) -> i32
+    unit: ()
+    tuple: (i32, f32)
+    single: (i32)
+    fixed_array: [f32; 4]
+    grid: [f32; 4, 4]
+    matrix: map[str, i32]
+    explicit_error: NotFound!Data
+
+# ---------------------------------------------------------------------------
+# Functions: declaration forms, generics, and anonymous functions
+# ---------------------------------------------------------------------------
+
+pub identity<T> <- (value: T) -> T where T: Clone:
+    ret value
+
+pub square <- (x: i32) -> i32 = x * x
+
+pub normalize <- (v: Vec3) -> Vec3 {
+    length <- math::dot(&v, &v)
+    ret Vec3{x: v.x / length, y: v.y / length, z: v.z / length}
+}
+
+pub adder <- (amount: i32) -> (i32) -> i32:
+    ret (x: i32) -> i32: x + amount
+
+pub work <- async (id: i64) -> i32 = id as i32
+
+pub load <- async (path: &str) -> !Data:
+    ret !NotFound
+
+# ---------------------------------------------------------------------------
+# Systems: queries, resources, and where filters
+# ---------------------------------------------------------------------------
+
+update <- sys(query: select &mut Position, &Velocity from Body where awake):
+    for entry in query:
+        entry.position += entry.velocity
+
+render <- sys(query: select &Position from Body, world: res World):
+    for entry in query:
+        print_line(entry.position.x)
+
+# ---------------------------------------------------------------------------
+# Statements: control flow, layout blocks, and unsafe
+# ---------------------------------------------------------------------------
+
+pub spin <- (limit: i32) -> i32:
+    counter: i32
+    counter = 0
+    loop:
+        counter += 1
+        if counter >= limit:
+            break
+    while counter > 0:
+        counter -= 1
+        if counter == 3:
+            cont
+    unsafe:
+        raw_ptr: *raw i32
+    ret counter
+
+pub total <- (values: &[i32]) -> i32:
+    sum := 0
+    for value in values:
+        sum += value
+    ret sum
+
+pub span <- () -> i32:
+    ticks := 0
+    for i in 0..10:
+        ticks += i
+    for i in 0..=10:
+        ticks += i
+    ret ticks
+
+pub classify <- (value: i32) -> String:
+    if value < 0:
+        ret "negative"
+    elif value == 0:
+        ret "zero"
+    else:
+        ret "positive"
+
+# ---------------------------------------------------------------------------
+# Match expressions and patterns
+# ---------------------------------------------------------------------------
+
+pub describe <- (color: Color) -> String:
+    ret match color:
+        Red | Green: "cool"
+        Blue: "cool"
+        Custom(value) if value > 100.0: "large"
+        Custom(value): "custom"
+        Rgb { r: 0, g, b }: "black"
+        Rgb { r, g, b }: "rgb"
+        _: "other"
+
+# ---------------------------------------------------------------------------
+# Expressions: operators, ranges, calls, literals, tasks, and casts
+# ---------------------------------------------------------------------------
+
+pub compute <- (a: i32, b: i32) -> i32:
+    sum <- a + b
+    quotient <- a / b
+    remainder <- a % b
+    negated <- -a
+    inverted <- not (a == b)
+    both <- a > 0 and b > 0
+    either <- a < 0 or b < 0
+    exclusive <- a != b xor a >= b
+    widened <- a as i64
+    narrowed <- widened as i32
+    ret sum + quotient + remainder + negated + inverted + both + either + exclusive + narrowed
+
+pub first <- (items: &[i32]) -> ?i32:
+    if items.len > 0:
+        ret items[0]
+    ret nil
+
+pub unwrap <- (value: ?i32) -> i32:
+    ret value?
+
+pub origin <- () -> Vec3:
+    ret Vec3{x: 0.0, y: 0.0, z: 0.0}
+
+pub counters <- () -> map[str, i32]:
+    mapping <- map[str, i32]{"a": 1, "b": 2}
+    ret mapping
+
+pub digits <- () -> [i32]:
+    ret [0, 1, 2, 3]
+
+pub literals <- () -> i32:
+    big <- 1_000_000
+    ratio <- 6.02e23
+    tiny <- 1.5E-9
+    quote <- "tab\tnewline\nquote\" backslash\\"
+    single <- 'single quoted'
+    flag <- true
+    other <- false
+    ret 0
+
+pub finish <- () -> i32:
+    task <- load("data")
+    value <- await task
+    spawned <- spawn work(1)
+    detached <- detach work(2)
+    cancelled <- cancel spawned
+    ret value

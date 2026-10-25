@@ -1,0 +1,83 @@
+{
+  "Struct declaration": {
+    "prefix": "struct",
+    "body": [
+      "${1:Name} <- struct:",
+      "    ${2:field}: ${3:Type}",
+      "$0"
+    ],
+    "description": "Declare an engine7 struct aggregate with a layout body."
+  },
+  "Enum declaration": {
+    "prefix": "enum",
+    "body": [
+      "${1:Name} <- enum:",
+      "    ${2:UnitVariant}",
+      "    ${3:PayloadVariant}(${4:value}: ${5:Type})",
+      "$0"
+    ],
+    "description": "Declare an engine7 enum with unit and payload variants."
+  },
+  "Function declaration": {
+    "prefix": "fn",
+    "body": [
+      "${1:name} <- (${2:arg}: ${3:Type}) -> ${4:ReturnType}:",
+      "    ${5:ret arg}",
+      "$0"
+    ],
+    "description": "Declare an engine7 function with a layout body."
+  },
+  "Async function declaration": {
+    "prefix": "fn async",
+    "body": [
+      "${1:name} <- async (${2:arg}: ${3:Type}) -> ${4:ReturnType}:",
+      "    ${5:ret arg}",
+      "$0"
+    ],
+    "description": "Declare an engine7 async function."
+  },
+  "System with query": {
+    "prefix": "sys",
+    "body": [
+      "${1:update} <- sys(query: select &mut ${2:Position}, &${3:Velocity} from ${4:Body} where ${5:awake}):",
+      "    for entry in query:",
+      "        ${6:entry.position += entry.velocity}",
+      "$0"
+    ],
+    "description": "Declare an engine7 system with a query parameter."
+  },
+  "System with resource": {
+    "prefix": "sys res",
+    "body": [
+      "${1:render} <- sys(query: select &${2:Position} from ${3:Body}, world: res ${4:World}):",
+      "    for entry in query:",
+      "        ${5:print_line(entry.position)}",
+      "$0"
+    ],
+    "description": "Declare an engine7 system with query and resource parameters."
+  },
+  "Match expression": {
+    "prefix": "match",
+    "body": [
+      "ret match ${1:value}:",
+      "    ${2:Pattern}: ${3:result}",
+      "    ${4:OtherPattern} | ${5:AnotherPattern}: ${6:result}",
+      "    _: ${7:default}",
+      "$0"
+    ],
+    "description": "Match expression with layout arms."
+  },
+  "If / elif / else": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition}:",
+      "    ${2:body}",
+      "elif ${3:otherCondition}:",
+      "    ${4:body}",
+      "else:",
+      "    ${5:body}",
+      "$0"
+    ],
+    "description": "Conditional expression with layout blocks."
+  }
+}

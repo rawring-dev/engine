@@ -10,6 +10,7 @@ workspace build:
 | `scheduler` | LAPACK/BLAS bindings, L-BFGS, two-view spectral partitioning | implemented, tested |
 | `compiler` | lexer/parser, semantic analysis, bytecode lowering/optimizer | implemented, tested |
 | `runtime` | bytecode -> LLVM IR -> ORC/LLJIT; imports `scheduler` and `compiler` | implemented, tested |
+| `transpiler` | e7 shading subset (**e7s**) -> Khronos Slang modules | implemented, tested |
 
 The parser implements the checked-in surface grammar: items, declarations,
 layout and brace blocks, statements, patterns, types, and Pratt-parsed
@@ -96,6 +97,9 @@ it through the iterative pass pipeline and LLJIT.
 - OpenSSL (`-lssl -lcrypto`) and ngtcp2 with its OpenSSL crypto adapter
   (`-lngtcp2 -lngtcp2_crypto_ossl`) for QUIC
 - libdatachannel (`-ldatachannel`) for WebRTC data channels
+- Slang (`slangc`, optional): validates the e7s shader transpiler output and
+  the checked-in shader sources; it is not needed to build the workspace or
+  run the Zig tests
 
 Both `compiler` and `runtime` link `libLLVM`. If your distribution exposes a
 different LLVM major version, update the `linkSystemLibrary("LLVM-23", ...)`
@@ -132,14 +136,15 @@ plugins under [`editors/`](editors/README.md) implement the same lexical model
 and highlighting heuristics:
 
 - [`editors/neovim/`](editors/neovim/README.md) — a legacy Neovim `:syntax`
-  plugin (no tree-sitter parser needed) with filetype detection for `.e7` and
-  `.engine7`, plus comment/indent filetype settings.
+  plugin (no tree-sitter parser needed) with filetype detection for `.tri`
+  (canonical) plus `.e7` and `.engine7` aliases, and comment/indent filetype
+  settings.
 - [`editors/vscode/`](editors/vscode/README.md) — a declarative VS Code
   extension (TextMate grammar + language configuration + snippets) that
   contributes language id `engine7` and scope `source.engine7`.
 
 Both are tested against the shared, compiler-parseable fixture
-[`editors/samples/kitchen_sink.e7`](editors/samples/kitchen_sink.e7). From the
+[`editors/samples/kitchen_sink.tri`](editors/samples/kitchen_sink.tri). From the
 repository root:
 
 ```sh
@@ -227,6 +232,35 @@ exhausted. This is the in-process iterative-compilation framework used by the
 compiler; later profile-guided or search-based pipeline selection can replace
 the fixed pipeline string without changing the loop.
 
+### e7s -> Slang transpiler
+
+[`transpiler/`](transpiler/README.md) is a separate package that transpiles the
+e7 shading subset (**e7s**) to Khronos Slang modules.  It reuses the real front
+end (`compiler/src/parser.zig`) and adds no grammar: shader-specific extensions
+are e7 attributes (`@binding(binding, set)`, `@push_constant`, `@vertex`,
+`@fragment`, `@compute(x, y, z)`, `@location`, `@builtin`, `@flat`, `@inline`),
+and resources are ordinary top-level `name: Type` declarations carrying binding
+attributes.  Traits and `impl` blocks lower to Slang interfaces and extensions;
+generics, bounds, and modules are preserved (external `mod foo` loads sibling
+`foo.e7` and emits `foo.slang` + `import foo;`; inline modules become Slang
+namespaces).  Where the two languages differ, e7s takes the Slang meaning:
+vectors are `float3`-style values, `[f32; 4, 4]` is `float4x4`, struct literals
+reorder to declaration order, and matrix `*` is emitted as `mul(...)`.
+
+```sh
+(cd transpiler && zig build)
+transpiler/zig-out/bin/e7s transpile transpiler/examples/triangle.vert.e7 -o /tmp
+transpiler/zig-out/bin/e7s transpile transpiler/examples/modules/main.e7 -o /tmp/e7s-out
+slangc -target spirv -profile spirv_1_5 -entry vs_main -stage vertex \
+       -I /tmp/e7s-out -o /tmp/triangle.spv /tmp/e7s-out/main.slang
+```
+
+[`transpiler/docs/e7s.md`](transpiler/docs/e7s.md) is the language reference;
+[`transpiler/docs/slang-notes.md`](transpiler/docs/slang-notes.md) records the
+Slang forms verified against slangc 2026.20.  After building, `sh
+transpiler/tools/validate-examples.sh` transpiles every example and compiles
+all shader entries to SPIR-V when a `slangc` is available.
+
 ### Semantic analysis
 
 `semantic.zig` exposes `analyze(allocator, module)`. The implementation is split
@@ -284,9 +318,8 @@ Current semantic limits: visibility is parsed but not enforced; traits are
 marker-style (method signatures/bodies are not part of trait declarations);
 region inference is block/last-use rather than full CFG-based; moves are
 tracked at whole-binding granularity rather than partial fields; task affinity
-metadata is not yet propagated through handles; custom `Index` key/result
-signatures are only partially checked; and map literals/iteration are not yet
-implemented.
+metadata is not yet propagated through handles; and custom `Index` key/result
+signature coverage remains partial.
 
 ### Compilation pipeline and bytecode
 
@@ -315,8 +348,10 @@ source -> parser -> semantic analysis -> codegen -> bytecode optimizer -> verifi
 Aggregate operators (`+`, `-`, `*`, `/`) are lowered through runtime helpers:
 vector/matrix componentwise operations, dot products, matrix/vector products,
 matrix multiplication, scalar scaling, string concatenation, and map access.
-Custom operator traits are still semantically checked but not yet lowered into
-their impl methods.
+Custom operator traits (`Add`, `Sub`, `Mul`, `Div`, `Neg`, `PartialEq`,
+`PartialOrd`, `Deref`, `Index`) are lowered to calls to their impl methods;
+unused impl methods are not emitted. Built-in operators take precedence for
+primitive/container types.
 
 ### Unsafe code and uninitialized declarations
 
@@ -337,6 +372,22 @@ load <- (p: *raw T) -> T:
 - `&place`, `*pointer`, field/index assignment, struct literals, enums, vector
   and matrix literals, map literals, and string literals all lower to the
   aggregate ABI.
+
+### Aggregates, iteration, and references
+
+- Matrices support `m[i]` row reads, `m[i, j]` element reads/writes, and
+  `m[i] = row` row assignment.
+- `for (key, value) in map:` iterates insertion-ordered map entries; vectors
+  support `for value in vec:` and `for (index, value) in vec:`; strings support
+  `for ch in text:` and `for (index, ch) in text:`.
+- Built-in container methods: `text.len()`, `text.slice(start, end)`,
+  `text.char_at(i)`, `vector.len()`, and `map.len()`.
+- References to aggregate locals are object aliases (`r := &p; r.x`); scalar
+  references point at their slot; `&mut` field mutation through parameters is
+  supported. Whole-value assignment through an aggregate reference is rejected
+  rather than miscompiled.
+- Aggregate field/index reads and writes lower to heap slots; whole-value
+  assignment through a reference remains an explicit unsupported case.
 
 ### Async tasks and triggers
 
@@ -361,6 +412,13 @@ run <- async () -> Bytes:
 - [`task.zig`](runtime/src/task.zig) implements stackful tasks with `ucontext`
   stacks, per-worker deques, work stealing, a global injector queue, and
   awaiter wakeups.
+- [`lease.zig`](runtime/src/lease.zig) tracks exclusive leases. A task releases
+  its held leases when it suspends at `await`, reacquires them on resume, and
+  releases them permanently when its body returns.
+- Normal `sys` declarations lower as async constructor/body pairs and can be
+  called with normal parameters. Query/resource parameters are opaque i64
+  handles that may be forwarded; projection, iteration, and borrowing of those
+  handles are explicitly rejected.
 - Trigger declarations are callable with normal function-call syntax and return
   an awaitable task.
 - Trigger execution spawns all systems registered with `@trigger(...)`, waits
@@ -372,13 +430,55 @@ run <- async () -> Bytes:
   `?` propagates it as the implicit `Cancelled` error.
 - `detach` moves a task out of structured ownership and schedules it.
 
-Current async limits: `sys` query/resource parameters and parameterized systems
-are semantically checked but rejected by codegen; automatic lease
-release/reacquisition and task thread-affinity are not yet in the runtime; async
-function expressions are lowered only when bound at top level; trigger fields
-are not passed to systems; cancellation is fully observed for lazy/queued tasks
-but not yet for running tasks; and full structured-scope/drop tracking is not
-implemented.
+Current async limits: query/resource projection and iteration in `sys` bodies
+are rejected because synthetic query row layout is analyzer-private; query,
+resource, and normal params are not yet bound from trigger fields, so
+parameterized trigger systems remain unsupported; task thread affinity,
+task-local reference affinity, structured-scope/drop tracking, and running-task
+cancellation are not yet implemented; async function expressions are lowered
+only when bound at top level.
+
+### Engine scaffold
+
+[`engine/`](engine/README.md) contains the e7-side engine scaffold and the
+sample UI/ECS surface:
+
+- [`engine/main.e7`](engine/main.e7) — resources (`Window`, `Input`, `Time`,
+  `Gpu`), `@Components` component structs, an auto-collected `Components` table,
+  `Commands`, systems, plugins, and the frame loop.
+- [`engine/ui.e7`](engine/ui.e7) — the `Ui` plugin, trait dependencies and
+  required methods: `UIRenderable <- trait : UIElement` with
+  `render <- async (&self, &mut Gpu) -> !nil`, plus `res`/`select` sys
+  parameters, `@plugin`, and `Commands` resource insertion.
+- The front end parses `mod`, `plugin`, `@plugin`, `await query &mut Commands`,
+  `disown`, `select ... where has`, row literals, unit-struct shorthand,
+  `@Components`, table `...` auto-columns, and newline-separated sys
+  parameters.
+- [`engine/shaders/`](engine/shaders) — e7s shader sources and checked-in
+  SPIR-V for the cube/point-light pipeline; `shaders/build.sh` runs the e7s
+  transpiler and `slangc` to regenerate the runtime assets.
+
+The native runtime side is a real Vulkan forward renderer and demo:
+
+```sh
+zig build run-scene                 # interactive: WASD, Q/E, mouse look
+zig build run-scene -- --frames 120
+zig build run-scene -- --headless --capture /tmp/scene.ppm
+zig build shaders                   # e7s -> Slang -> SPIR-V (slangc or fallback)
+```
+
+[`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) deploys SPIR-V
+shader modules, a depth-tested raster pipeline, cube mesh, point light, and
+host-visible uniforms; [`runtime/src/scene_demo.zig`](runtime/src/scene_demo.zig)
+owns the temporary native frame loop. The native scene ABI is
+`e7_scene_create/destroy/resize/set_camera/draw/capture`; the e7 resource
+wrappers (`Gpu`, `ShaderDeploy`, `RasterPipeline`, `Mesh`,
+`gpu_deploy_raster_pipeline`, `gpu_deploy_compute_pipeline`) are the extension
+points for moving that loop into e7. The native demo is the executable proof
+of the pipeline while mutable query/resource system bodies are still a
+compiler-codegen gap.
+
+![engine scene](engine/scene-preview.png)
 
 ### Runtime
 
@@ -419,7 +519,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` currently runs 192 tests:
+`zig build test` runs the workspace test suite:
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
   minimization, two-view block recovery, dimension validation;
@@ -431,16 +531,27 @@ a minimal JIT usage example.
   structs/enums, module resolution/globs, trait bounds, move semantics,
   exhaustiveness/reachability, mutability, borrow conflicts/release/escape,
   source spans, vectors/matrices/maps/`str`, matrix indexing, built-in vector/
-  matrix arithmetic, custom operator traits, unsafe blocks, uninitialized
-  declarations, raw pointer arithmetic, aggregation, async/await/spawn/cancel/
-  trigger semantics, bytecode
+  matrix arithmetic and 2D indexing/row assignment, custom operator/Index
+  lowering, unsafe blocks, uninitialized declarations, raw pointer arithmetic,
+  aggregation, map/vector/string iteration and container methods, aggregate
+  references, async/await/spawn/cancel/trigger semantics, sys lowering, leases,
+  trait dependencies/required methods, plugin/query/disown/Commands DX, bytecode
   round-trip/verification/optimization, lowering, and end-to-end JIT execution;
+- transpiler: e7s lowering golden tests for functions, structs, vectors and
+  matrices, resources and bindings, vertex/fragment/compute entries, traits and
+  extensions, generics and bounds, modules (external and inline), constants,
+  enums, control flow, match, plus diagnostics for unsupported e7 features; the
+  examples are additionally validated end to end with slangc 2026.20
+  (`transpiler/tools/validate-examples.sh`);
 - runtime: sibling imports, LLJIT compilation/lookup/call, invalid IR, absolute
   host-symbol registration, bytecode-to-IR execution, async task execution,
   inline async functions, canceled tasks, triggers and trigger coalescing,
   struct/field assignment, enums and enum matches, vectors/matrices/dot/matrix
-  products, strings, maps (including string keys), unsafe raw pointers, and
-  uninitialized locals, filesystem sandbox
+  products, matrix 2D indexing/row assignment, strings, maps (including string
+  keys), map/vector/string iteration, container methods, aggregate references,
+  unsafe raw pointers, uninitialized locals, normal sys lowering, lease
+  release/reacquire, a Vulkan cube/point-light scene renderer (headless
+  capture and JIT scene ABI), filesystem sandbox
   escapes, STDIO file/line handling and JITed stderr writes, TCP/UDP loopback,
   HTTP request/response, SDL window lifecycle, Vulkan device probing, QUIC
   client/server handshake and stream exchange, WebRTC
@@ -450,10 +561,12 @@ a minimal JIT usage example.
 ## Next steps
 
 1. Add expression-level spans and multi-label diagnostics.
-2. Lower custom operator-trait impls into their method calls, add map iteration,
-   and complete enum generic/struct-variant lowering.
-3. Extend async codegen to `sys` query/resource bodies, automatic lease
-   release/reacquire, task-local reference affinity, and structured scopes.
+2. Add ECS/plugin/Commands runtime semantics and expose synthetic query/
+   resource layout metadata to codegen so `engine/main.e7` systems can run
+   directly; bind trigger fields to system parameters and complete
+   trait-method receiver lowering.
+3. Move the native scene loop into e7 (`gpu_*` wrappers), add task-local
+   reference affinity, structured scopes, and running-task cancellation.
 4. Feed runtime profile counters into iterative pipeline selection.
 5. Enforce visibility and add trait method signatures/bodies plus object-safe
    trait values.

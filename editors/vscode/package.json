@@ -1,0 +1,57 @@
+{
+  "name": "engine7",
+  "displayName": "engine7",
+  "description": "engine7 language support for .tri files: TextMate syntax highlighting and language configuration.",
+  "publisher": "engine7",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "engine7",
+    "tri",
+    "e7",
+    "syntax highlighting",
+    "textmate"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "engine7",
+        "aliases": [
+          "engine7"
+        ],
+        "extensions": [
+          ".tri",
+          ".e7",
+          ".engine7"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "engine7",
+        "scopeName": "source.engine7",
+        "path": "./syntaxes/engine7.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "engine7",
+        "path": "./snippets/engine7.json"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "bash test/run.sh",
+    "package": "npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o dist/engine7-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.0.0"
+  }
+}
