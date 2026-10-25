@@ -17,6 +17,7 @@ pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
 pub const vulkan = @import("ffi/vulkan.zig");
+pub const renderer = @import("ffi/renderer.zig");
 pub const filesystem = @import("ffi/fs.zig");
 pub const net = @import("ffi/net.zig");
 pub const http = @import("ffi/http.zig");

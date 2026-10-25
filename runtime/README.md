@@ -6,7 +6,9 @@ The runtime is the bridge between generated code and the host. It provides:
 - bytecode-to-IR translation for the compiler pipeline (`src/bytecode_ir.zig`);
 - a stable `e7_*` C ABI (`src/intrinsics.zig`) for windows, Vulkan, the
   filesystem, standard I/O, TCP/UDP, HTTP/HTTPS, QUIC, and WebRTC;
-- the host-side FFI implementations under `src/ffi/`.
+- the host-side FFI implementations under `src/ffi/`;
+- a basic Vulkan 3D scene renderer (`src/ffi/renderer.zig`) with HLSL-compatible
+  Slang shaders (`shaders/`) and a native demo (`src/scene_demo.zig`).
 
 ## Intrinsic ABI
 
@@ -74,7 +76,9 @@ entry:
 | `src/ffi/time.zig` | monotonic and wall clocks, sleep |
 | `src/ffi/sdl.zig` | single shared SDL3 + Vulkan `@cImport` |
 | `src/ffi/window.zig` | create/destroy/show/hide/title/size, event pump |
-| `src/ffi/vulkan.zig` | instance, device, swapchain, offscreen target, capture |
+| `src/ffi/vulkan.zig` | instance, device, swapchain, colour+depth offscreen target, capture, scene frame hooks |
+| `src/ffi/renderer.zig` | SPIR-V pipeline, cube buffers, camera/light uniforms, indexed draw, present/capture |
+| `src/scene_demo.zig` | native SDL3 + Vulkan demo executable (`zig build run-scene`) |
 | `src/ffi/fs.zig` | executable-directory sandbox |
 | `src/ffi/stdio.zig` | stdin/stdout/stderr byte and line I/O |
 | `src/ffi/net.zig` | host resolution, TCP listener/stream, UDP socket |
@@ -114,6 +118,62 @@ in-process path check it is subject to a TOCTOU race if an attacker can mutate
 the directory tree concurrently; do not run untrusted native code in the same
 process as data you cannot afford to expose.
 
+## 3D scene renderer and demo
+
+`src/ffi/renderer.zig` implements a small forward renderer on top of
+`vulkan.Surface`: a SPIR-V vertex/fragment graphics pipeline, a fixed
+position/normal/colour vertex format, an indexed unit cube, a host-visible
+uniform buffer (model/view/projection columns, camera position, point-light
+position/colour/intensity, ambient), a depth-tested colour+depth offscreen
+target, dynamic viewport/scissor, and RGBA8 readback. The `Surface` owns the
+render pass and depth image so its clear/present/capture paths and the scene
+renderer share one target; `beginScene`/`endScenePresent` and
+`beginSceneCapture`/`endSceneCapture` are the recording hooks.
+
+Shaders live in `shaders/` as HLSL-compatible Slang (`cube.vert.slang`,
+`cube.frag.slang`). `zig build shaders` (or `shaders/build.sh`) compiles them
+with `slangc` when installed, otherwise with `glslangValidator -D` or
+`glslc -x hlsl`, and falls back to the checked-in `.spv` files (verified for the
+SPIR-V magic number). Matrices are passed as explicit `float4` columns so the
+constant-buffer layout is identical across those front ends; see
+`shaders/README.md` for the 256-byte layout.
+
+The scene ABI is:
+
+| Function | Notes |
+| --- | --- |
+| `e7_scene_create(window, vert_spv, vert_len, frag_spv, frag_len) -> u64` | `0` on failure; window must have the Vulkan flag and outlive the scene |
+| `e7_scene_destroy(handle) -> i32` | destroys the scene and its Vulkan surface |
+| `e7_scene_resize(handle, width, height) -> i32` | `0`/negative sizes just sync to the current window size |
+| `e7_scene_set_camera(handle, eye_x, eye_y, eye_z, yaw, pitch) -> i32` | f32 values as IEEE-754 bit patterns in `i64` (`@bitCast` of the low 32 bits) |
+| `e7_scene_draw(handle, delta_s, cube_angle, light_x, light_y, light_z) -> i32` | same i64 float convention; renders and presents |
+| `e7_scene_capture(handle, out_ptr, out_len, out_w, out_h) -> i32` | malloc-owned RGBA8 pixels for headless checks; release with `e7_free` |
+
+The `i64`-bitcast convention exists because all JIT ABI values are `i64`. For
+example `1.0f` is `0x3F800000` = `1065353216`; helpers truncate to 32 bits, so
+zero-extended and sign-extended callers both work.
+
+A scene owns its own `vulkan.Surface` (instance through offscreen targets), so
+attach either a scene or a plain `e7_vk_attach` surface to a given window, not
+both. Destroy the scene before the window. `e7_scene_draw` presents a frame
+every call; `e7_scene_capture` is the readback path for tests/headless use.
+
+Run the demo from the workspace root (needs a display and a Vulkan device):
+
+```sh
+zig build run-scene                                  # interactive
+zig build run-scene -- --frames 120                  # auto-exit
+zig build run-scene -- --headless --capture scene.ppm # hidden window + PPM
+```
+
+Controls: WASD moves on the ground plane, Q/E moves down/up, Shift sprints,
+the mouse (relative mode) or arrow keys look around, Esc or the window close
+button exits. With no SDL video driver or Vulkan device the demo prints a skip
+message and exits successfully, so `zig build run-scene -- --headless` is safe
+as a smoke test on headless machines. On nested/remote Wayland sessions where a
+visible window never gets composited, force the X11 backend with
+`SDL_VIDEODRIVER=x11`; the headless capture mode does not need a shown window.
+
 ## Backend notes and limits
 
 - **SDL/Vulkan** work must be serialized per window/surface. Window creation and
@@ -124,8 +184,10 @@ process as data you cannot afford to expose.
 - `e7_vk_capture` renders a clear-colour frame to an offscreen colour image and
   copies it back as tightly packed RGBA8. It uses the swapchain format for the
   offscreen image, so the blit is format-identical; BGRA results are byte-swapped
-  on the CPU. The API currently exposes clear-colour rendering rather than a
-  pipeline/shader abstraction.
+  on the CPU. The offscreen render pass now also owns a depth attachment
+  (`D32_SFLOAT` when available), which the scene renderer uses; the plain
+  `e7_vk_present`/`e7_vk_capture` paths simply clear it. 3D drawing is exposed
+  through `e7_scene_*`, not through `e7_vk_present`.
 - **QUIC** supports one bidirectional stream per connection and one accepted
   connection per listener at a time. Both endpoints drive ngtcp2's timers in a
   blocking loop with short UDP receive timeouts. ALPN is mandatory. Certificates
@@ -149,7 +211,9 @@ process as data you cannot afford to expose.
 
 `build.zig` links `LLVM-23`, `SDL3`, `vulkan`, `curl`, `ssl`, `crypto`,
 `ngtcp2`, `ngtcp2_crypto_ossl`, and `datachannel`, plus the workspace
-`scheduler`/`compiler` modules and LAPACK/BLAS. The vendored Khronos headers in
+`scheduler`/`compiler` modules and LAPACK/BLAS. The `scene-demo` executable is
+lighter: it links only SDL3 and Vulkan and embeds the checked-in SPIR-V through
+the `shader_assets` module, so it does not need LLVM or the compiler. The vendored Khronos headers in
 `vendor/` are added as an include path. Adjust link names in `build.zig` if your
 distribution names the shared objects differently.
 
@@ -164,7 +228,11 @@ distribution names the shared objects differently.
 - SDL hidden-window creation and event delivery;
 - Vulkan probe (skipped when no physical device is visible) and, when a device
   is present, hidden-window present/capture;
+- scene renderer math/shader validation, plus a headless pipeline test that
+  renders a cube, checks lit pixels, and verifies spin/light/resize changes
+  (skipped without display/Vulkan);
 - QUIC client/server handshake and stream exchange;
 - WebRTC offer/answer and data-channel loopback;
 - ORC JIT tests that install the full manifest and call filesystem, STDIO,
-  TCP, UDP, HTTP, window, Vulkan, QUIC, and WebRTC intrinsics from generated IR.
+  TCP, UDP, HTTP, window, Vulkan, scene, QUIC, and WebRTC intrinsics from
+  generated IR.

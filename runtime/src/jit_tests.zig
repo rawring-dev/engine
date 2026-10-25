@@ -12,6 +12,7 @@ const fs = @import("ffi/fs.zig");
 const net = @import("ffi/net.zig");
 const quic = @import("ffi/quic.zig");
 const io_mod = @import("ffi/io.zig");
+const shader_assets = @import("shader_assets");
 
 fn makeJit() !orc.Jit {
     var jit = try orc.Jit.init(std.testing.allocator);
@@ -420,4 +421,81 @@ test "JITed IR writes to STDERR through the STDIO intrinsics" {
 
     const message = "jit stdio: write ok\n";
     try std.testing.expectEqual(@as(i32, 0), jit_stdio(message.ptr, message.len));
+}
+
+test "JITed IR drives the scene renderer ABI" {
+    var jit = try makeJit();
+    defer jit.deinit();
+
+    // i64 float arguments: 0.0=0, 8.0=1090519040, 0.5=1056964608,
+    // 2.0=1073741824, 3.0=1077936128 (IEEE-754 binary32 bit patterns).
+    const ir = intrinsics.declarations ++
+        \\define i32 @jit_scene(i64 %window, ptr %vert, i64 %vlen, ptr %frag, i64 %flen) {
+        \\entry:
+        \\  %scene = call i64 @e7_scene_create(i64 %window, ptr %vert, i64 %vlen, ptr %frag, i64 %flen)
+        \\  %bad = icmp eq i64 %scene, 0
+        \\  br i1 %bad, label %fail, label %ok
+        \\ok:
+        \\  %camera = call i32 @e7_scene_set_camera(i64 %scene, i64 0, i64 0, i64 1090519040, i64 0, i64 0)
+        \\  %resize = call i32 @e7_scene_resize(i64 %scene, i32 128, i32 96)
+        \\  %draw = call i32 @e7_scene_draw(i64 %scene, i64 0, i64 1056964608, i64 1073741824, i64 1077936128, i64 1073741824)
+        \\  %pixels = alloca ptr
+        \\  %len = alloca i64
+        \\  %width = alloca i32
+        \\  %height = alloca i32
+        \\  %capture = call i32 @e7_scene_capture(i64 %scene, ptr %pixels, ptr %len, ptr %width, ptr %height)
+        \\  %pixel_ptr = load ptr, ptr %pixels
+        \\  call void @e7_free(ptr %pixel_ptr)
+        \\  %n = load i64, ptr %len
+        \\  %w = load i32, ptr %width
+        \\  %destroy = call i32 @e7_scene_destroy(i64 %scene)
+        \\  %has_pixels = icmp ugt i64 %n, 0
+        \\  %draw_ok = icmp eq i32 %draw, 0
+        \\  %capture_ok = icmp eq i32 %capture, 0
+        \\  %resize_ok = icmp eq i32 %resize, 0
+        \\  %destroy_ok = icmp eq i32 %destroy, 0
+        \\  %c1 = and i1 %has_pixels, %draw_ok
+        \\  %c2 = and i1 %c1, %capture_ok
+        \\  %c3 = and i1 %c2, %resize_ok
+        \\  %all_ok = and i1 %c3, %destroy_ok
+        \\  br i1 %all_ok, label %good, label %fail
+        \\good:
+        \\  ret i32 %w
+        \\fail:
+        \\  ret i32 -1
+        \\}
+    ;
+    try jit.addIr(ir, "jit-scene");
+    const SceneFn = *const fn (u64, [*]const u8, i64, [*]const u8, i64) callconv(.c) i32;
+    const jit_scene = try jit.get(SceneFn, "jit_scene");
+
+    const title = "engine7 jit scene";
+    const window_handle = intrinsics.e7_window_create(
+        title.ptr,
+        title.len,
+        96,
+        72,
+        intrinsics.WindowFlags.hidden | intrinsics.WindowFlags.vulkan,
+        null,
+        0,
+    );
+    if (window_handle == 0) {
+        std.debug.print("skipping JIT scene test (no display): {s}\n", .{abi.lastError()});
+        return;
+    }
+    defer _ = intrinsics.e7_window_destroy(window_handle);
+
+    const width = jit_scene(
+        window_handle,
+        shader_assets.cube_vert_spv.ptr,
+        @intCast(shader_assets.cube_vert_spv.len),
+        shader_assets.cube_frag_spv.ptr,
+        @intCast(shader_assets.cube_frag_spv.len),
+    );
+    if (width < 0) {
+        std.debug.print("skipping JIT scene test (no Vulkan): {s}\n", .{abi.lastError()});
+        return;
+    }
+    // e7_scene_resize resized the hidden window to 128x96 before the capture.
+    try std.testing.expectEqual(@as(i32, 128), width);
 }

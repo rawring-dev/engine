@@ -18,15 +18,33 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("compiler");
-    const runtime = b.dependency("runtime", .{
+    const runtime_dep = b.dependency("runtime", .{
         .target = target,
         .optimize = optimize,
-    }).module("runtime");
+    });
+    const runtime = runtime_dep.module("runtime");
 
     const test_step = b.step("test", "Run scheduler, compiler, and runtime tests");
     addTests(b, test_step, "scheduler", scheduler);
     addTests(b, test_step, "compiler", compiler);
     addTests(b, test_step, "runtime", runtime);
+
+    // Shader assets for the native scene demo.  Sources live in
+    // runtime/shaders/*.slang; build.sh embeds/regenerates the checked-in
+    // SPIR-V so builds work without slangc installed.
+    const shaders_step = b.step("shaders", "Compile runtime/shaders/*.slang to SPIR-V");
+    const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("runtime/shaders/build.sh") });
+    shader_build.has_side_effects = true;
+    shaders_step.dependOn(&shader_build.step);
+
+    // Native Vulkan scene demo (`zig build run-scene [-- --frames N]`).  The
+    // demo executable is defined by runtime/build.zig.
+    const scene_demo = runtime_dep.artifact("scene-demo");
+    const run_scene = b.addRunArtifact(scene_demo);
+    if (b.args) |args| run_scene.addArgs(args);
+    run_scene.has_side_effects = true;
+    const run_scene_step = b.step("run-scene", "Build and run the Vulkan scene demo");
+    run_scene_step.dependOn(&run_scene.step);
 
     // Convenience step that compiles and runs every module root directly.
     const check_step = b.step("check", "Compile and test all workspace modules");

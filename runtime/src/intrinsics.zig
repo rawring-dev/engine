@@ -15,6 +15,7 @@ const abi = @import("ffi/abi.zig");
 const time = @import("ffi/time.zig");
 const window_mod = @import("ffi/window.zig");
 const vulkan = @import("ffi/vulkan.zig");
+const renderer = @import("ffi/renderer.zig");
 const fs = @import("ffi/fs.zig");
 const net = @import("ffi/net.zig");
 const http = @import("ffi/http.zig");
@@ -389,6 +390,121 @@ pub export fn e7_vk_destroy(handle: u64) callconv(.c) i32 {
     var surface = value;
     surface.deinit();
     return ok();
+}
+
+// --------------------------------------------------------------- scene -------
+
+// Scene ABI note on floats: all JIT ABI values are i64, so every f32 argument
+// is passed as its IEEE-754 binary32 bit pattern zero-extended into an i64.
+// Helpers below truncate to u32 before bit-casting, which also tolerates
+// signed extension by a caller that did `sext i32 -> i64`.
+//
+//   f32  1.0  -> 0x3F800000 -> 1065353216
+//   f32 -1.0  -> 0xBF800000 -> 3212836864 (or -1082130432 sign-extended)
+//
+// e7_scene_resize takes plain i32 pixels (0/negative means "sync to the
+// current window size").  e7_scene_capture returns malloc-owned RGBA8 pixels
+// released with e7_free.
+
+fn f32Bits(value: i64) f32 {
+    return @bitCast(@as(u32, @truncate(@as(u64, @bitCast(value)))));
+}
+
+fn scenePointsAt(handle: u64) ?*renderer.Scene {
+    return renderer.registry.get(handle);
+}
+
+pub export fn e7_scene_create(
+    window_handle: u64,
+    vert_ptr: ?[*]const u8,
+    vert_len: usize,
+    frag_ptr: ?[*]const u8,
+    frag_len: usize,
+) callconv(.c) u64 {
+    begin();
+    const window = window_mod.registry.get(window_handle) orelse {
+        _ = fail(error.InvalidHandle);
+        return 0;
+    };
+    const vert_spv = input(vert_ptr, vert_len) orelse return 0;
+    const frag_spv = input(frag_ptr, frag_len) orelse return 0;
+    const scene = renderer.Scene.init(std.heap.c_allocator, window, vert_spv, frag_spv) catch |err| {
+        _ = fail(err);
+        return 0;
+    };
+    return renderer.registry.create(scene) catch |err| {
+        var owned = scene;
+        owned.deinit();
+        _ = fail(err);
+        return 0;
+    };
+}
+
+pub export fn e7_scene_destroy(handle: u64) callconv(.c) i32 {
+    begin();
+    const value = renderer.registry.remove(handle) orelse return fail(error.InvalidHandle);
+    var scene = value;
+    scene.deinit();
+    return ok();
+}
+
+pub export fn e7_scene_resize(handle: u64, width: i32, height: i32) callconv(.c) i32 {
+    begin();
+    const scene = scenePointsAt(handle) orelse return fail(error.InvalidHandle);
+    scene.resize(width, height) catch |err| return fail(err);
+    return ok();
+}
+
+pub export fn e7_scene_set_camera(
+    handle: u64,
+    eye_x_bits: i64,
+    eye_y_bits: i64,
+    eye_z_bits: i64,
+    yaw_bits: i64,
+    pitch_bits: i64,
+) callconv(.c) i32 {
+    begin();
+    const scene = scenePointsAt(handle) orelse return fail(error.InvalidHandle);
+    scene.setCamera(
+        .{ f32Bits(eye_x_bits), f32Bits(eye_y_bits), f32Bits(eye_z_bits) },
+        f32Bits(yaw_bits),
+        f32Bits(pitch_bits),
+    );
+    return ok();
+}
+
+pub export fn e7_scene_draw(
+    handle: u64,
+    delta_seconds_bits: i64,
+    cube_angle_bits: i64,
+    light_x_bits: i64,
+    light_y_bits: i64,
+    light_z_bits: i64,
+) callconv(.c) i32 {
+    begin();
+    const scene = scenePointsAt(handle) orelse return fail(error.InvalidHandle);
+    scene.draw(
+        f32Bits(delta_seconds_bits),
+        f32Bits(cube_angle_bits),
+        .{ f32Bits(light_x_bits), f32Bits(light_y_bits), f32Bits(light_z_bits) },
+    ) catch |err| return fail(err);
+    return ok();
+}
+
+pub export fn e7_scene_capture(
+    handle: u64,
+    out_ptr: ?*?[*]u8,
+    out_len: ?*usize,
+    out_width: ?*u32,
+    out_height: ?*u32,
+) callconv(.c) i32 {
+    begin();
+    const scene = scenePointsAt(handle) orelse return fail(error.InvalidHandle);
+    const pixels = scene.captureFrame(scene.spin, scene.light_position) catch |err| return fail(err);
+    const size = scene.size();
+    if (out_width) |w| w.* = size.width;
+    if (out_height) |h| h.* = size.height;
+    return transfer(pixels, out_ptr, out_len);
 }
 
 // ------------------------------------------------------------------- fs ------
@@ -969,7 +1085,7 @@ pub export fn e7_rtc_close(peer_handle: u64) callconv(.c) i32 {
 
 // ------------------------------------------------------------- manifest ------
 
-var symbol_table: [74]Symbol = undefined;
+var symbol_table: [80]Symbol = undefined;
 var symbol_state = std.atomic.Value(u8).init(0);
 
 pub fn symbols() []const Symbol {
@@ -1004,6 +1120,12 @@ pub fn symbols() []const Symbol {
             .{ .name = "e7_vk_size", .address = @intFromPtr(&e7_vk_size) },
             .{ .name = "e7_vk_format", .address = @intFromPtr(&e7_vk_format) },
             .{ .name = "e7_vk_destroy", .address = @intFromPtr(&e7_vk_destroy) },
+            .{ .name = "e7_scene_create", .address = @intFromPtr(&e7_scene_create) },
+            .{ .name = "e7_scene_destroy", .address = @intFromPtr(&e7_scene_destroy) },
+            .{ .name = "e7_scene_resize", .address = @intFromPtr(&e7_scene_resize) },
+            .{ .name = "e7_scene_set_camera", .address = @intFromPtr(&e7_scene_set_camera) },
+            .{ .name = "e7_scene_draw", .address = @intFromPtr(&e7_scene_draw) },
+            .{ .name = "e7_scene_capture", .address = @intFromPtr(&e7_scene_capture) },
             .{ .name = "e7_fs_root", .address = @intFromPtr(&e7_fs_root) },
             .{ .name = "e7_fs_read", .address = @intFromPtr(&e7_fs_read) },
             .{ .name = "e7_fs_write", .address = @intFromPtr(&e7_fs_write) },
@@ -1089,6 +1211,12 @@ pub const declarations =
     \\declare i32 @e7_vk_size(i64, ptr, ptr)
     \\declare i32 @e7_vk_format(i64, ptr, ptr)
     \\declare i32 @e7_vk_destroy(i64)
+    \\declare i64 @e7_scene_create(i64, ptr, i64, ptr, i64)
+    \\declare i32 @e7_scene_destroy(i64)
+    \\declare i32 @e7_scene_resize(i64, i32, i32)
+    \\declare i32 @e7_scene_set_camera(i64, i64, i64, i64, i64, i64)
+    \\declare i32 @e7_scene_draw(i64, i64, i64, i64, i64, i64)
+    \\declare i32 @e7_scene_capture(i64, ptr, ptr, ptr, ptr)
     \\declare i32 @e7_fs_root(ptr, ptr)
     \\declare i32 @e7_fs_read(ptr, i64, ptr, ptr)
     \\declare i32 @e7_fs_write(ptr, i64, ptr, i64, i32)

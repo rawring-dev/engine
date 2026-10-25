@@ -110,6 +110,14 @@ pub const Surface = struct {
     framebuffer: ?c.VkFramebuffer = null,
     render_pass: ?c.VkRenderPass = null,
 
+    // Depth target for 3D scene rendering.  The offscreen render pass always
+    // carries a depth attachment so the surface's own clear/blit paths and the
+    // scene renderer share one framebuffer and one render pass.
+    depth_format: c.VkFormat = c.VK_FORMAT_UNDEFINED,
+    depth_image: ?c.VkImage = null,
+    depth_memory: ?c.VkDeviceMemory = null,
+    depth_view: ?c.VkImageView = null,
+
     readback_buffer: ?c.VkBuffer = null,
     readback_memory: ?c.VkDeviceMemory = null,
     readback_mapped: ?[*]u8 = null,
@@ -375,41 +383,83 @@ pub const Surface = struct {
         try self.createOffscreen();
     }
 
+    /// Pick a depth format supported as an optimal-tiling attachment.  D32 is
+    /// preferred; the packed depth/stencil variants cover drivers without it.
+    fn chooseDepthFormat(self: *Surface) c.VkFormat {
+        const candidates = [_]c.VkFormat{
+            c.VK_FORMAT_D32_SFLOAT,
+            c.VK_FORMAT_D32_SFLOAT_S8_UINT,
+            c.VK_FORMAT_D24_UNORM_S8_UINT,
+            c.VK_FORMAT_D16_UNORM,
+        };
+        for (candidates) |format| {
+            var props = std.mem.zeroes(c.VkFormatProperties);
+            c.vkGetPhysicalDeviceFormatProperties(self.physical.?, format, &props);
+            if (props.optimalTilingFeatures & c.VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT != 0) {
+                return format;
+            }
+        }
+        return c.VK_FORMAT_D32_SFLOAT;
+    }
+
     fn createOffscreen(self: *Surface) Error!void {
         const device = self.device.?;
         const extent = self.extent;
+        const depth_format = self.chooseDepthFormat();
+        self.depth_format = depth_format;
 
-        var render_pass_info = std.mem.zeroes(c.VkRenderPassCreateInfo);
-        var attachment = std.mem.zeroes(c.VkAttachmentDescription);
-        attachment.format = self.format;
-        attachment.samples = c.VK_SAMPLE_COUNT_1_BIT;
-        attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
-        attachment.stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        attachment.stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachment.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-        attachment.finalLayout = c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        // The colour attachment finishes in TRANSFER_SRC_OPTIMAL so `capture`
+        // can copy it and `present`/scene blits can read it.  Depth is cleared
+        // every frame and does not need to persist.
+        var attachments = [_]c.VkAttachmentDescription{
+            std.mem.zeroes(c.VkAttachmentDescription),
+            std.mem.zeroes(c.VkAttachmentDescription),
+        };
+        attachments[0].format = self.format;
+        attachments[0].samples = c.VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout = c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        attachments[1].format = depth_format;
+        attachments[1].samples = c.VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp = c.VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         var color_ref = std.mem.zeroes(c.VkAttachmentReference);
         color_ref.attachment = 0;
         color_ref.layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        var depth_ref = std.mem.zeroes(c.VkAttachmentReference);
+        depth_ref.attachment = 1;
+        depth_ref.layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         var subpass = std.mem.zeroes(c.VkSubpassDescription);
         subpass.pipelineBindPoint = c.VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &color_ref;
+        subpass.pDepthStencilAttachment = &depth_ref;
 
+        const fragment_stage: c.VkPipelineStageFlags =
+            c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
         var dependency = std.mem.zeroes(c.VkSubpassDependency);
         dependency.srcSubpass = c.VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
-        dependency.srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | fragment_stage;
+        dependency.dstStageMask = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | fragment_stage;
         dependency.srcAccessMask = 0;
-        dependency.dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask = c.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+            c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
+        var render_pass_info = std.mem.zeroes(c.VkRenderPassCreateInfo);
         render_pass_info.sType = c.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        render_pass_info.attachmentCount = 1;
-        render_pass_info.pAttachments = &attachment;
+        render_pass_info.attachmentCount = attachments.len;
+        render_pass_info.pAttachments = &attachments;
         render_pass_info.subpassCount = 1;
         render_pass_info.pSubpasses = &subpass;
         render_pass_info.dependencyCount = 1;
@@ -464,11 +514,54 @@ pub const Surface = struct {
         if (c.vkCreateImageView(device, &view_info, null, &view) != c.VK_SUCCESS) return error.VulkanFailed;
         self.offscreen_view = view;
 
+        // Depth image + view.  Scene renderers may reuse this target; the
+        // surface's own clear path simply clears it alongside colour.
+        var depth_info = std.mem.zeroes(c.VkImageCreateInfo);
+        depth_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        depth_info.imageType = c.VK_IMAGE_TYPE_2D;
+        depth_info.format = depth_format;
+        depth_info.extent = .{ .width = extent.width, .height = extent.height, .depth = 1 };
+        depth_info.mipLevels = 1;
+        depth_info.arrayLayers = 1;
+        depth_info.samples = c.VK_SAMPLE_COUNT_1_BIT;
+        depth_info.tiling = c.VK_IMAGE_TILING_OPTIMAL;
+        depth_info.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        depth_info.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+        depth_info.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+
+        var depth_image: c.VkImage = undefined;
+        if (c.vkCreateImage(device, &depth_info, null, &depth_image) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.depth_image = depth_image;
+
+        c.vkGetImageMemoryRequirements(device, depth_image, &requirements);
+        const depth_memory_type = try self.memoryType(requirements.memoryTypeBits, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, null);
+        alloc_info.allocationSize = requirements.size;
+        alloc_info.memoryTypeIndex = depth_memory_type;
+        var depth_memory: c.VkDeviceMemory = undefined;
+        if (c.vkAllocateMemory(device, &alloc_info, null, &depth_memory) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.depth_memory = depth_memory;
+        if (c.vkBindImageMemory(device, depth_image, depth_memory, 0) != c.VK_SUCCESS) return error.VulkanFailed;
+
+        var depth_view_info = std.mem.zeroes(c.VkImageViewCreateInfo);
+        depth_view_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        depth_view_info.image = depth_image;
+        depth_view_info.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
+        depth_view_info.format = depth_format;
+        depth_view_info.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+        depth_view_info.subresourceRange.baseMipLevel = 0;
+        depth_view_info.subresourceRange.levelCount = 1;
+        depth_view_info.subresourceRange.baseArrayLayer = 0;
+        depth_view_info.subresourceRange.layerCount = 1;
+        var depth_view: c.VkImageView = undefined;
+        if (c.vkCreateImageView(device, &depth_view_info, null, &depth_view) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.depth_view = depth_view;
+
+        var fb_attachments = [_]c.VkImageView{ view, depth_view };
         var framebuffer_info = std.mem.zeroes(c.VkFramebufferCreateInfo);
         framebuffer_info.sType = c.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebuffer_info.renderPass = render_pass;
-        framebuffer_info.attachmentCount = 1;
-        framebuffer_info.pAttachments = &view;
+        framebuffer_info.attachmentCount = fb_attachments.len;
+        framebuffer_info.pAttachments = &fb_attachments;
         framebuffer_info.width = extent.width;
         framebuffer_info.height = extent.height;
         framebuffer_info.layers = 1;
@@ -513,6 +606,9 @@ pub const Surface = struct {
         }
         if (self.readback_buffer) |v| c.vkDestroyBuffer(device, v, null);
         if (self.framebuffer) |v| c.vkDestroyFramebuffer(device, v, null);
+        if (self.depth_view) |v| c.vkDestroyImageView(device, v, null);
+        if (self.depth_image) |v| c.vkDestroyImage(device, v, null);
+        if (self.depth_memory) |v| c.vkFreeMemory(device, v, null);
         if (self.offscreen_view) |v| c.vkDestroyImageView(device, v, null);
         if (self.offscreen_image) |v| c.vkDestroyImage(device, v, null);
         if (self.offscreen_memory) |v| c.vkFreeMemory(device, v, null);
@@ -520,6 +616,9 @@ pub const Surface = struct {
         self.readback_memory = null;
         self.readback_buffer = null;
         self.framebuffer = null;
+        self.depth_view = null;
+        self.depth_image = null;
+        self.depth_memory = null;
         self.offscreen_view = null;
         self.offscreen_image = null;
         self.offscreen_memory = null;
@@ -565,7 +664,8 @@ pub const Surface = struct {
         self.render_semaphore = render;
     }
 
-    fn memoryType(self: *Surface, bits: u32, properties: c.VkMemoryPropertyFlags, preferred: ?u32) Error!u32 {
+    /// Find a memory type index satisfying `bits` and `properties`.
+    pub fn memoryType(self: *Surface, bits: u32, properties: c.VkMemoryPropertyFlags, preferred: ?u32) Error!u32 {
         var props = std.mem.zeroes(c.VkPhysicalDeviceMemoryProperties);
         c.vkGetPhysicalDeviceMemoryProperties(self.physical.?, &props);
         if (preferred) |index| {
@@ -586,7 +686,11 @@ pub const Surface = struct {
         return error.VulkanFailed;
     }
 
-    fn ensureSize(self: *Surface) Error!void {
+    /// Recreate the swapchain and offscreen targets (including depth) when the
+    /// window's pixel size changed.  Renderers recording into the offscreen
+    /// target should call this once per frame before recording; `acquireFrame`
+    /// and `capture` already do it.
+    pub fn ensureSize(self: *Surface) Error!void {
         const pixel_size = self.window.pixelSize() catch return error.InvalidExtent;
         const width: u32 = @intCast(pixel_size.width);
         const height: u32 = @intCast(pixel_size.height);
@@ -595,7 +699,9 @@ pub const Surface = struct {
         }
     }
 
-    fn beginFrame(self: *Surface, clear: [4]f32) Error!c.VkCommandBuffer {
+    /// Wait for the previous frame, reset the command buffer, and begin
+    /// recording.  The caller owns recording until it ends the command buffer.
+    fn resetFrame(self: *Surface) Error!c.VkCommandBuffer {
         const device = self.device.?;
         const cmd = self.command_buffer.?;
         const fence = self.fence.?;
@@ -608,9 +714,18 @@ pub const Surface = struct {
         begin.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (c.vkBeginCommandBuffer(cmd, &begin) != c.VK_SUCCESS) return error.VulkanFailed;
+        return cmd;
+    }
 
-        var clear_value = std.mem.zeroes(c.VkClearValue);
-        clear_value.color.float32 = clear;
+    /// Record the offscreen render pass begin (colour + depth clears) without
+    /// ending the pass.  Drawing commands are recorded after this returns.
+    fn recordClearPass(self: *Surface, cmd: c.VkCommandBuffer, clear_color: [4]f32, clear_depth: f32) void {
+        var clear_values: [2]c.VkClearValue = undefined;
+        clear_values[0] = std.mem.zeroes(c.VkClearValue);
+        clear_values[0].color.float32 = clear_color;
+        clear_values[1] = std.mem.zeroes(c.VkClearValue);
+        clear_values[1].depthStencil.depth = clear_depth;
+        clear_values[1].depthStencil.stencil = 0;
 
         var render_area = std.mem.zeroes(c.VkRect2D);
         render_area.extent = self.extent;
@@ -619,23 +734,68 @@ pub const Surface = struct {
         pass_begin.renderPass = self.render_pass.?;
         pass_begin.framebuffer = self.framebuffer.?;
         pass_begin.renderArea = render_area;
-        pass_begin.clearValueCount = 1;
-        pass_begin.pClearValues = &clear_value;
+        pass_begin.clearValueCount = clear_values.len;
+        pass_begin.pClearValues = &clear_values;
         c.vkCmdBeginRenderPass(cmd, &pass_begin, c.VK_SUBPASS_CONTENTS_INLINE);
+    }
+
+    fn beginFrame(self: *Surface, clear: [4]f32) Error!c.VkCommandBuffer {
+        const cmd = try self.resetFrame();
+        self.recordClearPass(cmd, clear, 1.0);
         c.vkCmdEndRenderPass(cmd);
         return cmd;
     }
 
     fn submitAndWait(self: *Surface) Error!void {
+        try self.submitWait(self.command_buffer.?);
+    }
+
+    fn submitWait(self: *Surface, cmd: c.VkCommandBuffer) Error!void {
         const device = self.device.?;
         var submit = std.mem.zeroes(c.VkSubmitInfo);
         submit.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &self.command_buffer.?;
+        submit.pCommandBuffers = &cmd;
         if (c.vkQueueSubmit(self.queue.?, 1, &submit, self.fence.?) != c.VK_SUCCESS) {
             return error.VulkanFailed;
         }
         _ = c.vkWaitForFences(device, 1, &self.fence.?, c.VK_TRUE, std.math.maxInt(u64));
+    }
+
+    /// Record a full offscreen-to-readback copy.  The offscreen colour image is
+    /// in TRANSFER_SRC_OPTIMAL after the render pass.
+    fn recordCopyToReadback(self: *Surface, cmd: c.VkCommandBuffer) void {
+        var copy = std.mem.zeroes(c.VkBufferImageCopy);
+        copy.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = .{ .width = self.extent.width, .height = self.extent.height, .depth = 1 };
+        c.vkCmdCopyImageToBuffer(
+            cmd,
+            self.offscreen_image.?,
+            c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            self.readback_buffer.?,
+            1,
+            &copy,
+        );
+    }
+
+    /// Copy the mapped readback buffer out as tightly packed RGBA8.
+    fn readBack(self: *Surface) Error![]u8 {
+        const bytes = @as(usize, self.extent.width) * self.extent.height * 4;
+        const source = self.readback_mapped.?;
+        const out = self.allocator.alloc(u8, bytes) catch return error.OutOfMemory;
+        if (self.bgra) {
+            var i: usize = 0;
+            while (i + 3 < bytes) : (i += 4) {
+                out[i] = source[i + 2];
+                out[i + 1] = source[i + 1];
+                out[i + 2] = source[i];
+                out[i + 3] = source[i + 3];
+            }
+        } else {
+            @memcpy(out, source[0..bytes]);
+        }
+        return out;
     }
 
     fn barrierToTransferDst(cmd: c.VkCommandBuffer, image: c.VkImage) void {
@@ -716,11 +876,12 @@ pub const Surface = struct {
         barrierToPresent(cmd, image);
     }
 
-    /// Render `clear` and present it to the window.  Handles window resizes.
-    pub fn present(self: *Surface, clear: [4]f32) Error!void {
+    /// Acquire the next swapchain image, recreating the swapchain once if it is
+    /// out of date.  Callers must have configured the surface's offscreen
+    /// targets (via `ensureSize`) before recording a frame for this image.
+    pub fn acquireFrame(self: *Surface) Error!u32 {
         try self.ensureSize();
         const device = self.device.?;
-        const queue = self.queue.?;
 
         var index: u32 = 0;
         var result = c.vkAcquireNextImageKHR(
@@ -746,10 +907,62 @@ pub const Surface = struct {
             abi.setErrorFmt("vkAcquireNextImageKHR: {d}", .{result});
             return error.VulkanFailed;
         }
+        return index;
+    }
 
+    /// Begin recording a scene frame into the offscreen colour/depth target
+    /// without acquiring a swapchain image.  Used for headless capture.
+    pub fn beginSceneCapture(self: *Surface, clear_color: [4]f32, clear_depth: f32) Error!c.VkCommandBuffer {
+        try self.ensureSize();
+        const cmd = try self.resetFrame();
+        self.recordClearPass(cmd, clear_color, clear_depth);
+        return cmd;
+    }
+
+    /// Finish a `beginSceneCapture` frame, copy the colour target back as
+    /// tightly packed RGBA8, and return the host-owned pixels.
+    pub fn endSceneCapture(self: *Surface) Error![]u8 {
+        const cmd = self.command_buffer.?;
+        c.vkCmdEndRenderPass(cmd);
+        self.recordCopyToReadback(cmd);
+        if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) return error.VulkanFailed;
+        try self.submitAndWait();
+        return self.readBack();
+    }
+
+    /// Begin recording a scene frame that will be presented.  The caller must
+    /// acquire the swapchain image first with `acquireFrame`; after drawing it
+    /// calls `endScenePresent`, which blits the offscreen colour target to the
+    /// acquired image and presents it.
+    pub fn beginScene(self: *Surface, clear_color: [4]f32, clear_depth: f32) Error!c.VkCommandBuffer {
+        const cmd = try self.resetFrame();
+        self.recordClearPass(cmd, clear_color, clear_depth);
+        return cmd;
+    }
+
+    /// Close the render pass, blit the offscreen colour target to the acquired
+    /// swapchain image, and present.  Handles out-of-date swapchains by
+    /// dropping the frame after recreating them.
+    pub fn endScenePresent(self: *Surface, index: u32) Error!void {
+        const cmd = self.command_buffer.?;
+        c.vkCmdEndRenderPass(cmd);
+        self.blitToSwapchain(cmd, self.swapchain_images[index]);
+        if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) return error.VulkanFailed;
+        try self.submitAndPresent(cmd, index);
+    }
+
+    /// Render `clear` and present it to the window.  Handles window resizes.
+    pub fn present(self: *Surface, clear: [4]f32) Error!void {
+        const index = try self.acquireFrame();
         const cmd = try self.beginFrame(clear);
         self.blitToSwapchain(cmd, self.swapchain_images[index]);
         if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) return error.VulkanFailed;
+        try self.submitAndPresent(cmd, index);
+    }
+
+    fn submitAndPresent(self: *Surface, cmd: c.VkCommandBuffer, index: u32) Error!void {
+        const device = self.device.?;
+        const queue = self.queue.?;
 
         // The first commands touching the acquired image are the transfer
         // barrier and blit, so wait at the transfer stage.
@@ -760,7 +973,7 @@ pub const Surface = struct {
         submit.pWaitSemaphores = &self.acquire_semaphore.?;
         submit.pWaitDstStageMask = &wait_stage;
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &self.command_buffer.?;
+        submit.pCommandBuffers = &cmd;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &self.render_semaphore.?;
         if (c.vkQueueSubmit(queue, 1, &submit, self.fence.?) != c.VK_SUCCESS) {
@@ -775,7 +988,7 @@ pub const Surface = struct {
         present_info.swapchainCount = 1;
         present_info.pSwapchains = &self.swapchain.?;
         present_info.pImageIndices = &index;
-        result = c.vkQueuePresentKHR(queue, &present_info);
+        const result = c.vkQueuePresentKHR(queue, &present_info);
         if (result == c.VK_ERROR_OUT_OF_DATE_KHR or result == c.VK_SUBOPTIMAL_KHR) {
             try self.recreateSwapchain();
         } else if (result != c.VK_SUCCESS) {
@@ -787,39 +1000,11 @@ pub const Surface = struct {
     /// Render the offscreen target and copy it back as RGBA8.  The caller owns
     /// the returned slice and should release it with the same allocator.
     pub fn capture(self: *Surface, clear: [4]f32) Error![]u8 {
-        try self.ensureSize();
         const cmd = try self.beginFrame(clear);
-
-        var copy = std.mem.zeroes(c.VkBufferImageCopy);
-        copy.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = .{ .width = self.extent.width, .height = self.extent.height, .depth = 1 };
-        c.vkCmdCopyImageToBuffer(
-            cmd,
-            self.offscreen_image.?,
-            c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            self.readback_buffer.?,
-            1,
-            &copy,
-        );
+        self.recordCopyToReadback(cmd);
         if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) return error.VulkanFailed;
         try self.submitAndWait();
-
-        const bytes = @as(usize, self.extent.width) * self.extent.height * 4;
-        const source = self.readback_mapped.?;
-        const out = self.allocator.alloc(u8, bytes) catch return error.OutOfMemory;
-        if (self.bgra) {
-            var i: usize = 0;
-            while (i + 3 < bytes) : (i += 4) {
-                out[i] = source[i + 2];
-                out[i + 1] = source[i + 1];
-                out[i + 2] = source[i];
-                out[i + 3] = source[i + 3];
-            }
-        } else {
-            @memcpy(out, source[0..bytes]);
-        }
-        return out;
+        return self.readBack();
     }
 
     pub fn size(self: *const Surface) struct { width: u32, height: u32 } {
