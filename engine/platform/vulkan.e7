@@ -1460,7 +1460,29 @@ vulkan_vertex_buffer_destroy <- (device: i64, buffer: i64, memory: i64) -> nil:
     free_memory := bind_vk("vkFreeMemory")
     e7_ffi_call3(free_memory, device, memory, 0)
 
-vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u64, fragment_shader: u64, out_pipeline: u64, out_layout: u64) -> i64:
+vulkan_ubo_set_layout <- (device: i64, out_set_layout: u64) -> i64:
+    binding := e7_alloc_bytes(24)
+    e7_store_u32(binding, 0)
+    e7_store_u32(binding + 4, 6)
+    e7_store_u32(binding + 8, 1)
+    e7_store_u32(binding + 12, 1)
+    info := e7_alloc_bytes(32)
+    e7_store_u32(info, 32)
+    e7_store_u32(info + 20, 1)
+    e7_store_u64(info + 24, binding)
+    create := bind_vk("vkCreateDescriptorSetLayout")
+    e7_ffi_call4(create, device, info, 0, out_set_layout)
+    e7_free_ptr(binding)
+    e7_free_ptr(info)
+    if e7_load_u64(out_set_layout) == 0:
+        ret 0
+    ret 1
+
+vulkan_descriptor_set_layout_destroy <- (device: i64, layout: i64) -> nil:
+    destroy := bind_vk("vkDestroyDescriptorSetLayout")
+    e7_ffi_call3(destroy, device, layout, 0)
+
+vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u64, fragment_shader: u64, set_layout: i64, out_pipeline: u64, out_layout: u64) -> i64:
     vert_info := e7_alloc_bytes(40)
     e7_store_u32(vert_info, 16)
     e7_store_u64(vert_info + 24, e7_str_len(vertex_shader))
@@ -1478,8 +1500,14 @@ vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u6
     frag_module := e7_load_u64(frag_out)
     if vert_module == 0 or frag_module == 0:
         ret 0
+    layouts := e7_alloc_bytes(8)
+    if set_layout != 0:
+        e7_store_u64(layouts, set_layout)
     layout_info := e7_alloc_bytes(48)
     e7_store_u32(layout_info, 30)
+    if set_layout != 0:
+        e7_store_u32(layout_info + 20, 1)
+        e7_store_u64(layout_info + 24, layouts)
     create_layout := bind_vk("vkCreatePipelineLayout")
     e7_ffi_call4(create_layout, device, layout_info, 0, out_layout)
     pipeline_layout := e7_load_u64(out_layout)
@@ -1562,6 +1590,7 @@ vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u6
     e7_free_ptr(vert_out)
     e7_free_ptr(frag_info)
     e7_free_ptr(frag_out)
+    e7_free_ptr(layouts)
     e7_free_ptr(layout_info)
     e7_free_ptr(entry)
     e7_free_ptr(stages)

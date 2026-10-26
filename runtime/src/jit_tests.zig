@@ -1228,7 +1228,7 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                mesh_ok := 0
         \\                if mesh_vert_handle != 0:
         \\                    if mesh_frag_handle != 0:
-        \\                        mesh_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, mesh_vert_handle, mesh_frag_handle, mesh_pipeline_out, mesh_layout_out)
+        \\                        mesh_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, mesh_vert_handle, mesh_frag_handle, 0, mesh_pipeline_out, mesh_layout_out)
         \\                mesh_green := 0
         \\                if mesh_ok != 0:
         \\                    if vertex_ok != 0:
@@ -1252,8 +1252,31 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                e7_free_ptr(vertex_buffer_out)
         \\                e7_free_ptr(vertex_memory_out)
         \\                e7_free_ptr(vertex_mapped_out)
+        \\                ubo_layout_out := e7_alloc_bytes(8)
+        \\                ubo_layout_ok := vulkan_ubo_set_layout(device, ubo_layout_out)
+        \\                ubo_vert := e7_engine_read_shader("engine/platform/shaders/mesh.vert.spv")
+        \\                ubo_frag := e7_engine_read_shader("engine/platform/shaders/mesh.frag.spv")
+        \\                ubo_vert_handle := e7_handle(ubo_vert)
+        \\                ubo_frag_handle := e7_handle(ubo_frag)
+        \\                ubo_pipeline_out := e7_alloc_bytes(8)
+        \\                ubo_pipeline_layout_out := e7_alloc_bytes(8)
+        \\                ubo_pipeline_ok := 0
+        \\                if ubo_vert_handle != 0:
+        \\                    if ubo_frag_handle != 0:
+        \\                        ubo_pipeline_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, ubo_vert_handle, ubo_frag_handle, e7_load_u64(ubo_layout_out), ubo_pipeline_out, ubo_pipeline_layout_out)
+        \\                if ubo_pipeline_ok != 0:
+        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(ubo_pipeline_out), e7_load_u64(ubo_pipeline_layout_out))
+        \\                e7_free_ptr(ubo_vert_handle)
+        \\                e7_free_ptr(ubo_frag_handle)
+        \\                e7_free_ptr(ubo_pipeline_out)
+        \\                e7_free_ptr(ubo_pipeline_layout_out)
+        \\                if ubo_layout_ok != 0:
+        \\                    vulkan_descriptor_set_layout_destroy(device, e7_load_u64(ubo_layout_out))
+        \\                e7_free_ptr(ubo_layout_out)
         \\                if mesh_ok == 0:
         \\                    result = -18
+        \\                if ubo_pipeline_ok == 0:
+        \\                    result = -22
         \\                else:
         \\                    if mesh_green != 255:
         \\                        result = -21

@@ -99,7 +99,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   vertex shader's green.  Runtime: **136/136** with lavapipe.  The earlier
   crash was caused by stale/incorrect cleanup and the UBO descriptor path; the
   empty-layout mesh path is stable.
-- Remaining: UBO/descriptor mesh path, full engine renderer/scene API,
+- **5d (done):** added a standalone UBO descriptor-set layout and made the
+  vertex-input pipeline accept an optional set layout.  The UBO mesh pipeline
+  now creates successfully with lavapipe; the earlier crash was caused by
+  cleanup code inserted into the wrong e7 function, not by the pipeline state.
+  The verified vertex-buffer draw remains green. Runtime: **136/136**.
+- Remaining: descriptor-bound UBO draw, full engine renderer/scene API,
   image/text, and deletion of the Zig layer.
 
 ## Migration stages
