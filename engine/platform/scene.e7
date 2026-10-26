@@ -373,3 +373,31 @@ scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, r_mill
     e7_store_f32(ubo + 260, 1.0)
     e7_store_f32(ubo + 264, 1.0)
     e7_store_f32(ubo + 268, 1.0)
+
+# Engine cube model: RY(angle) * RX(0.35), written to the model slot.
+scene_set_cube_angle <- (scene: u64, angle_milli_radians: i64) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    angle := e7_f32_div(e7_f32_from_i64(angle_milli_radians), 1000.0)
+    cy := e7_f32_cos(angle)
+    sy := e7_f32_sin(angle)
+    tilt := 0.35
+    cx := e7_f32_cos(tilt)
+    sx := e7_f32_sin(tilt)
+    e7_store_f32(ubo, cy)
+    e7_store_f32(ubo + 4, 0.0)
+    e7_store_f32(ubo + 8, e7_f32_neg(sy))
+    e7_store_f32(ubo + 12, 0.0)
+    e7_store_f32(ubo + 16, e7_f32_mul(sx, sy))
+    e7_store_f32(ubo + 20, cx)
+    e7_store_f32(ubo + 24, e7_f32_mul(sx, cy))
+    e7_store_f32(ubo + 28, 0.0)
+    e7_store_f32(ubo + 32, e7_f32_mul(cx, sy))
+    e7_store_f32(ubo + 36, e7_f32_neg(sx))
+    e7_store_f32(ubo + 40, e7_f32_mul(cx, cy))
+    e7_store_f32(ubo + 44, 0.0)
+    e7_store_f32(ubo + 48, 0.0)
+    e7_store_f32(ubo + 52, 0.0)
+    e7_store_f32(ubo + 56, 0.0)
+    e7_store_f32(ubo + 60, 1.0)
