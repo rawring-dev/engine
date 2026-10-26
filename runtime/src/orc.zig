@@ -22,6 +22,7 @@ const ecs = @import("ecs.zig");
 const engine = @import("engine.zig");
 const float = @import("float.zig");
 const json = @import("json.zig");
+const image = @import("image.zig");
 
 const c = @cImport({
     @cInclude("llvm-c/Core.h");
@@ -137,6 +138,8 @@ pub const Jit = struct {
         try self.defineSymbols(&float_symbols);
         const json_symbols = json.symbols();
         try self.defineSymbols(&json_symbols);
+        const image_symbols = image.symbols();
+        try self.defineSymbols(&image_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidBytecode => return error.InvalidBytecode,

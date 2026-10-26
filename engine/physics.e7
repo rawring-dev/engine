@@ -28,11 +28,26 @@ pub PhysicsWorld <- struct
     gravity_y: f32
     max_step: f32
 
+@resource
+pub RaycastState <- struct
+    hit: bool
+    distance: f32
+    point_x: f32
+    point_y: f32
+    point_z: f32
+
 pub PhysicsPlugin <- plugin
     physics_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(PhysicsWorld {
             gravity_y: -9.81,
             max_step: 0.05,
+        })
+        commands.insert_resource(RaycastState {
+            hit: false,
+            distance: 0.0,
+            point_x: 0.0,
+            point_y: 0.0,
+            point_z: 0.0,
         })
 
 pub box_collider <- (center: Vec3, half: Vec3) -> Aabb:
@@ -132,3 +147,51 @@ pub physics_step <- sys (
         if transform.translation[1] < 0.0:
             transform.translation[1] = 0.0
             body.velocity[1] = 0.0
+
+
+# Cast one ray from each camera through the scene's box colliders. The demo
+# uses this resource to report what the camera is looking at.
+@trigger(Update)
+pub physics_raycast <- sys (
+    cameras: select &Camera from Components,
+    colliders: select &Transform, &BoxCollider from Components,
+    state: res &mut RaycastState,
+):
+    for camera in cameras:
+        sin_yaw := e7_f32_sin(camera.yaw)
+        cos_yaw := e7_f32_cos(camera.yaw)
+        cos_pitch := e7_f32_cos(camera.pitch)
+        direction := Vec3 {
+            x: sin_yaw * cos_pitch,
+            y: e7_f32_sin(camera.pitch),
+            z: 0.0 - cos_yaw * cos_pitch,
+        }
+        ray := Ray {
+            origin: Vec3 {
+                x: camera.position[0],
+                y: camera.position[1],
+                z: camera.position[2],
+            },
+            direction: direction,
+        }
+        state.hit = false
+        state.distance = 1000000.0
+        for (transform, collider) in colliders:
+            center := Vec3 {
+                x: transform.translation[0],
+                y: transform.translation[1],
+                z: transform.translation[2],
+            }
+            half := Vec3 {
+                x: collider.half_extents[0],
+                y: collider.half_extents[1],
+                z: collider.half_extents[2],
+            }
+            box := box_collider(center, half)
+            hit := ray_aabb(ray, box)
+            if hit.hit and hit.distance < state.distance:
+                state.hit = true
+                state.distance = hit.distance
+                state.point_x = hit.point.x
+                state.point_y = hit.point.y
+                state.point_z = hit.point.z

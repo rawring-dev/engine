@@ -97,6 +97,18 @@ pub const RuntimeFunction = enum(u8) {
     // JSON builtins (schema string + value/text); see runtime/src/json.zig.
     json_encode,
     json_decode,
+    // Image loading and generic text/parsing helpers.
+    image_load,
+    image_width,
+    image_height,
+    image_pixels,
+    image_free,
+    str_lines,
+    str_fields,
+    str_split,
+    parse_i64,
+    parse_f32,
+    vec_push,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -159,6 +171,17 @@ pub const RuntimeFunction = enum(u8) {
             .float_from_milli => "e7_f32_from_milli",
             .json_encode => "e7_json_encode",
             .json_decode => "e7_json_decode",
+            .image_load => "e7_image_load",
+            .image_width => "e7_image_width",
+            .image_height => "e7_image_height",
+            .image_pixels => "e7_image_pixels",
+            .image_free => "e7_image_free",
+            .str_lines => "e7_str_lines",
+            .str_fields => "e7_str_fields",
+            .str_split => "e7_str_split",
+            .parse_i64 => "e7_parse_i64",
+            .parse_f32 => "e7_parse_f32",
+            .vec_push => "e7_vec_push",
         };
     }
 
@@ -214,6 +237,9 @@ pub const RuntimeFunction = enum(u8) {
             .float_clamp => 3,
             .float_from_i64, .float_to_i64, .float_to_milli, .float_from_milli => 1,
             .json_encode, .json_decode => 2,
+            .image_load, .image_width, .image_height, .image_pixels, .image_free => 1,
+            .str_lines, .str_fields, .parse_i64, .parse_f32 => 1,
+            .str_split, .vec_push => 2,
         };
     }
 
@@ -230,6 +256,7 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_row_finish,
             .ecs_commands_add_plugin,
             .ecs_commands_flush,
+            .image_free,
             => .i32_,
             else => .i64_,
         };
@@ -933,7 +960,7 @@ fn decodeOp(cursor: *Cursor) Error!Op {
         58 => .vec_set_row,
         59 => blk: {
             const raw = (cursor.take(1) orelse return error.InvalidBytecode)[0];
-            if (raw > @intFromEnum(RuntimeFunction.json_decode)) return error.InvalidBytecode;
+            if (raw >= std.enums.values(RuntimeFunction).len) return error.InvalidBytecode;
             const function: RuntimeFunction = @enumFromInt(raw);
             const argc = cursor.readU16() orelse return error.InvalidBytecode;
             if (argc != function.arity()) return error.InvalidBytecode;

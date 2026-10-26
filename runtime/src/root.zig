@@ -17,6 +17,7 @@ pub const ecs = @import("ecs.zig");
 pub const engine = @import("engine.zig");
 pub const float = @import("float.zig");
 pub const json = @import("json.zig");
+pub const image = @import("image.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -63,6 +64,7 @@ test {
     _ = engine;
     _ = float;
     _ = json;
+    _ = image;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -1424,4 +1426,192 @@ test "JIT round-trips JSON for derived structs" {
     // 1500 + 2500 + len("dest")4 + tags.len()2 + len("bb")2 + points.len()2
     // + points[1].x(0.5)500 + count 7 + visible 1
     try std.testing.expectEqual(@as(i64, 4518), roundtrip_line());
+}
+
+fn readRepoTextForTest(comptime relative: []const u8) ?[]u8 {
+    const candidates = [_][]const u8{
+        relative,
+        "../" ++ relative,
+        "../../" ++ relative,
+    };
+    for (candidates) |candidate| {
+        const data = std.Io.Dir.readFileAlloc(
+            std.Io.Dir.cwd(),
+            std.testing.io,
+            candidate,
+            std.testing.allocator,
+            .limited(8 * 1024 * 1024),
+        ) catch continue;
+        return data;
+    }
+    return null;
+}
+
+test "JIT executes the generic text and parsing intrinsics" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\main <- () -> i32:
+        \\    lines := e7_str_lines("aa\nbb\ncc")
+        \\    fields := e7_str_fields(" x  y ")
+        \\    parts := e7_str_split("1/2/3", "/")
+        \\    number := e7_parse_i64("-42")
+        \\    value := e7_parse_f32("1.5")
+        \\    values: [f32] := []
+        \\    values = e7_vec_push(values, value)
+        \\    number32 := number as i32
+        \\    ret lines.len() * 100000 + fields.len() * 10000 + parts.len() * 1000 + (0 - number32) * 10 + values.len()
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "text-intrinsics");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    try std.testing.expectEqual(@as(i64, 323421), main());
+}
+
+test "JIT loads an image through the e7 image intrinsics" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "cube.png",
+        .data = @embedFile("testdata/cube.png"),
+    });
+    const absolute = try tmp.dir.realPathFileAlloc(std.testing.io, "cube.png", std.testing.allocator);
+    defer std.testing.allocator.free(absolute);
+
+    const source = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\main <- () -> i32:
+        \\    image := e7_image_load("{s}")
+        \\    width := e7_image_width(image) as i32
+        \\    height := e7_image_height(image) as i32
+        \\    pixels := e7_image_pixels(image)
+        \\    e7_image_free(image)
+        \\    ret width * 10 + height + pixels.len() * 0
+    ,
+        .{absolute},
+    );
+    defer std.testing.allocator.free(source);
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "image-intrinsics");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    try std.testing.expectEqual(@as(i64, 22), main());
+}
+
+test "JIT executes the compiled e7 OBJ parser from engine/obj.e7" {
+    const obj_source = readRepoTextForTest("engine/obj.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(obj_source);
+
+    const root_source =
+        \\mod obj
+        \\main <- () -> i32:
+        \\    quad := obj::parse_obj(
+        \\        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvn 0 0 1\nf 1//1 2//1 3//1 4//1\n"
+        \\    )
+        \\    tris := obj::parse_obj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+        \\    relative := obj::parse_obj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n")
+        \\    full := obj::parse_obj(
+        \\        "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvn 0 0 1\nvt 0 0\nf 1/1/1 2/1/1 3/1/1 4/1/1\n"
+        \\    )
+        \\    malformed := obj::parse_obj("f 1 2 3\n")
+        \\    ret quad.indices.len() * 100000 + quad.positions.len() * 10000 + tris.indices.len() * 1000 + relative.indices.len() + full.indices.len() + malformed.indices.len() * 100000000
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{.{ .name = "obj", .source = obj_source }},
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    try compiler.bytecode.verify(std.testing.allocator, &compiled.bytecode);
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "obj-parser");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    // quad: 2 triangles (6 indices), 4 positions -> 12 flat floats;
+    // triangle/negative-relative/full faces contribute 3+3+6 indices; the
+    // malformed face contributes nothing.
+    try std.testing.expectEqual(@as(i64, 600000 + 120000 + 3000 + 3 + 6), main());
+}
+
+test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
+    const obj_source = readRepoTextForTest("engine/obj.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(obj_source);
+    const assets_source = readRepoTextForTest("engine/assets.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(assets_source);
+
+    const root_source =
+        \\mod obj
+        \\mod assets
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(assets::AssetsPlugin)
+        \\    disown commands
+        \\    0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "obj", .source = obj_source },
+            .{ .name = "assets", .source = assets_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "assets-plugin");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const task_handle = main_ctor();
+    try std.testing.expect(task_handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(task_handle));
+
+    const assets_info = compiled.analysis.resource("assets::Assets") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(assets_info.id));
+    const assets_ptr = ecs.e7_ecs_resource(assets_info.id);
+    try std.testing.expect(assets_ptr != 0);
+
+    // Assets fields: [0] Image pointer, [1] ObjMesh pointer.
+    const image_ptr = aggregate.e7_load_i64(assets_ptr);
+    const mesh_ptr = aggregate.e7_load_i64(assets_ptr + 8);
+    try std.testing.expect(image_ptr != 0);
+    try std.testing.expect(mesh_ptr != 0);
+
+    // Image fields: handle, width, height, pixels.
+    const image_handle = aggregate.e7_load_i64(image_ptr);
+    try std.testing.expect(image_handle != 0);
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(image_ptr + 8));
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(image_ptr + 16));
+    try std.testing.expectEqual(@as(i64, 16), aggregate.e7_str_len(aggregate.e7_load_i64(image_ptr + 24)));
+    defer _ = image.e7_image_free(image_handle);
+
+    // ObjMesh fields: positions, normals, uvs, vertices, indices.
+    const positions = aggregate.e7_load_i64(mesh_ptr);
+    const indices = aggregate.e7_load_i64(mesh_ptr + 32);
+    const vertices = aggregate.e7_load_i64(mesh_ptr + 24);
+    try std.testing.expectEqual(@as(i64, 24), aggregate.e7_vec_len(positions)); // 8 positions * 3
+    try std.testing.expectEqual(@as(i64, 36), aggregate.e7_vec_len(indices)); // 6 quads -> 12 triangles
+    try std.testing.expectEqual(@as(i64, 288), aggregate.e7_vec_len(vertices)); // 36 vertices * 8 floats
 }

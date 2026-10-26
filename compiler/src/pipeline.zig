@@ -282,6 +282,133 @@ pub fn compileProject(
     };
 }
 
+/// One in-memory project module for `compileProjectFromSources`.
+pub const SourceFile = struct {
+    /// External module name as written in `mod <name>`.
+    name: []const u8,
+    source: []const u8,
+};
+
+fn attachSourceModules(
+    allocator: std.mem.Allocator,
+    tree: *parser.Ast,
+    modules: []const SourceFile,
+    module_asts: []parser.Ast,
+    attached: []bool,
+    depth: usize,
+) ProjectError!void {
+    if (depth > max_project_depth) return error.ProjectCycle;
+    for (tree.module.items) |item| {
+        if (item.kind != .mod) continue;
+        const module_decl: *ast.ModDecl = &item.kind.mod;
+        if (module_decl.items != null) continue;
+        var module_index: ?usize = null;
+        for (modules, 0..) |module, index| {
+            if (!std.mem.eql(u8, module.name, module_decl.name)) continue;
+            module_index = index;
+            break;
+        }
+        const index = module_index orelse return error.ProjectIo;
+        if (attached[index]) return error.ProjectCycle;
+        attached[index] = true;
+        module_decl.items = module_asts[index].module.items;
+        try attachSourceModules(
+            allocator,
+            &module_asts[index],
+            modules,
+            module_asts,
+            attached,
+            depth + 1,
+        );
+    }
+}
+
+/// Compile a project whose root and sibling module sources are supplied in
+/// memory.  This is the embedding/test counterpart of `compileProject`: every
+/// external `mod <name>` is resolved against the `modules` list instead of the
+/// filesystem.  Source buffers are duplicated into the result so caller memory
+/// may be released immediately after the call.
+pub fn compileProjectFromSources(
+    allocator: std.mem.Allocator,
+    root_source: []const u8,
+    modules: []const SourceFile,
+    options: Options,
+) (Error || ProjectError)!CompileResult {
+    const file_count = modules.len + 1;
+    const owned_sources = try allocator.alloc([]u8, file_count);
+    var sources_initialized: usize = 0;
+    errdefer {
+        for (owned_sources[0..sources_initialized]) |source| allocator.free(source);
+        allocator.free(owned_sources);
+    }
+    const owned_paths = try allocator.alloc([]u8, file_count);
+    var paths_initialized: usize = 0;
+    errdefer {
+        for (owned_paths[0..paths_initialized]) |path| allocator.free(path);
+        allocator.free(owned_paths);
+    }
+
+    owned_sources[0] = try allocator.dupe(u8, root_source);
+    sources_initialized = 1;
+    owned_paths[0] = try allocator.dupe(u8, "<memory-root>");
+    paths_initialized = 1;
+    for (modules, 0..) |module, index| {
+        owned_sources[index + 1] = try allocator.dupe(u8, module.source);
+        sources_initialized += 1;
+        owned_paths[index + 1] = try allocator.dupe(u8, module.name);
+        paths_initialized += 1;
+    }
+
+    var root_ast = try parseProjectFile(allocator, owned_sources[0]);
+    errdefer root_ast.deinit();
+
+    var module_asts = std.ArrayList(parser.Ast).empty;
+    errdefer {
+        for (module_asts.items) |*tree| tree.deinit();
+        module_asts.deinit(allocator);
+    }
+    try module_asts.ensureTotalCapacity(allocator, modules.len);
+    for (modules, 0..) |_, index| {
+        const child = try parseProjectFile(allocator, owned_sources[index + 1]);
+        // Capacity was reserved above; on a later error the module_asts
+        // errdefer frees every parsed child exactly once.
+        module_asts.appendAssumeCapacity(child);
+    }
+
+    const attached = try allocator.alloc(bool, modules.len);
+    defer allocator.free(attached);
+    @memset(attached, false);
+    try attachSourceModules(
+        allocator,
+        &root_ast,
+        modules,
+        module_asts.items,
+        attached,
+        0,
+    );
+
+    var analysis = try semantic.analyze(allocator, root_ast.module);
+    errdefer analysis.deinit();
+    if (!analysis.ok()) return error.SemanticFailed;
+
+    var module = try codegen.lower(allocator, root_ast.module, &analysis, options.codegen);
+    errdefer module.deinit();
+
+    const stats = try bytecode.optimize(allocator, &module, options.optimize);
+    try bytecode.verify(allocator, &module);
+
+    return .{
+        .parsed = root_ast,
+        .analysis = analysis,
+        .bytecode = module,
+        .optimization = stats,
+        .allocator = allocator,
+        .module_asts = try module_asts.toOwnedSlice(allocator),
+        .owned_sources = owned_sources,
+        .owned_paths = owned_paths,
+    };
+}
+
 fn hasLocalAddr(function: *const bytecode.Function) bool {
     for (function.code) |op| switch (op) {
         .local_addr => return true,
@@ -1306,4 +1433,115 @@ test "lowers derived JSON encode/decode to schema-driven runtime calls" {
         try std.testing.expect(found_call);
         try std.testing.expect(found_schema);
     }
+}
+
+fn readRepoText(comptime relative: []const u8) ?[]u8 {
+    const candidates = [_][]const u8{
+        relative,
+        "../" ++ relative,
+        "../../" ++ relative,
+    };
+    for (candidates) |candidate| {
+        const data = std.Io.Dir.readFileAlloc(
+            std.Io.Dir.cwd(),
+            std.testing.io,
+            candidate,
+            std.testing.allocator,
+            .limited(8 * 1024 * 1024),
+        ) catch continue;
+        return data;
+    }
+    return null;
+}
+
+test "lowers image and generic text intrinsics to runtime calls" {
+    var result = try compile(
+        std.testing.allocator,
+        \\probe <- () -> i32:
+        \\    lines := e7_str_lines("a\nb")
+        \\    fields := e7_str_fields(" 1 2 ")
+        \\    parts := e7_str_split("1/2/3", "/")
+        \\    number := e7_parse_i64("-42")
+        \\    value := e7_parse_f32("1.5")
+        \\    values: [f32] := []
+        \\    values = e7_vec_push(values, value)
+        \\    image := e7_image_load("engine/assets/testdata/cube.png")
+        \\    width := e7_image_width(image)
+        \\    height := e7_image_height(image)
+        \\    pixels := e7_image_pixels(image)
+        \\    e7_image_free(image)
+        \\    ret 0
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const function = result.functionNamed("probe").?;
+    var saw = [_]bool{false} ** 11;
+    const wanted = [_]bytecode.RuntimeFunction{
+        .image_load, .image_width, .image_height, .image_pixels, .image_free,
+        .str_lines,  .str_fields,  .str_split,    .parse_i64,    .parse_f32,
+        .vec_push,
+    };
+    for (function.code) |op| switch (op) {
+        .runtime_call => |call| for (wanted, 0..) |function_kind, index| {
+            if (call.function == function_kind) saw[index] = true;
+        },
+        else => {},
+    };
+    for (saw) |found| try std.testing.expect(found);
+}
+
+test "compiles the engine OBJ and asset libraries from sources" {
+    const obj_source = readRepoText("engine/obj.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(obj_source);
+    const assets_source = readRepoText("engine/assets.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(assets_source);
+
+    const root_source =
+        \\mod obj
+        \\mod assets
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(assets::AssetsPlugin)
+        \\    disown commands
+        \\    0
+    ;
+    var result = try compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "obj", .source = obj_source },
+            .{ .name = "assets", .source = assets_source },
+        },
+        .{},
+    );
+    defer result.deinit();
+    if (!result.analysis.ok()) {
+        for (result.analysis.diagnostics) |diagnostic| {
+            std.debug.print("asset project semantic: {}:{} {s}\n", .{
+                diagnostic.span.line,
+                diagnostic.span.column,
+                diagnostic.message,
+            });
+        }
+    }
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+    try std.testing.expect(result.functionNamed("main") != null);
+    try std.testing.expect(result.functionNamed("obj::parse_obj") != null);
+    try std.testing.expect(result.functionNamed("obj::load_obj") != null);
+    try std.testing.expect(result.functionNamed("assets::load_image") != null);
+
+    var found_assets_plugin = false;
+    for (result.analysis.plugins) |plugin| {
+        if (!std.mem.eql(u8, plugin.name, "assets::AssetsPlugin")) continue;
+        found_assets_plugin = true;
+        try std.testing.expectEqualStrings("assets::AssetsPlugin::assets_plugin_init", plugin.init.?);
+    }
+    try std.testing.expect(found_assets_plugin);
+    try std.testing.expect(result.analysis.resource("assets::Assets") != null);
+    try std.testing.expect(result.analysis.resource("assets::Image") != null);
 }

@@ -10,7 +10,9 @@ mod camera
 mod scene
 mod bootstrap
 mod physics
+mod assets
 mod ui
+mod obj
 
 use events::*;
 use ecs::*;
@@ -22,10 +24,35 @@ use camera::*;
 use scene::*;
 use bootstrap::*;
 use physics::*;
+use assets::*;
+use obj::*;
+
+# Demo-specific configuration serialized through the engine's JSON derive.
+@resource
+@derive(Serialize, Deserialize)
+pub DemoSettings <- struct
+    window_width: i32
+    window_height: i32
+    move_speed: f32
+    look_speed: f32
+    title: str
 
 # Demo-specific content: the scene entity rows, cube collider, and light.
 pub DemoPlugin <- plugin
     demo_plugin_init <- sys (commands: &mut Commands):
+        settings := DemoSettings {
+            window_width: 960,
+            window_height: 540,
+            move_speed: 4.0,
+            look_speed: 0.0025,
+            title: "engine7",
+        }
+        # Exercise derive/JSON in the demo: round-trip the configuration and
+        # keep the decoded resource.
+        settings_json := json_encode(settings)
+        decoded := json_decode::<DemoSettings>(settings_json)
+        commands.insert_resource(decoded)
+
         camera := Camera {
             position: [0.0, 1.8, 5.5]
             yaw: 0.0
@@ -76,6 +103,7 @@ pub main <- async () -> i32:
     commands.add_plugin(gfx::GfxPlugin)
     commands.add_plugin(camera::CameraPlugin)
     commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(assets::AssetsPlugin)
     commands.add_plugin(DemoPlugin)
     commands.add_plugin(ui::Ui)
     disown commands

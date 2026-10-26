@@ -405,7 +405,186 @@ pub export fn e7_map_set_str(map: i64, key: i64, value: i64) callconv(.c) void {
     e7_map_set(map, key, value);
 }
 
-pub fn symbols() [29]Symbol {
+// ---------------------------------------------------------------------------
+// Generic text/parsing helpers used by e7 libraries (e.g. engine/obj.e7)
+// ---------------------------------------------------------------------------
+
+fn isFieldWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
+}
+
+/// Count non-overlapping tokens separated by ASCII whitespace.
+fn countWhitespaceFields(bytes: []const u8) usize {
+    var count: usize = 0;
+    var in_token = false;
+    for (bytes) |byte| {
+        if (isFieldWhitespace(byte)) {
+            in_token = false;
+        } else if (!in_token) {
+            in_token = true;
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/// Split text on line endings into an e7 `[str]` vector.  A trailing final
+/// newline does not add an empty final line; interior empty lines are kept.
+pub export fn e7_str_lines(text: i64) callconv(.c) i64 {
+    const length: usize = if (text == 0) 0 else @intCast(@max(slots(text)[0], 0));
+    if (length == 0) return e7_vec_new(0, 0);
+    const bytes = bytePtr(text + 8);
+    var line_count: usize = 0;
+    for (bytes[0..length]) |byte| {
+        if (byte == '\n') line_count += 1;
+    }
+    if (bytes[length - 1] != '\n') line_count += 1;
+    const result = e7_vec_new(@intCast(line_count), 0);
+    if (result == 0) return 0;
+    const elements = slots(result + 16);
+    var start: usize = 0;
+    var line_index: usize = 0;
+    var index: usize = 0;
+    while (index < length) : (index += 1) {
+        if (bytes[index] != '\n') continue;
+        var end = index;
+        if (end > start and bytes[end - 1] == '\r') end -= 1;
+        elements[line_index] = e7_str_new(
+            text + 8 + @as(i64, @intCast(start)),
+            @intCast(end - start),
+        );
+        line_index += 1;
+        start = index + 1;
+    }
+    if (start < length) {
+        var end = length;
+        if (end > start and bytes[end - 1] == '\r') end -= 1;
+        elements[line_index] = e7_str_new(
+            text + 8 + @as(i64, @intCast(start)),
+            @intCast(end - start),
+        );
+    }
+    return result;
+}
+
+/// Split text on ASCII whitespace into an e7 `[str]` vector.  Leading/trailing
+/// whitespace and repeated separators do not produce empty fields.
+pub export fn e7_str_fields(text: i64) callconv(.c) i64 {
+    const length: usize = if (text == 0) 0 else @intCast(@max(slots(text)[0], 0));
+    if (length == 0) return e7_vec_new(0, 0);
+    const bytes = bytePtr(text + 8);
+    const field_count = countWhitespaceFields(bytes[0..length]);
+    const result = e7_vec_new(@intCast(field_count), 0);
+    if (result == 0) return 0;
+    const elements = slots(result + 16);
+    var field_index: usize = 0;
+    var index: usize = 0;
+    while (index < length) {
+        while (index < length and isFieldWhitespace(bytes[index])) index += 1;
+        if (index >= length) break;
+        const start = index;
+        while (index < length and !isFieldWhitespace(bytes[index])) index += 1;
+        elements[field_index] = e7_str_new(
+            text + 8 + @as(i64, @intCast(start)),
+            @intCast(index - start),
+        );
+        field_index += 1;
+    }
+    return result;
+}
+
+/// Split text on a single-byte separator string into an e7 `[str]` vector.
+/// Empty fields are preserved (`"1//2"` with "/" -> ["1", "", "2"]).  A
+/// separator that is not exactly one byte returns an empty vector.
+pub export fn e7_str_split(text: i64, separator: i64) callconv(.c) i64 {
+    const separator_length: usize = if (separator == 0) 0 else @intCast(@max(slots(separator)[0], 0));
+    if (separator_length != 1) return e7_vec_new(0, 0);
+    const separator_byte = bytePtr(separator + 8)[0];
+    const length: usize = if (text == 0) 0 else @intCast(@max(slots(text)[0], 0));
+    if (length == 0) return e7_vec_new(0, 0);
+    const bytes = bytePtr(text + 8);
+    var piece_count: usize = 1;
+    for (bytes[0..length]) |byte| {
+        if (byte == separator_byte) piece_count += 1;
+    }
+    const result = e7_vec_new(@intCast(piece_count), 0);
+    if (result == 0) return 0;
+    const elements = slots(result + 16);
+    var start: usize = 0;
+    var piece_index: usize = 0;
+    var index: usize = 0;
+    while (index <= length) : (index += 1) {
+        if (index != length and bytes[index] != separator_byte) continue;
+        elements[piece_index] = e7_str_new(
+            text + 8 + @as(i64, @intCast(start)),
+            @intCast(index - start),
+        );
+        piece_index += 1;
+        start = index + 1;
+    }
+    return result;
+}
+
+/// Parse an optionally signed decimal i64.  Surrounding ASCII whitespace is
+/// ignored; malformed input and overflow return 0.
+pub export fn e7_parse_i64(text: i64) callconv(.c) i64 {
+    const length: usize = if (text == 0) 0 else @intCast(@max(slots(text)[0], 0));
+    if (length == 0) return 0;
+    const bytes = bytePtr(text + 8);
+    var index: usize = 0;
+    while (index < length and isFieldWhitespace(bytes[index])) index += 1;
+    var negative = false;
+    if (index < length and (bytes[index] == '+' or bytes[index] == '-')) {
+        negative = bytes[index] == '-';
+        index += 1;
+    }
+    const digit_start = index;
+    var value: i64 = 0;
+    while (index < length and bytes[index] >= '0' and bytes[index] <= '9') : (index += 1) {
+        const digit: i64 = bytes[index] - '0';
+        if (value > @divTrunc(std.math.maxInt(i64) - digit, 10)) return 0;
+        value = value * 10 + digit;
+    }
+    if (index == digit_start) return 0;
+    while (index < length and isFieldWhitespace(bytes[index])) index += 1;
+    if (index != length) return 0;
+    return if (negative) -value else value;
+}
+
+/// Parse an ASCII float into the e7 float representation (an f64 bit pattern
+/// stored in an i64 slot).  Malformed input returns 0.0.
+pub export fn e7_parse_f32(text: i64) callconv(.c) i64 {
+    const length: usize = if (text == 0) 0 else @intCast(@max(slots(text)[0], 0));
+    if (length == 0) return 0;
+    const bytes = bytePtr(text + 8);
+    var start: usize = 0;
+    var end = length;
+    while (start < end and isFieldWhitespace(bytes[start])) start += 1;
+    while (end > start and isFieldWhitespace(bytes[end - 1])) end -= 1;
+    if (start == end) return 0;
+    const value = std.fmt.parseFloat(f64, bytes[start..end]) catch return 0;
+    return @bitCast(value);
+}
+
+/// Append one element to a vector, returning a new vector (vectors are
+/// immutable aggregates in e7: assign the result back).  Matrices and invalid
+/// handles return 0.
+pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
+    if (vec == 0) return 0;
+    const rows = slots(vec)[0];
+    const columns = slots(vec)[1];
+    if (rows < 0 or columns != 0) return 0;
+    const result = e7_vec_new(rows + 1, 0);
+    if (result == 0) return 0;
+    const source = slots(vec + 16);
+    const destination = slots(result + 16);
+    const count: usize = @intCast(rows);
+    for (0..count) |index| destination[index] = source[index];
+    destination[count] = value;
+    return result;
+}
+
+pub fn symbols() [35]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -436,6 +615,12 @@ pub fn symbols() [29]Symbol {
         .{ .name = "e7_map_set_str", .address = @intFromPtr(&e7_map_set_str) },
         .{ .name = "e7_map_key_at", .address = @intFromPtr(&e7_map_key_at) },
         .{ .name = "e7_map_value_at", .address = @intFromPtr(&e7_map_value_at) },
+        .{ .name = "e7_str_lines", .address = @intFromPtr(&e7_str_lines) },
+        .{ .name = "e7_str_fields", .address = @intFromPtr(&e7_str_fields) },
+        .{ .name = "e7_str_split", .address = @intFromPtr(&e7_str_split) },
+        .{ .name = "e7_parse_i64", .address = @intFromPtr(&e7_parse_i64) },
+        .{ .name = "e7_parse_f32", .address = @intFromPtr(&e7_parse_f32) },
+        .{ .name = "e7_vec_push", .address = @intFromPtr(&e7_vec_push) },
     };
 }
 
@@ -506,4 +691,61 @@ test "matrix two-dimensional access and row assignment" {
     e7_vec_set_row(matrix, 7, row);
     try std.testing.expectEqual(@as(i64, 7), e7_vec_get2(matrix, 0, 0));
     try std.testing.expectEqual(@as(i64, 9), e7_vec_get2(matrix, 0, 2));
+}
+
+test "text helpers split lines, fields, and separator bytes" {
+    const source = "one\ntwo\n\nthree\r\n";
+    const text = e7_str_new(@intCast(@intFromPtr(source.ptr)), source.len);
+    const lines = e7_str_lines(text);
+    try std.testing.expectEqual(@as(i64, 4), e7_vec_len(lines));
+    const expected = [_][]const u8{ "one", "two", "", "three" };
+    for (expected, 0..) |want, index| {
+        const line = e7_vec_get(lines, @intCast(index));
+        try std.testing.expectEqual(@as(i64, @intCast(want.len)), e7_str_len(line));
+        try std.testing.expectEqualStrings(want, bytePtr(line + 8)[0..want.len]);
+    }
+
+    const spaced = "  a  b\tc\n";
+    const fields = e7_str_fields(e7_str_new(@intCast(@intFromPtr(spaced.ptr)), spaced.len));
+    try std.testing.expectEqual(@as(i64, 3), e7_vec_len(fields));
+    try std.testing.expectEqualStrings("a", bytePtr(e7_vec_get(fields, 0) + 8)[0..1]);
+    try std.testing.expectEqualStrings("b", bytePtr(e7_vec_get(fields, 1) + 8)[0..1]);
+    try std.testing.expectEqualStrings("c", bytePtr(e7_vec_get(fields, 2) + 8)[0..1]);
+
+    const slash = "/";
+    const face = "1//2";
+    const parts = e7_str_split(
+        e7_str_new(@intCast(@intFromPtr(face.ptr)), face.len),
+        e7_str_new(@intCast(@intFromPtr(slash.ptr)), slash.len),
+    );
+    try std.testing.expectEqual(@as(i64, 3), e7_vec_len(parts));
+    try std.testing.expectEqual(@as(i64, 1), e7_str_len(e7_vec_get(parts, 0)));
+    try std.testing.expectEqual(@as(i64, 0), e7_str_len(e7_vec_get(parts, 1)));
+    try std.testing.expectEqual(@as(i64, 1), e7_str_len(e7_vec_get(parts, 2)));
+}
+
+test "text helpers parse numbers and push vector elements" {
+    const integer_text = " -42 ";
+    try std.testing.expectEqual(
+        @as(i64, -42),
+        e7_parse_i64(e7_str_new(@intCast(@intFromPtr(integer_text.ptr)), integer_text.len)),
+    );
+    const bad_integer = "12x";
+    try std.testing.expectEqual(
+        @as(i64, 0),
+        e7_parse_i64(e7_str_new(@intCast(@intFromPtr(bad_integer.ptr)), bad_integer.len)),
+    );
+
+    const float_text = "1.5";
+    const bits = e7_parse_f32(e7_str_new(@intCast(@intFromPtr(float_text.ptr)), float_text.len));
+    const value: f64 = @bitCast(bits);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.5), value, 1e-12);
+
+    var vector = e7_vec_new(0, 0);
+    vector = e7_vec_push(vector, 10);
+    vector = e7_vec_push(vector, 20);
+    try std.testing.expectEqual(@as(i64, 2), e7_vec_len(vector));
+    try std.testing.expectEqual(@as(i64, 10), e7_vec_get(vector, 0));
+    try std.testing.expectEqual(@as(i64, 20), e7_vec_get(vector, 1));
+    try std.testing.expectEqual(@as(i64, 0), e7_vec_push(0, 1));
 }

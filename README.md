@@ -474,7 +474,20 @@ initializes the columnar ECS world, JITs the e7 `main`, and runs the `Init`,
 triggers. SDL
 window/input and Vulkan scene access are compiler-known intrinsics
 (`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
-[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Engine policy now lives in e7: shader asset selection/loading
+[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Engine libraries are organized by behavior (`events`, `ecs`, `gfx`, `time`,
+`window`, `input`, `camera`, `scene`, `physics`, `bootstrap`, `ui`), with each
+exposing a plugin; `main.e7` is the demo-specific composition point.
+
+`@derive(Serialize, Deserialize)` is supported on ECS/engine structs and
+`json_encode(value)` / `json_decode::<T>(text)` round-trip primitives, strings,
+nested derived structs, and vectors through a compiler-generated schema.
+
+The engine libraries now also include an `obj.e7` Wavefront parser,
+PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
+`physics.e7` library with `RigidBody`, box/sphere colliders, AABB/sphere
+raycasts, gravity integration, and a camera raycast resource.
+
+Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
 cube spin, light animation, ECS queries, and render submission all live in the
 `engine/*.e7` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
@@ -526,7 +539,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 306 tests: scheduler 8, compiler 194, runtime 81,
+`zig build test` runs 322 tests: scheduler 8, compiler 199, runtime 92,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

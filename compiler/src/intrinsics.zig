@@ -23,6 +23,11 @@ pub const ValueType = enum {
     float_,
     /// Runtime string value (aggregate handle).
     str_,
+    /// Runtime vector of string values (`[str]` aggregate handle).
+    str_vec_,
+    /// Placeholder for generic intrinsics whose type is derived from another
+    /// argument (`e7_vec_push`).
+    any_,
     unit,
 };
 
@@ -168,6 +173,23 @@ pub const functions = [_]Function{
     .{ .name = "e7_f32_to_i64", .params = &.{.float_}, .result = .i64_ },
     .{ .name = "e7_f32_to_milli", .params = &.{.float_}, .result = .i64_ },
     .{ .name = "e7_f32_from_milli", .params = &.{.i64_}, .result = .float_ },
+
+    // Low-level image loading (PNG/JPEG -> RGBA8); see runtime/src/image.zig.
+    .{ .name = "e7_image_load", .params = &.{.str_}, .result = .u64_ },
+    .{ .name = "e7_image_width", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_image_height", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_image_pixels", .params = &.{.u64_}, .result = .str_ },
+    .{ .name = "e7_image_free", .params = &.{.u64_}, .result = .i32_ },
+
+    // Generic text/parsing helpers used by e7 libraries (engine/obj.e7).
+    .{ .name = "e7_str_lines", .params = &.{.str_}, .result = .str_vec_ },
+    .{ .name = "e7_str_fields", .params = &.{.str_}, .result = .str_vec_ },
+    .{ .name = "e7_str_split", .params = &.{ .str_, .str_ }, .result = .str_vec_ },
+    .{ .name = "e7_parse_i64", .params = &.{.str_}, .result = .i64_ },
+    .{ .name = "e7_parse_f32", .params = &.{.str_}, .result = .float_ },
+    // Generic vector append: result type matches the vector argument; the
+    // value argument is checked against its element type.
+    .{ .name = "e7_vec_push", .params = &.{ .any_, .any_ }, .result = .any_ },
 };
 
 pub fn lookup(name: []const u8) ?Function {

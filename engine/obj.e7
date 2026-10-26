@@ -1,0 +1,167 @@
+# OBJ parser library.
+#
+# Parses Wavefront `.obj` mesh data into a render-friendly flattened form:
+#   positions: flat xyz triples from `v` lines
+#   normals:   flat xyz triples from `vn` lines
+#   uvs:       flat uv pairs from `vt` lines
+#   vertices:  interleaved xyz + xyz + uv (8 floats) per emitted vertex
+#   indices:   sequential triangle indices into `vertices`
+#
+# Supported face forms are `f v`, `f v/vt`, `f v//vn`, and `f v/vt/vn` with
+# 1-based (or negative relative) indices.  Triangles are emitted directly;
+# polygons (quads and larger) are fan-triangulated.  Unknown statements are
+# ignored.  Malformed face/index data aborts the parse and returns an empty mesh
+# rather than panicking; callers can check `indices.len() == 0`.
+
+pub ObjMesh <- struct
+    positions: [f32]
+    normals: [f32]
+    uvs: [f32]
+    vertices: [f32]
+    indices: [i32]
+
+pub empty_mesh <- () -> ObjMesh:
+    positions: [f32] := []
+    normals: [f32] := []
+    uvs: [f32] := []
+    vertices: [f32] := []
+    indices: [i32] := []
+    ret ObjMesh {
+        positions: positions,
+        normals: normals,
+        uvs: uvs,
+        vertices: vertices,
+        indices: indices,
+    }
+
+# Resolve a 1-based or negative-relative OBJ index to a zero-based index.
+# Returns -1 for missing/invalid indices.
+pub resolve_index <- (token: str, count: i64) -> i64:
+    parsed := e7_parse_i64(token)
+    if parsed > 0:
+        ret parsed - 1
+    if parsed < 0:
+        ret count + parsed
+    ret -1
+
+# Parse OBJ text.  Returns an empty ObjMesh on structural/index errors.
+pub parse_obj <- (text: str) -> ObjMesh:
+    positions: [f32] := []
+    normals: [f32] := []
+    uvs: [f32] := []
+    vertices: [f32] := []
+    indices: [i32] := []
+    lines := e7_str_lines(text)
+    for line in lines:
+        fields := e7_str_fields(line)
+        if fields.len() == 0:
+            cont
+        keyword := fields[0 as usize]
+
+        if keyword == "v":
+            if fields.len() < 4:
+                ret empty_mesh()
+            x := e7_parse_f32(fields[1 as usize])
+            y := e7_parse_f32(fields[2 as usize])
+            z := e7_parse_f32(fields[3 as usize])
+            positions = e7_vec_push(positions, x)
+            positions = e7_vec_push(positions, y)
+            positions = e7_vec_push(positions, z)
+            cont
+
+        if keyword == "vn":
+            if fields.len() < 4:
+                ret empty_mesh()
+            x := e7_parse_f32(fields[1 as usize])
+            y := e7_parse_f32(fields[2 as usize])
+            z := e7_parse_f32(fields[3 as usize])
+            normals = e7_vec_push(normals, x)
+            normals = e7_vec_push(normals, y)
+            normals = e7_vec_push(normals, z)
+            cont
+
+        if keyword == "vt":
+            if fields.len() < 3:
+                ret empty_mesh()
+            u := e7_parse_f32(fields[1 as usize])
+            v := e7_parse_f32(fields[2 as usize])
+            uvs = e7_vec_push(uvs, u)
+            uvs = e7_vec_push(uvs, v)
+            cont
+
+        if keyword == "f":
+            if fields.len() < 4:
+                ret empty_mesh()
+            corner_count: i64 := (fields.len() as i64) - 1
+            fan_index: i64 := 0
+            while fan_index + 2 < corner_count:
+                # Triangle fan: corner 0 plus each consecutive corner pair.
+                for k in 0..3:
+                    token_index := 1
+                    if k == 1:
+                        token_index = 2 + fan_index
+                    if k == 2:
+                        token_index = 3 + fan_index
+                    token := fields[token_index as usize]
+                    parts := e7_str_split(token, "/")
+                    if parts.len() == 0:
+                        ret empty_mesh()
+
+                    position_count: i64 := (positions.len() as i64) / 3
+                    position_index := resolve_index(parts[0 as usize], position_count)
+                    if position_index < 0 or position_index >= position_count:
+                        ret empty_mesh()
+
+                    uv_index := -1
+                    if parts.len() > 1:
+                        if parts[1 as usize].len() > 0:
+                            uv_count: i64 := (uvs.len() as i64) / 2
+                            uv_index = resolve_index(parts[1 as usize], uv_count)
+                            if uv_index < 0 or uv_index >= uv_count:
+                                ret empty_mesh()
+
+                    normal_index := -1
+                    if parts.len() > 2:
+                        if parts[2 as usize].len() > 0:
+                            normal_count: i64 := (normals.len() as i64) / 3
+                            normal_index = resolve_index(parts[2 as usize], normal_count)
+                            if normal_index < 0 or normal_index >= normal_count:
+                                ret empty_mesh()
+
+                    vertex_index: i64 := (vertices.len() as i64) / 8
+                    position_base: usize := (position_index * 3) as usize
+                    vertices = e7_vec_push(vertices, positions[position_base])
+                    vertices = e7_vec_push(vertices, positions[position_base + 1])
+                    vertices = e7_vec_push(vertices, positions[position_base + 2])
+                    if normal_index >= 0:
+                        normal_base: usize := (normal_index * 3) as usize
+                        vertices = e7_vec_push(vertices, normals[normal_base])
+                        vertices = e7_vec_push(vertices, normals[normal_base + 1])
+                        vertices = e7_vec_push(vertices, normals[normal_base + 2])
+                    else:
+                        vertices = e7_vec_push(vertices, 0.0)
+                        vertices = e7_vec_push(vertices, 1.0)
+                        vertices = e7_vec_push(vertices, 0.0)
+                    if uv_index >= 0:
+                        uv_base: usize := (uv_index * 2) as usize
+                        vertices = e7_vec_push(vertices, uvs[uv_base])
+                        vertices = e7_vec_push(vertices, uvs[uv_base + 1])
+                    else:
+                        vertices = e7_vec_push(vertices, 0.0)
+                        vertices = e7_vec_push(vertices, 0.0)
+                    indices = e7_vec_push(indices, vertex_index as i32)
+                fan_index = fan_index + 1
+            cont
+
+    ret ObjMesh {
+        positions: positions,
+        normals: normals,
+        uvs: uvs,
+        vertices: vertices,
+        indices: indices,
+    }
+
+# Read an OBJ file through the engine asset reader and parse it.
+pub load_obj <- (path: str) -> ObjMesh:
+    text := e7_engine_read_shader(path)
+    ret parse_obj(text)

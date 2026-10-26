@@ -3945,6 +3945,14 @@ const Checker = struct {
             // share the f64 runtime representation.
             .float_ => try self.store.floatVar(),
             .str_ => self.store.make(.string),
+            .str_vec_ => self.store.make(.{ .array = .{
+                .element = try self.store.make(.string),
+                .length = null,
+                .columns = null,
+            } }),
+            // Only `e7_vec_push` uses `.any_`; it is resolved from its first
+            // argument before reaching the generic result mapping.
+            .any_ => self.store.make(.unknown),
             .unit => self.store.make(.unit),
         };
     }
@@ -3960,6 +3968,21 @@ const Checker = struct {
             try self.report("intrinsic `{s}` expects {d} argument(s), found {d}", .{
                 name, intrinsic.params.len, call.args.len,
             });
+        }
+        // `e7_vec_push(vector, value) -> vector`: the result/element types come
+        // from the vector argument, so it cannot use the fixed signature table.
+        if (std.mem.eql(u8, name, "e7_vec_push")) {
+            if (call.args.len != 2) return self.store.make(.unknown);
+            const vector_ty = try self.checkMoveExpr(call.args[0], null);
+            const resolved = self.store.resolve(vector_ty);
+            if (resolved.* != .array) {
+                const found = try self.store.typeName(resolved);
+                try self.report("`e7_vec_push` expects a vector, found `{s}`", .{found});
+                _ = try self.checkMoveExpr(call.args[1], null);
+                return self.store.make(.unknown);
+            }
+            _ = try self.checkMoveExpr(call.args[1], resolved.array.element);
+            return vector_ty;
         }
         for (call.args, 0..) |arg, index| {
             const actual = try self.checkMoveExpr(arg, null);

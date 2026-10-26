@@ -15,6 +15,9 @@ engine/
 ├── camera.e7      Camera movement/look system
 ├── scene.e7       cube spin, light animation, render submission
 ├── physics.e7     colliders, raycasts, gravity/integration plugin
+├── obj.e7         pure-e7 Wavefront OBJ parser
+├── assets.e7      PNG/JPEG image + OBJ asset resources/plugin
+├── assets/        cube.obj and image test fixtures
 ├── bootstrap.e7   Init window/scene/shaders and DeInit teardown
 ├── ui.e7          Ui plugin, trait dependencies, UI ECS sample
 └── shaders/       e7s shader sources + generated SPIR-V
@@ -25,7 +28,9 @@ engine/
 - `mod ui` loads sibling `engine/ui.e7`; items are module-qualified (`ui::Ui`).
 - Each library exposes its behavior as plugins (`WindowPlugin`,
   `InputPlugin`, `TimePlugin`, `GfxPlugin`, `CameraPlugin`, `PhysicsPlugin`,
-  plus the demo `DemoPlugin` in `main.e7` and `ui::Ui`). `main.e7` is the only
+  `AssetsPlugin`), plus the demo `DemoPlugin` in `main.e7` and `ui::Ui`
+  (`DemoPlugin` also derives a `DemoSettings` config serialized through JSON).
+  `main.e7` is the only
   demo-specific file: it adds plugins, describes the cube/light entities, and
   runs the frame loop.
 - Plugins are top-level items:
