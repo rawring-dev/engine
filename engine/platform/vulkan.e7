@@ -792,11 +792,11 @@ vulkan_capture_clear <- (
     e7_free_ptr(fence_out)
     e7_free_ptr(fence_array)
     if acquire_result != 0 and acquire_result != 1000001003:
-        ret 0
+        ret -20
     if submit_result != 0:
-        ret 0
+        ret -21
     if memory_type < 0:
-        ret 0
+        ret -22
     ret 1
 
 create_image_view <- (device: i64, image: i64, format: i64, out_view: u64) -> nil:
@@ -1257,11 +1257,11 @@ vulkan_draw_triangle_capture <- (
     e7_free_ptr(fence_out)
     e7_free_ptr(fence_array)
     if acquire_result != 0 and acquire_result != 1000001003:
-        ret 0
+        ret -20
     if submit_result != 0:
-        ret 0
+        ret -21
     if memory_type < 0:
-        ret 0
+        ret -22
     ret 1
 
 # Create a host-visible uniform buffer and a one-binding descriptor set.  The

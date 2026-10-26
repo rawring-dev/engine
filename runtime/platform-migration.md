@@ -84,7 +84,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   uniform buffer, a descriptor set layout/pool/set, binds the buffer, and
   updates the descriptor.  This is the per-frame `SceneUniform` path used by the
   engine shaders.  Verified with lavapipe: **135/135** runtime tests.
-- Remaining: full engine intrinsic/scene port, image/text, and deletion of the
+- **5a (done):** `engine/platform/scene.e7` composes the platform into a
+  reusable scene lifecycle (create, draw, capture, destroy) with a compact
+  raw-memory state block.  The test creates a hidden Vulkan window, builds the
+  scene, draws the triangle, and verifies the center pixel is the shader green.
+  Runtime: **136/136** with lavapipe.
+- Remaining: full engine renderer/scene API, image/text, and deletion of the
   Zig layer.
 
 ## Migration stages

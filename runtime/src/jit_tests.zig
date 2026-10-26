@@ -1409,3 +1409,60 @@ test "e7 input module maps actions and mouse state through SDL" {
     if (result == -1) return;
     try std.testing.expectEqual(@as(i64, 1), result);
 }
+
+test "e7 scene module draws a triangle and captures it" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
+    const io = std.testing.io;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(scene_source);
+
+    const selftest =
+        \\scene_selftest <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        ret -1
+        \\    win := window_create("e7 scene", 64, 48, 268435464)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret 0
+        \\    scene := scene_create(win, 64, 48)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        video_quit()
+        \\        ret -2
+        \\    pixels_out := e7_alloc_bytes(8)
+        \\    size_out := e7_alloc_bytes(8)
+        \\    drew := scene_draw(scene, pixels_out, size_out)
+        \\    pixels := e7_load_u64(pixels_out)
+        \\    width := scene_width(scene)
+        \\    height := scene_height(scene)
+        \\    offset := ((height / 2) * width + width / 2) * 4
+        \\    center := e7_load_u32((pixels as u64) + (offset as u64))
+        \\    e7_free_ptr(pixels)
+        \\    e7_free_ptr(pixels_out)
+        \\    e7_free_ptr(size_out)
+        \\    scene_destroy(scene)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if drew == 0:
+        \\        ret -3
+        \\    ret center
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, selftest });
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-scene");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "scene_selftest");
+    const result = selftest_fn();
+    if (result == 0 or result == -1) return;
+    std.debug.print("e7 scene center pixel {x}\n", .{result});
+    try std.testing.expectEqual(@as(i64, 0xFF00FF00), result);
+}
