@@ -5,3 +5,6 @@ zig-out/
 
 # Local toolchain downloads (Slang compiler used for validation)
 .tooling/
+
+# Local software Vulkan ICD used to verify the e7 platform layer
+.local-vulkan/

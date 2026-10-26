@@ -48,3 +48,173 @@ vulkan_surface_create <- (window_state: u64, instance: i64, out_surface: u64) ->
 vulkan_surface_destroy <- (instance: i64, surface: i64) -> nil:
     destroy := bind_vk("vkDestroySurfaceKHR")
     e7_ffi_call3(destroy, instance, surface, 0)
+
+# True when a queue family supports graphics and the surface.  The unrolled
+# family/device probes below avoid loops: LLVM's instcombine currently fails to
+# reach a fixpoint on the e7-generated loop CFG for this shape.
+queue_family_supported <- (physical: i64, surface: i64, props: u64, index: i64) -> i64:
+    offset := (index * 24) as u64
+    flags := e7_load_u32(props + offset)
+    if flags % 2 == 0:
+        ret 0
+    support := e7_alloc_bytes(4)
+    e7_store_u32(support, 0)
+    check := bind_vk("vkGetPhysicalDeviceSurfaceSupportKHR")
+    e7_ffi_call4(check, physical, index, surface, support)
+    supported := e7_load_u32(support)
+    e7_free_ptr(support)
+    ret supported
+
+find_queue_family <- (physical: i64, surface: i64) -> i64:
+    get_families := bind_vk("vkGetPhysicalDeviceQueueFamilyProperties")
+    count_out := e7_alloc_bytes(4)
+    e7_ffi_call2(get_families, physical, count_out)
+    count := e7_load_u32(count_out)
+    if count <= 0:
+        e7_free_ptr(count_out)
+        ret -1
+    props := e7_alloc_bytes(count * 24)
+    e7_ffi_call3(get_families, physical, count_out, props)
+    if count > 0:
+        if queue_family_supported(physical, surface, props, 0) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 0
+    if count > 1:
+        if queue_family_supported(physical, surface, props, 1) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 1
+    if count > 2:
+        if queue_family_supported(physical, surface, props, 2) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 2
+    if count > 3:
+        if queue_family_supported(physical, surface, props, 3) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 3
+    if count > 4:
+        if queue_family_supported(physical, surface, props, 4) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 4
+    if count > 5:
+        if queue_family_supported(physical, surface, props, 5) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 5
+    if count > 6:
+        if queue_family_supported(physical, surface, props, 6) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 6
+    if count > 7:
+        if queue_family_supported(physical, surface, props, 7) != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(props)
+            ret 7
+    e7_free_ptr(count_out)
+    e7_free_ptr(props)
+    ret -1
+
+create_logical_device <- (
+    physical: i64,
+    family: i64,
+    out_device: u64,
+    out_queue: u64,
+    out_family: u64,
+    out_physical: u64,
+) -> i64:
+    priority := e7_alloc_bytes(4)
+    e7_store_u32(priority, 1065353216)
+    queue_info := e7_alloc_bytes(40)
+    e7_store_u32(queue_info, 2)
+    e7_store_u32(queue_info + 20, family)
+    e7_store_u32(queue_info + 24, 1)
+    e7_store_u64(queue_info + 32, priority)
+    extension_name := e7_cstr("VK_KHR_swapchain")
+    extension_array := e7_alloc_bytes(8)
+    e7_store_u64(extension_array, extension_name)
+    device_info := e7_alloc_bytes(72)
+    e7_store_u32(device_info, 3)
+    e7_store_u32(device_info + 20, 1)
+    e7_store_u64(device_info + 24, queue_info)
+    e7_store_u32(device_info + 48, 1)
+    e7_store_u64(device_info + 56, extension_array)
+    create := bind_vk("vkCreateDevice")
+    create_result := e7_ffi_call4(create, physical, device_info, 0, out_device)
+    e7_free_ptr(priority)
+    e7_free_ptr(queue_info)
+    e7_free_ptr(extension_name)
+    e7_free_ptr(extension_array)
+    e7_free_ptr(device_info)
+    if create_result != 0:
+        ret 0
+    device := e7_load_u64(out_device)
+    get_queue := bind_vk("vkGetDeviceQueue")
+    e7_ffi_call4(get_queue, device, family, 0, out_queue)
+    e7_store_u32(out_family, family)
+    e7_store_u64(out_physical, physical)
+    ret 1
+
+# Create a logical device and graphics/present queue.  Returns 1 on success and
+# 0 when the instance has no device that can present to `surface`.
+vulkan_device_create <- (
+    instance: i64,
+    surface: i64,
+    out_device: u64,
+    out_queue: u64,
+    out_family: u64,
+    out_physical: u64,
+) -> i64:
+    enumerate := bind_vk("vkEnumeratePhysicalDevices")
+    count_out := e7_alloc_bytes(4)
+    e7_store_u32(count_out, 0)
+    enum_result := e7_ffi_call3(enumerate, instance, count_out, 0)
+    count := e7_load_u32(count_out)
+    if enum_result != 0 or count <= 0:
+        e7_free_ptr(count_out)
+        ret 0
+    devices := e7_alloc_bytes(count * 8)
+    enum2 := e7_ffi_call3(enumerate, instance, count_out, devices)
+    if enum2 != 0:
+        e7_free_ptr(count_out)
+        e7_free_ptr(devices)
+        ret -5
+    if count > 0:
+        physical := e7_load_u64(devices)
+        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
+        if result != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(devices)
+            ret result
+    if count > 1:
+        physical := e7_load_u64(devices + 8)
+        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
+        if result != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(devices)
+            ret result
+    if count > 2:
+        physical := e7_load_u64(devices + 16)
+        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
+        if result != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(devices)
+            ret result
+    if count > 3:
+        physical := e7_load_u64(devices + 24)
+        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
+        if result != 0:
+            e7_free_ptr(count_out)
+            e7_free_ptr(devices)
+            ret result
+    e7_free_ptr(count_out)
+    e7_free_ptr(devices)
+    ret 0
+
+vulkan_device_destroy <- (device: i64) -> nil:
+    destroy := bind_vk("vkDestroyDevice")
+    e7_ffi_call2(destroy, device, 0)

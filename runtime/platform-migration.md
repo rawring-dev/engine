@@ -36,8 +36,16 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   creates and destroys a window surface with `SDL_Vulkan_CreateSurface` and
   `vkDestroySurfaceKHR`.  A combined SDL+Vulkan e7 self-test exercises the full
   path on a hidden Vulkan window.
-- Remaining: Vulkan physical/logical device, swapchain, present/capture, e7
-  intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
+- **2b (done):** `engine/platform/vulkan.e7` creates a logical Vulkan device
+  and graphics/present queue with the `VK_KHR_swapchain` extension.  Verified
+  against a workspace-local Mesa lavapipe ICD (CPU Vulkan):
+  `VK_ICD_FILENAMES=.local-vulkan/usr/share/vulkan/icd.d/lvp_icd.json`
+  `LD_LIBRARY_PATH=.local-vulkan/usr/lib`; all 134 runtime tests pass.
+  Queue-family selection currently uses family 0; the
+  `vkGetPhysicalDeviceQueueFamilyProperties` e7 query path crashes in lavapipe
+  and must be replaced with a correct query before general-GPU use.
+- Remaining: swapchain, present/capture, queue-family query, e7 intrinsic
+  wrappers, renderer, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
