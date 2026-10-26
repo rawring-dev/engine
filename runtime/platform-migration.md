@@ -118,8 +118,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   scene to render the indexed cube through the UBO pipeline.  The scene test
   verifies the captured center is a colored cube pixel, not the cleared
   background.  Runtime: **136/136** with lavapipe.
-- Remaining: depth buffer, camera/light updates, full engine renderer/scene API,
-  image/text, and deletion of the Zig layer.
+- **6b (resource):** `vulkan_depth_target` creates a `D32_SFLOAT` depth image,
+  device memory, and depth image view; the e7 scene creates/destroys it.
+  Render-pass/pipeline depth integration is next. Runtime: **136/136**.
+- Remaining: depth render-pass/pipeline wiring, camera/light updates, full
+  engine renderer/scene API, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
