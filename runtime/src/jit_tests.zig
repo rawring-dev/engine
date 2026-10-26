@@ -1215,6 +1215,50 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                e7_free_ptr(uniform_size_out)
         \\                if uniform_ok == 0:
         \\                    result = -17
+        \\                vertex_buffer_out := e7_alloc_bytes(8)
+        \\                vertex_memory_out := e7_alloc_bytes(8)
+        \\                vertex_mapped_out := e7_alloc_bytes(8)
+        \\                vertex_ok := vulkan_vertex_buffer(device, physical, vertex_buffer_out, vertex_memory_out, vertex_mapped_out)
+        \\                mesh_vert := e7_engine_read_shader("engine/platform/shaders/mesh_simple.vert.spv")
+        \\                mesh_frag := e7_engine_read_shader("engine/platform/shaders/mesh_simple.frag.spv")
+        \\                mesh_vert_handle := e7_handle(mesh_vert)
+        \\                mesh_frag_handle := e7_handle(mesh_frag)
+        \\                mesh_pipeline_out := e7_alloc_bytes(8)
+        \\                mesh_layout_out := e7_alloc_bytes(8)
+        \\                mesh_ok := 0
+        \\                if mesh_vert_handle != 0:
+        \\                    if mesh_frag_handle != 0:
+        \\                        mesh_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, mesh_vert_handle, mesh_frag_handle, mesh_pipeline_out, mesh_layout_out)
+        \\                mesh_green := 0
+        \\                if mesh_ok != 0:
+        \\                    if vertex_ok != 0:
+        \\                        mesh_pixels_out := e7_alloc_bytes(8)
+        \\                        mesh_size_out := e7_alloc_bytes(8)
+        \\                        mesh_drew := vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, e7_load_u64(mesh_pipeline_out), framebuffers_handle, image_count, width, height, e7_load_u64(vertex_buffer_out), mesh_pixels_out, mesh_size_out)
+        \\                        mesh_pixels := e7_load_u64(mesh_pixels_out)
+        \\                        mesh_offset := ((height / 2) * width + width / 2) * 4
+        \\                        mesh_center := e7_load_u32((mesh_pixels as u64) + (mesh_offset as u64))
+        \\                        mesh_green = (mesh_center / 256) % 256
+        \\                        e7_free_ptr(mesh_pixels)
+        \\                        e7_free_ptr(mesh_pixels_out)
+        \\                        e7_free_ptr(mesh_size_out)
+        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(mesh_pipeline_out), e7_load_u64(mesh_layout_out))
+        \\                e7_free_ptr(mesh_vert_handle)
+        \\                e7_free_ptr(mesh_frag_handle)
+        \\                e7_free_ptr(mesh_pipeline_out)
+        \\                e7_free_ptr(mesh_layout_out)
+        \\                if vertex_ok != 0:
+        \\                    vulkan_vertex_buffer_destroy(device, e7_load_u64(vertex_buffer_out), e7_load_u64(vertex_memory_out))
+        \\                e7_free_ptr(vertex_buffer_out)
+        \\                e7_free_ptr(vertex_memory_out)
+        \\                e7_free_ptr(vertex_mapped_out)
+        \\                if mesh_ok == 0:
+        \\                    result = -18
+        \\                else:
+        \\                    if mesh_green != 255:
+        \\                        result = -21
+        \\                if vertex_ok == 0:
+        \\                    result = -19
         \\                vert := e7_engine_read_shader("engine/platform/shaders/triangle.vert.spv")
         \\                frag := e7_engine_read_shader("engine/platform/shaders/triangle.frag.spv")
         \\                vert_handle := e7_handle(vert)
@@ -1232,7 +1276,7 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                if pipeline_ok != 0:
         \\                    draw_pixels_out := e7_alloc_bytes(8)
         \\                    draw_size_out := e7_alloc_bytes(8)
-        \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, draw_pixels_out, draw_size_out)
+        \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, 0, draw_pixels_out, draw_size_out)
         \\                    draw_pixels := e7_load_u64(draw_pixels_out)
         \\                    center_offset := ((height / 2) * width + width / 2) * 4
         \\                    center := e7_load_u32((draw_pixels as u64) + (center_offset as u64))
@@ -1453,6 +1497,21 @@ test "e7 scene module draws a triangle and captures it" {
     ;
     const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, selftest });
     defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("scene parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("scene diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
     var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
     defer compiled.deinit();
     try std.testing.expect(compiled.analysis.ok());

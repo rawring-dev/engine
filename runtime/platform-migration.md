@@ -93,7 +93,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   a vertex buffer (position/color) and `Scene` UBO.  Pipeline integration is
   pending; the first attempt crashed inside `vkCreateGraphicsPipelines` and was
   reverted rather than committed unverified.
-- Remaining: mesh pipeline/draw path, full engine renderer/scene API,
+- **5c (done):** added a host-visible vertex buffer, a vertex-input pipeline
+  with empty layout, and vertex-buffer binding in the draw path.  The e7 test
+  now draws from the vertex buffer and verifies the captured center is the
+  vertex shader's green.  Runtime: **136/136** with lavapipe.  The earlier
+  crash was caused by stale/incorrect cleanup and the UBO descriptor path; the
+  empty-layout mesh path is stable.
+- Remaining: UBO/descriptor mesh path, full engine renderer/scene API,
   image/text, and deletion of the Zig layer.
 
 ## Migration stages
