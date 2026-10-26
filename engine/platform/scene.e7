@@ -140,7 +140,7 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ubo_memory_out := e7_alloc_bytes(8)
     ubo_mapped_out := e7_alloc_bytes(8)
     ubo_size_out := e7_alloc_bytes(8)
-    if vulkan_uniform_resources(device, physical, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
+    if vulkan_uniform_resources(device, physical, 1, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
         ret 0
     ubo_layout := e7_load_u64(ubo_layout_out)
     ubo_mapped := e7_load_u64(ubo_mapped_out)
@@ -246,6 +246,7 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         36,
         e7_load_u64(scene + 128),
         e7_load_u64(scene + 168),
+        0,
         1,
         out_pixels,
         out_size,

@@ -135,7 +135,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **7c (done):** `scene_set_cube_angle` writes the engine's `RY(angle) * RX(0.35)`
   model matrix; the scene test rotates the cube before capture. Runtime:
   **136/136**.
-- Remaining: per-object slots/draw API, full engine renderer/scene API,
+- **7d (done):** the scene UBO is now a dynamic uniform buffer with per-draw
+  dynamic offsets; buffer/descriptor slot count is configurable and the draw
+  path binds a dynamic offset. This is the foundation for per-object model/tint
+  slots. Runtime: **136/136**.
+- Remaining: multi-object slot filling/draw API, full engine renderer/scene API,
   image/text, and deletion of the Zig layer.
 
 ## Migration stages

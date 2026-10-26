@@ -1107,6 +1107,7 @@ vulkan_draw_triangle_capture <- (
     index_count: i64,
     descriptor_set: i64,
     pipeline_layout: i64,
+    dynamic_offset: i64,
     has_depth: i64,
     out_pixels: u64,
     out_size: u64,
@@ -1227,8 +1228,11 @@ vulkan_draw_triangle_capture <- (
     descriptor_sets := e7_alloc_bytes(8)
     if descriptor_set != 0:
         e7_store_u64(descriptor_sets, descriptor_set)
+        dynamic_offsets := e7_alloc_bytes(4)
+        e7_store_u32(dynamic_offsets, dynamic_offset)
         bind_descriptor := bind_vk("vkCmdBindDescriptorSets")
-        e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 0, 0)
+        e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, dynamic_offsets)
+        e7_free_ptr(dynamic_offsets)
     if index_buffer != 0:
         bind_index := bind_vk("vkCmdBindIndexBuffer")
         e7_ffi_call4(bind_index, command, index_buffer, 0, 0)
@@ -1342,6 +1346,7 @@ vulkan_draw_triangle_capture <- (
 vulkan_uniform_resources <- (
     device: i64,
     physical: i64,
+    slot_count: i64,
     out_set_layout: u64,
     out_pool: u64,
     out_set: u64,
@@ -1350,7 +1355,7 @@ vulkan_uniform_resources <- (
     out_mapped: u64,
     out_size: u64,
 ) -> i64:
-    uniform_size := 320
+    uniform_size := slot_count * 320
     buffer_info := e7_alloc_bytes(56)
     e7_store_u32(buffer_info, 12)
     e7_store_u64(buffer_info + 24, uniform_size)
@@ -1386,7 +1391,7 @@ vulkan_uniform_resources <- (
 
     binding := e7_alloc_bytes(24)
     e7_store_u32(binding, 0)
-    e7_store_u32(binding + 4, 6)
+    e7_store_u32(binding + 4, 8)
     e7_store_u32(binding + 8, 1)
     e7_store_u32(binding + 12, 1)
     layout_info := e7_alloc_bytes(32)
@@ -1398,7 +1403,7 @@ vulkan_uniform_resources <- (
     set_layout := e7_load_u64(out_set_layout)
 
     pool_size := e7_alloc_bytes(8)
-    e7_store_u32(pool_size, 6)
+    e7_store_u32(pool_size, 8)
     e7_store_u32(pool_size + 4, 1)
     pool_info := e7_alloc_bytes(40)
     e7_store_u32(pool_info, 33)
@@ -1423,13 +1428,13 @@ vulkan_uniform_resources <- (
     descriptor_buffer := e7_alloc_bytes(24)
     e7_store_u64(descriptor_buffer, buffer)
     e7_store_u64(descriptor_buffer + 8, 0)
-    e7_store_u64(descriptor_buffer + 16, uniform_size)
+    e7_store_u64(descriptor_buffer + 16, 320)
     write := e7_alloc_bytes(64)
     e7_store_u32(write, 35)
     e7_store_u64(write + 16, descriptor_set)
     e7_store_u32(write + 24, 0)
     e7_store_u32(write + 32, 1)
-    e7_store_u32(write + 36, 6)
+    e7_store_u32(write + 36, 8)
     e7_store_u64(write + 48, descriptor_buffer)
     update_sets := bind_vk("vkUpdateDescriptorSets")
     e7_ffi_call5(update_sets, device, 1, write, 0, 0)
@@ -1527,7 +1532,7 @@ vulkan_vertex_buffer_destroy <- (device: i64, buffer: i64, memory: i64) -> nil:
 vulkan_ubo_set_layout <- (device: i64, out_set_layout: u64) -> i64:
     binding := e7_alloc_bytes(24)
     e7_store_u32(binding, 0)
-    e7_store_u32(binding + 4, 6)
+    e7_store_u32(binding + 4, 8)
     e7_store_u32(binding + 8, 1)
     e7_store_u32(binding + 12, 1)
     info := e7_alloc_bytes(32)
