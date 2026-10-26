@@ -31,8 +31,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   tracks close/quit and mouse motion, and exposes keyboard/mouse queries.  The
   runtime test reads this module from disk, compiles it through the e7 pipeline,
   JITs it, and runs it.
-- Remaining: Vulkan device/swapchain/present/capture, e7 intrinsic wrappers,
-  renderer, image/text, and deletion of the Zig layer.
+- **2a (done):** `engine/platform/vulkan.e7` creates a Vulkan instance with
+  the platform extensions reported by `SDL_Vulkan_GetInstanceExtensions`, then
+  creates and destroys a window surface with `SDL_Vulkan_CreateSurface` and
+  `vkDestroySurfaceKHR`.  A combined SDL+Vulkan e7 self-test exercises the full
+  path on a hidden Vulkan window.
+- Remaining: Vulkan physical/logical device, swapchain, present/capture, e7
+  intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
