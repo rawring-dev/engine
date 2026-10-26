@@ -1196,8 +1196,26 @@ test "e7 SDL+Vulkan platform creates render targets and captures a frame" {
         \\                render_pass_handle := e7_load_u64(rp_targets)
         \\                views_handle := e7_load_u64(view_targets)
         \\                framebuffers_handle := e7_load_u64(fb_targets)
+        \\                vert := e7_engine_read_shader("engine/platform/shaders/triangle.vert.spv")
+        \\                frag := e7_engine_read_shader("engine/platform/shaders/triangle.frag.spv")
+        \\                vert_handle := e7_handle(vert)
+        \\                frag_handle := e7_handle(frag)
+        \\                pipeline_out := e7_alloc_bytes(8)
+        \\                layout_out := e7_alloc_bytes(8)
+        \\                pipeline_ok := 0
+        \\                if vert_handle != 0:
+        \\                    if frag_handle != 0:
+        \\                        pipeline_ok = vulkan_graphics_pipeline(device, render_pass_handle, vert_handle, frag_handle, pipeline_out, layout_out)
+        \\                if pipeline_ok != 0:
+        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(pipeline_out), e7_load_u64(layout_out))
+        \\                e7_free_ptr(pipeline_out)
+        \\                e7_free_ptr(layout_out)
+        \\                e7_free_ptr(vert_handle)
+        \\                e7_free_ptr(frag_handle)
         \\                if targets_ok != 0:
         \\                    vulkan_render_targets_destroy(device, render_pass_handle, views_handle, framebuffers_handle, image_count)
+        \\                if pipeline_ok == 0:
+        \\                    result = -14
         \\                e7_free_ptr(rp_targets)
         \\                e7_free_ptr(view_targets)
         \\                e7_free_ptr(fb_targets)

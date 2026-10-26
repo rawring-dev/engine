@@ -63,8 +63,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **3a (done):** `vulkan_render_targets` creates a single-color-attachment
   render pass, one image view per swapchain image, and matching framebuffers;
   `vulkan_render_targets_destroy` tears them down.  Verified with lavapipe.
-- Remaining: graphics pipeline, draw calls, e7 intrinsic wrappers, image/text,
-  and deletion of the Zig layer.
+- **3b (done):** `vulkan_graphics_pipeline` creates shader modules from e7
+  `str` SPIR-V data, an empty pipeline layout, and a full graphics pipeline
+  (dynamic viewport/scissor, triangle list, no vertex input).  Added
+  `engine/platform/shaders/triangle.{vert,frag}.spv` and the `e7_handle`
+  intrinsic for passing typed string handles through raw FFI slots.  Verified
+  with lavapipe.
+- Remaining: draw calls, e7 intrinsic wrappers, image/text, and deletion of the
+  Zig layer.
 
 ## Migration stages
 

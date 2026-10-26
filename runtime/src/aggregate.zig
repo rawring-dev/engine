@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [46]Symbol {
+pub fn symbols() [47]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -613,6 +613,7 @@ pub fn symbols() [46]Symbol {
         .{ .name = "e7_str_data", .address = @intFromPtr(&e7_str_data) },
         .{ .name = "e7_cstr", .address = @intFromPtr(&e7_cstr) },
         .{ .name = "e7_memcpy", .address = @intFromPtr(&abi.e7_memcpy) },
+        .{ .name = "e7_handle", .address = @intFromPtr(&e7_handle) },
         .{ .name = "e7_alloc_bytes", .address = @intFromPtr(&e7_alloc_bytes) },
         .{ .name = "e7_free_ptr", .address = @intFromPtr(&e7_free_ptr) },
         .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
@@ -843,4 +844,10 @@ pub export fn e7_cstr(str: i64) callconv(.c) i64 {
     }
     ptr[@intCast(len)] = 0;
     return @intCast(@intFromPtr(raw));
+}
+
+/// Identity used by e7 code to pass a typed value (especially `str`) through a
+/// raw 64-bit FFI slot or to inspect a handle for zero.
+pub export fn e7_handle(value: i64) callconv(.c) i64 {
+    return value;
 }

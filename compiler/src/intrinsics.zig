@@ -355,10 +355,11 @@ pub const functions = [_]Function{
     // Generic C FFI bridge used by e7 platform libraries.  Arguments are raw
     // 64-bit slots, so strings/vectors are passed as their runtime handles.
     .{ .name = "e7_cffi_bind", .params = &.{ .str_, .str_ }, .result = .u64_ },
-    .{ .name = "e7_str_data", .params = &.{.str_}, .result = .u64_ },
+    .{ .name = "e7_str_data", .params = &.{.any_}, .result = .u64_ },
     .{ .name = "e7_cstr", .params = &.{.str_}, .result = .u64_ },
     .{ .name = "e7_memcpy", .params = &.{ .any_, .any_, .any_ }, .result = .unit },
-    .{ .name = "e7_str_len", .params = &.{.str_}, .result = .i64_ },
+    .{ .name = "e7_handle", .params = &.{.any_}, .result = .u64_ },
+    .{ .name = "e7_str_len", .params = &.{.any_}, .result = .i64_ },
     .{ .name = "e7_str_new", .params = &.{ .u64_, .i64_ }, .result = .str_ },
     .{ .name = "e7_alloc_bytes", .params = &.{.i64_}, .result = .u64_ },
     .{ .name = "e7_free_ptr", .params = &.{.any_}, .result = .unit },

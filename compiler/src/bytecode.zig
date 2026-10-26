@@ -157,6 +157,7 @@ pub const RuntimeFunction = enum(u8) {
     str_data,
     cstr,
     memcpy,
+    handle,
     str_len,
     str_new,
     alloc_bytes,
@@ -292,6 +293,7 @@ pub const RuntimeFunction = enum(u8) {
             .str_data => "e7_str_data",
             .cstr => "e7_cstr",
             .memcpy => "e7_memcpy",
+            .handle => "e7_handle",
             .str_len => "e7_str_len",
             .str_new => "e7_str_new",
             .alloc_bytes => "e7_alloc_bytes",
@@ -411,6 +413,7 @@ pub const RuntimeFunction = enum(u8) {
             .str_data, .cstr, .str_len, .alloc_bytes, .free_ptr => 1,
             .str_new => 2,
             .memcpy => 3,
+            .handle => 1,
             .load_i64, .load_u8, .load_u16, .load_u32, .load_u64 => 1,
             .store_i64, .store_u8, .store_u16, .store_u32, .store_u64 => 2,
         };
