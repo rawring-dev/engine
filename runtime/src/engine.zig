@@ -57,16 +57,31 @@ pub const Key = enum(i64) {
     look_up = 9, // Up arrow
     look_down = 10, // Down arrow
     jump = 11, // Space
+    backspace = 12, // Backspace (text fields)
+    enter = 13, // Return / keypad Enter (text fields)
 };
 
-const key_count = 12;
+const key_count = 14;
 
-/// Raw device state only: which logical keys are held and how far the mouse
-/// moved since the previous query.  e7 turns this into camera motion.
+/// Maximum UTF-8 bytes collected from SDL_EVENT_TEXT_INPUT in one frame.
+pub const text_input_capacity = 256;
+
+/// Raw device state only: which logical keys are held, how far the mouse
+/// moved since the previous query, the absolute cursor position/buttons, and
+/// this frame's UTF-8 text input.  The runtime does not interpret any of it;
+/// e7/UI code turns it into camera or widget behaviour.
 const InputState = struct {
     keys: [key_count]bool = [_]bool{false} ** key_count,
     mouse_dx: f32 = 0.0,
     mouse_dy: f32 = 0.0,
+    /// Cursor position in window pixels (top-left origin).
+    mouse_x: f32 = 0.0,
+    mouse_y: f32 = 0.0,
+    /// Left / right / middle button state.
+    mouse_buttons: [3]bool = [_]bool{false} ** 3,
+    /// UTF-8 bytes delivered by SDL_EVENT_TEXT_INPUT since the last pump.
+    text_input: [text_input_capacity]u8 = undefined,
+    text_input_len: usize = 0,
 };
 
 pub const Symbol = abi.Symbol;
@@ -185,6 +200,17 @@ fn setKeyLocked(key: Key, pressed: bool) void {
     state.input.keys[@intCast(@intFromEnum(key))] = pressed;
 }
 
+/// Map SDL mouse button constants to the public 0=left, 1=right, 2=middle
+/// indices used by `e7_engine_mouse_down`.
+fn mapSdlButton(button: u8) ?usize {
+    return switch (button) {
+        c.SDL_BUTTON_LEFT => 0,
+        c.SDL_BUTTON_RIGHT => 1,
+        c.SDL_BUTTON_MIDDLE => 2,
+        else => null,
+    };
+}
+
 fn mapSdlKey(keycode: u32) ?Key {
     return switch (keycode) {
         c.SDLK_W => .forward,
@@ -199,16 +225,20 @@ fn mapSdlKey(keycode: u32) ?Key {
         c.SDLK_UP => .look_up,
         c.SDLK_DOWN => .look_down,
         c.SDLK_SPACE => .jump,
+        c.SDLK_BACKSPACE => .backspace,
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => .enter,
         else => null,
     };
 }
 
 /// Drain SDL events into the engine input state.  Requires `state.mutex`.
+/// Per-frame text input is cleared at the start of each pump.
 fn pumpEventsLocked(window_handle: i64) void {
     const window = window_mod.registry.get(@intCast(window_handle)) orelse {
         state.quit_requested = true;
         return;
     };
+    state.input.text_input_len = 0;
     var event: c.SDL_Event = undefined;
     while (c.SDL_PollEvent(&event)) {
         const kind: u32 = @intCast(event.type);
@@ -219,6 +249,9 @@ fn pumpEventsLocked(window_handle: i64) void {
             },
             c.SDL_EVENT_MOUSE_MOTION => {
                 if (event.motion.windowID != window.id) continue;
+                // Absolute cursor position for UI hit-testing, in window pixels.
+                state.input.mouse_x = event.motion.x;
+                state.input.mouse_y = event.motion.y;
                 // Only accumulate relative look while the window owns the
                 // pointer/focus.  Focus changes can otherwise inject a large
                 // synthetic delta that looks like the cube teleporting around
@@ -226,6 +259,11 @@ fn pumpEventsLocked(window_handle: i64) void {
                 if ((c.SDL_GetWindowFlags(window.handle) & c.SDL_WINDOW_INPUT_FOCUS) == 0) continue;
                 state.input.mouse_dx += @max(-look_delta_limit, @min(event.motion.xrel, look_delta_limit));
                 state.input.mouse_dy += @max(-look_delta_limit, @min(event.motion.yrel, look_delta_limit));
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.windowID != window.id) continue;
+                const button = mapSdlButton(event.button.button) orelse continue;
+                state.input.mouse_buttons[button] = event.button.down;
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                 state.input.mouse_dx = 0.0;
@@ -240,6 +278,14 @@ fn pumpEventsLocked(window_handle: i64) void {
                 }
                 if (mapSdlKey(event.key.key)) |key| setKeyLocked(key, pressed);
             },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (event.text.windowID != window.id) continue;
+                const text = std.mem.sliceTo(event.text.text, 0);
+                const available = state.input.text_input.len - state.input.text_input_len;
+                const count = @min(text.len, available);
+                @memcpy(state.input.text_input[state.input.text_input_len..][0..count], text[0..count]);
+                state.input.text_input_len += count;
+            },
             else => {},
         }
     }
@@ -249,7 +295,7 @@ fn pumpEventsLocked(window_handle: i64) void {
 pub fn injectKeyForTest(code: i64, pressed: bool) void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    if (code < 0 or code > @intFromEnum(Key.jump)) return;
+    if (code < 0 or code > @intFromEnum(Key.enter)) return;
     setKeyLocked(@enumFromInt(code), pressed);
 }
 
@@ -258,6 +304,32 @@ pub fn injectMouseDeltaForTest(dx: i64, dy: i64) void {
     defer state.mutex.unlock();
     state.input.mouse_dx += @floatFromInt(dx);
     state.input.mouse_dy += @floatFromInt(dy);
+}
+
+/// Headless tests: set the absolute cursor position (window pixels).
+pub fn injectMousePositionForTest(x: i64, y: i64) void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    state.input.mouse_x = @floatFromInt(x);
+    state.input.mouse_y = @floatFromInt(y);
+}
+
+/// Headless tests: set a mouse button state (0 left, 1 right, 2 middle).
+pub fn injectMouseButtonForTest(button: i64, pressed: bool) void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (button < 0 or button > 2) return;
+    state.input.mouse_buttons[@intCast(button)] = pressed;
+}
+
+/// Headless tests: append UTF-8 text as if SDL_EVENT_TEXT_INPUT fired.
+pub fn injectTextForTest(text: []const u8) void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const available = state.input.text_input.len - state.input.text_input_len;
+    const count = @min(text.len, available);
+    @memcpy(state.input.text_input[state.input.text_input_len..][0..count], text[0..count]);
+    state.input.text_input_len += count;
 }
 
 /// Extract the bytes of an e7 `str` value (aggregate: [len, bytes...]).
@@ -484,7 +556,7 @@ pub export fn e7_engine_window_pump(handle: i64) callconv(.c) i64 {
 pub export fn e7_engine_key_down(code: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
-    if (code < 0 or code > @intFromEnum(Key.jump)) return 0;
+    if (code < 0 or code > @intFromEnum(Key.enter)) return 0;
     return @intFromBool(state.input.keys[@intCast(code)]);
 }
 
@@ -500,6 +572,39 @@ pub export fn e7_engine_mouse_dx() callconv(.c) i64 {
 
 /// Accumulated vertical mouse motion in pixels since the previous read;
 /// reading clears the vertical accumulator.
+/// Absolute cursor position in window pixels (top-left origin); the last
+/// SDL_EVENT_MOUSE_MOTION position seen by the engine pump.
+pub export fn e7_engine_mouse_x() callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    return @intFromFloat(state.input.mouse_x);
+}
+
+pub export fn e7_engine_mouse_y() callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    return @intFromFloat(state.input.mouse_y);
+}
+
+/// Mouse button state: 0 left, 1 right, 2 middle; anything else returns 0.
+pub export fn e7_engine_mouse_down(button: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (button < 0 or button > 2) return 0;
+    return @intFromBool(state.input.mouse_buttons[@intCast(button)]);
+}
+
+/// UTF-8 text collected from SDL_EVENT_TEXT_INPUT in the current frame as an
+/// e7 `str` (empty when no text was typed); cleared at the next pump.
+pub export fn e7_engine_text_input() callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    return aggregate.e7_str_new(
+        @intCast(@intFromPtr(&state.input.text_input)),
+        @intCast(state.input.text_input_len),
+    );
+}
+
 pub export fn e7_engine_mouse_dy() callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
@@ -897,6 +1002,51 @@ pub export fn e7_engine_scene_draw_custom_rot(
     return 0;
 }
 
+/// Draw one screen-space UI quad in the frame opened by
+/// `e7_engine_scene_begin_frame`, after the 3D world draws and before
+/// `e7_engine_scene_end_frame`.  `x`/`y` are pixels from the top-left,
+/// `width`/`height` are pixel sizes, `r`/`g`/`b`/`a` are 0..255 straight-alpha
+/// tint components.  Texture id 0 draws a solid tinted rectangle (built-in
+/// white texture); text/mesh textures from `e7_engine_scene_texture_create`
+/// work directly.  Returns 0 on success, -1 on invalid frame/texture/size.
+pub export fn e7_engine_scene_draw_ui_quad(
+    handle: i64,
+    texture_id: i64,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    r: i64,
+    g: i64,
+    b: i64,
+    a: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    if (texture_id < 0 or texture_id > std.math.maxInt(u32)) return -1;
+    if (width <= 0 or height <= 0) return -1;
+    const tint = [4]f32{
+        @as(f32, @floatFromInt(std.math.clamp(r, 0, 255))) / 255.0,
+        @as(f32, @floatFromInt(std.math.clamp(g, 0, 255))) / 255.0,
+        @as(f32, @floatFromInt(std.math.clamp(b, 0, 255))) / 255.0,
+        @as(f32, @floatFromInt(std.math.clamp(a, 0, 255))) / 255.0,
+    };
+    scene.drawUiQuad(
+        @intCast(texture_id),
+        @floatFromInt(x),
+        @floatFromInt(y),
+        @floatFromInt(width),
+        @floatFromInt(height),
+        tint,
+    ) catch {
+        state.scene_failed_draws += 1;
+        return -1;
+    };
+    state.scene_boxes += 1;
+    return 0;
+}
+
 pub export fn e7_engine_scene_end_frame(handle: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
@@ -920,7 +1070,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [28]Symbol {
+pub fn symbols() [33]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -950,6 +1100,11 @@ pub fn symbols() [28]Symbol {
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
         .{ .name = "e7_engine_mouse_dx", .address = @intFromPtr(&e7_engine_mouse_dx) },
         .{ .name = "e7_engine_mouse_dy", .address = @intFromPtr(&e7_engine_mouse_dy) },
+        .{ .name = "e7_engine_mouse_x", .address = @intFromPtr(&e7_engine_mouse_x) },
+        .{ .name = "e7_engine_mouse_y", .address = @intFromPtr(&e7_engine_mouse_y) },
+        .{ .name = "e7_engine_mouse_down", .address = @intFromPtr(&e7_engine_mouse_down) },
+        .{ .name = "e7_engine_text_input", .address = @intFromPtr(&e7_engine_text_input) },
+        .{ .name = "e7_engine_scene_draw_ui_quad", .address = @intFromPtr(&e7_engine_scene_draw_ui_quad) },
     };
 }
 
@@ -985,6 +1140,40 @@ test "engine frame limiter captures a headless frame" {
     injectKeyForTest(@intFromEnum(Key.forward), false);
     try std.testing.expectEqual(@as(i64, 0), e7_engine_key_down(@intFromEnum(Key.forward)));
     try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_camera(scene, 0, 1800, 5500, 0, -140));
+
+    // UI input state: absolute cursor position, mouse buttons, text input, and
+    // the new Backspace/Enter logical key codes.
+    injectMousePositionForTest(123, 45);
+    try std.testing.expectEqual(@as(i64, 123), e7_engine_mouse_x());
+    try std.testing.expectEqual(@as(i64, 45), e7_engine_mouse_y());
+    injectMouseButtonForTest(0, true);
+    injectMouseButtonForTest(2, true);
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_mouse_down(0));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_mouse_down(1));
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_mouse_down(2));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_mouse_down(3));
+    injectMouseButtonForTest(0, false);
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_mouse_down(0));
+
+    injectTextForTest("hi");
+    const text_value = e7_engine_text_input();
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_str_len(text_value));
+    const text_bytes: [*]const u8 = @ptrFromInt(@as(usize, @intCast(text_value + 8)));
+    try std.testing.expectEqualStrings("hi", text_bytes[0..2]);
+
+    injectKeyForTest(@intFromEnum(Key.backspace), true);
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_key_down(@intFromEnum(Key.backspace)));
+    injectKeyForTest(@intFromEnum(Key.backspace), false);
+    injectKeyForTest(@intFromEnum(Key.enter), true);
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_key_down(@intFromEnum(Key.enter)));
+    injectKeyForTest(@intFromEnum(Key.enter), false);
+    // Existing jump code (11) is unchanged and the new codes are 12/13.
+    try std.testing.expectEqual(@as(i64, 11), @intFromEnum(Key.jump));
+    try std.testing.expectEqual(@as(i64, 12), @intFromEnum(Key.backspace));
+    try std.testing.expectEqual(@as(i64, 13), @intFromEnum(Key.enter));
+    injectKeyForTest(@intFromEnum(Key.jump), true);
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_key_down(@intFromEnum(Key.jump)));
+    injectKeyForTest(@intFromEnum(Key.jump), false);
 
     var frame: i64 = 0;
     while (frame < 2) : (frame += 1) {
@@ -1222,8 +1411,57 @@ test "engine texture, material draw, and custom mesh ABI" {
         1000,
         texture_id,
     ));
+    // Screen-space UI quads: solid tint (texture 0) and the material texture.
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_ui_quad(
+        scene,
+        0,
+        0,
+        0,
+        100,
+        40,
+        255,
+        0,
+        0,
+        255,
+    ));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_ui_quad(
+        scene,
+        texture_id,
+        10,
+        10,
+        60,
+        30,
+        0,
+        255,
+        0,
+        128,
+    ));
+    try std.testing.expectEqual(@as(i64, -1), e7_engine_scene_draw_ui_quad(
+        scene,
+        9999,
+        0,
+        0,
+        10,
+        10,
+        255,
+        255,
+        255,
+        255,
+    ));
+    try std.testing.expectEqual(@as(i64, -1), e7_engine_scene_draw_ui_quad(
+        scene,
+        0,
+        0,
+        0,
+        0,
+        10,
+        255,
+        255,
+        255,
+        255,
+    ));
     try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));
-    try std.testing.expectEqual(@as(i64, 2), renderStats().scene_boxes);
+    try std.testing.expectEqual(@as(i64, 4), renderStats().scene_boxes);
     try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_texture_destroy(scene, texture_id));
     try std.testing.expectEqual(@as(i32, 0), image_mod.e7_image_free(image_handle));
 }

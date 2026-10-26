@@ -126,6 +126,10 @@ impl Gpu:
     pub upload_texture <- (gpu: &mut Gpu, image_handle: u64) -> u64:
         ret e7_engine_scene_texture_create(gpu.scene, image_handle)
 
+    pub destroy_texture <- (gpu: &Gpu, texture: u64) -> nil:
+        e7_engine_scene_texture_destroy(gpu.scene, texture)
+        ret
+
     pub upload_mesh <- (
         gpu: &mut Gpu,
         vertices: [f32],
@@ -133,6 +137,24 @@ impl Gpu:
         layout: i32,
     ) -> u64:
         ret e7_engine_scene_mesh_upload(gpu.scene, vertices, indices, layout)
+
+    # Screen-space UI quad: pixel coordinates from the top-left, RGBA 0..255.
+    # Call after world draws (inside begin_frame/end_frame); texture 0 is a
+    # solid tinted rectangle, text images work through their texture id.
+    pub draw_ui_quad <- (
+        gpu: &Gpu,
+        texture: u64,
+        x: i64,
+        y: i64,
+        w: i64,
+        h: i64,
+        r: i64,
+        g: i64,
+        b: i64,
+        a: i64,
+    ) -> nil:
+        e7_engine_scene_draw_ui_quad(gpu.scene, texture, x, y, w, h, r, g, b, a)
+        ret
 
 
 # Asset text reader wrapper (OBJ/shader text).  Raw intrinsic stays here.

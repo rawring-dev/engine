@@ -2,6 +2,7 @@ use ecs::*;
 use events::*;
 use gfx::*;
 use time::*;
+use ui::*;
 
 @trigger(Update)
 pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
@@ -20,6 +21,8 @@ pub render_scene <- sys (
     meshes: select &Transform, &MeshRenderer, &Material from Components,
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
+    ui_state: res &mut UIState,
+    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
 ):
     # First-person: the ECS camera is the eye.  Every renderable shares it.
     for camera in cameras:
@@ -114,6 +117,10 @@ pub render_scene <- sys (
             e7_f32_to_milli(mesh_material.tint[2]),
             mesh_material.texture,
         )
+    # UI hook: screen-space panels/buttons/text after the 3D world and before
+    # end_frame.  The UI library owns textures/caches; scene owns submission.
+    for (rect, panel, label, button, field) in widgets:
+        draw_widget(gpu, ui_state, widgets.entity(), rect, panel, label, button, field)
     gpu.end_frame()
 
     window.quit_requested = window.should_close()

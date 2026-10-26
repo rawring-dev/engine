@@ -176,6 +176,16 @@ pub const functions = [_]Function{
         .units = "mesh id, position/scale milli-units, XYZ euler milli-radians, rgb tint milli, texture id",
     },
     .{
+        // Screen-space UI quad: handle, texture id, pixel x/y/w/h, RGBA 0..255.
+        .name = "e7_engine_scene_draw_ui_quad",
+        .params = &.{
+            .u64_, .u64_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_,
+        },
+        .result = .i64_,
+        .units = "texture id, pixel x/y/w/h, rgba 0..255",
+    },
+    .{
         .name = "e7_engine_scene_draw_shape_tex",
         .params = &.{
             .u64_, .i32_, .i64_, .i64_, .i64_, .i64_, .i64_,
@@ -223,7 +233,8 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
-        // Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E, 5 Q, 6 Shift, 7-10 arrows, 11 Space.
+        // Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E, 5 Q, 6 Shift, 7-10 arrows,
+        // 11 Space, 12 Backspace, 13 Enter.
         .name = "e7_engine_key_down",
         .params = &.{.i64_},
         .result = .i64_,
@@ -239,6 +250,55 @@ pub const functions = [_]Function{
         .name = "e7_engine_mouse_dy",
         .params = &.{},
         .result = .i64_,
+    },
+    .{
+        // Absolute cursor position in window pixels (top-left origin).
+        .name = "e7_engine_mouse_x",
+        .params = &.{},
+        .result = .i64_,
+    },
+    .{
+        .name = "e7_engine_mouse_y",
+        .params = &.{},
+        .result = .i64_,
+    },
+    .{
+        // 0 left, 1 right, 2 middle.
+        .name = "e7_engine_mouse_down",
+        .params = &.{.i64_},
+        .result = .i64_,
+    },
+    .{
+        // This frame's SDL_EVENT_TEXT_INPUT bytes as an e7 `str`.
+        .name = "e7_engine_text_input",
+        .params = &.{},
+        .result = .str_,
+    },
+    .{
+        // SDL3_ttf font loading and text rasterization (runtime/src/text.zig).
+        .name = "e7_font_load",
+        .params = &.{ .str_, .i64_ },
+        .result = .u64_,
+        .units = "font path + point size -> font handle",
+    },
+    .{
+        .name = "e7_font_free",
+        .params = &.{.u64_},
+        .result = .i64_,
+    },
+    .{
+        // Packed (width << 32) | height in pixels.
+        .name = "e7_text_measure",
+        .params = &.{ .u64_, .str_ },
+        .result = .i64_,
+        .units = "packed width<<32|height",
+    },
+    .{
+        // Font handle + text + 0..255 RGB -> image handle (RGBA8, transparent
+        // background) usable with e7_image_width/height/pixels/free.
+        .name = "e7_text_image",
+        .params = &.{ .u64_, .str_, .i64_, .i64_, .i64_ },
+        .result = .u64_,
     },
 
     // Float helpers: values are f64 bit patterns stored in i64 slots.
@@ -324,6 +384,14 @@ test "compiler-known intrinsics map to bytecode runtime calls with matching arit
     try std.testing.expectEqual(@as(usize, 15), draw_shape_rot.params.len);
     try std.testing.expectEqual(ValueType.i32_, draw_shape_rot.params[1]);
     try std.testing.expectEqual(ValueType.u64_, draw_shape_rot.params[14]);
+    const ui_quad = lookup("e7_engine_scene_draw_ui_quad").?;
+    try std.testing.expectEqual(@as(usize, 10), ui_quad.params.len);
+    try std.testing.expectEqual(ValueType.i64_, ui_quad.result);
+    const text_image = lookup("e7_text_image").?;
+    try std.testing.expectEqual(@as(usize, 5), text_image.params.len);
+    try std.testing.expectEqual(ValueType.u64_, text_image.result);
+    try std.testing.expectEqual(ValueType.u64_, lookup("e7_font_load").?.result);
+    try std.testing.expectEqual(@as(usize, 0), lookup("e7_engine_text_input").?.params.len);
     const draw_custom_rot = lookup("e7_engine_scene_draw_custom_rot").?;
     try std.testing.expectEqual(@as(usize, 15), draw_custom_rot.params.len);
     try std.testing.expectEqual(ValueType.u64_, draw_custom_rot.params[1]);

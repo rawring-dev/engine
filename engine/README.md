@@ -21,7 +21,7 @@ engine/
 ├── assets.e7      PNG/JPEG image + OBJ asset resources/plugin
 ├── assets/        cube.obj and image test fixtures
 ├── bootstrap.e7   Init window/scene/shaders and DeInit teardown
-├── ui.e7          Ui plugin, trait dependencies, UI ECS sample
+├── ui.e7          UI font/text, panels, labels, buttons, text fields, triggers
 └── shaders/       e7s shader sources + generated SPIR-V
 ```
 
@@ -79,9 +79,21 @@ engine/
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
   one `draw_shape_rot` per `Renderable` + `Transform` + `BodyBounds` +
   `Material` row (object count is dynamic; there is no fixed per-frame limit),
-  one `draw_custom_rot` per uploaded OBJ mesh row, and `end_frame`.  The draw
-  calls receive the full `Transform.rotation` XYZ Euler triple, so physics
-  rotation around any axis is rendered (previous code passed only rotation[1]).
+  one `draw_custom_rot` per uploaded OBJ mesh row, calls the `ui_render`
+  hook, and `end_frame`.  The draw calls receive the full `Transform.rotation`
+  XYZ Euler triple, so physics rotation around any axis is rendered.
+- `ui_render(gpu)` in `engine/scene.e7` calls `ui::draw_widget(...)` after the
+  3D draws while the frame is still open. UI panels/buttons/text use
+  `Gpu.draw_ui_quad(texture, x, y, w, h, r, g, b, a)` (pixels from top-left,
+  RGBA 0..255, straight alpha over the 3D scene).
+- UI widgets (each row carries all five component slots; zero/empty selects
+  the role): `UIRect`, `UIPanel`, `UILabel`, `UIButton { label, action }`,
+  `UITextField { text, max_len, focused, revision, texture, ... }`.
+  `UIState` tracks cursor/hover/focus/clicked action/font/text texture cache.
+  Mouse hit-testing and typing run in `@trigger(PreUpdate) ui_interact`;
+  `UIButtonPressed` is invoked from `main` when `clicked_action` is set.
+  Buttons currently reset the cube stack (action 1) and toggle the light
+  (action 2); the text field supports typing, Backspace, and Enter-to-blur.
 - `Renderable { kind, colour }` marks drawable rows and selects a procedural
   mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `Material { texture, tint }`
   provides the per-object GPU texture and RGB tint (texture * tint * vertex
@@ -93,7 +105,8 @@ engine/
   should_close/destroy`, `gpu.create_scene/read_shader/set_camera/set_light/
   begin_frame/draw_renderable/draw_custom/end_frame/destroy_scene/
   upload_texture/upload_mesh`, `image.upload_texture/free`,
-  `mesh.upload`, `input.key_down/mouse_dx/mouse_dy`, `time.now_ms/start`.
+  `mesh.upload`, `input.key_down/mouse_dx/mouse_dy/text_input/cursor_x/y/
+  mouse_down`, `time.now_ms/start`.
   Call sites use methods; raw intrinsics only appear inside the wrappers.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:

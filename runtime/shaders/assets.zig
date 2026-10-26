@@ -7,3 +7,5 @@
 
 pub const cube_vert_spv = @embedFile("cube.vert.spv");
 pub const cube_frag_spv = @embedFile("cube.frag.spv");
+pub const ui_vert_spv = @embedFile("ui.vert.spv");
+pub const ui_frag_spv = @embedFile("ui.frag.spv");

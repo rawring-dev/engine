@@ -40,6 +40,7 @@ pub const Error = vulkan.Error || error{
     TextureLimit,
     InvalidTexture,
     InvalidMesh,
+    InvalidQuad,
 };
 
 /// A scene frame starts from this background colour unless overridden.
@@ -147,6 +148,14 @@ const RecordedObject = struct {
     tint: [4]f32,
     mesh: MeshRef,
     texture: u32,
+};
+
+/// Screen-space UI vertex: already in Vulkan clip space (top-left pixel origin
+/// converted on the CPU), top-left UV origin, straight-alpha RGBA tint.
+const UiVertex = extern struct {
+    position: [2]f32,
+    uv: [2]f32,
+    color: [4]f32,
 };
 
 const Texture = struct {
@@ -639,8 +648,19 @@ pub const Scene = struct {
     upload_fence: ?c.VkFence = null,
     pipeline_layout: ?c.VkPipelineLayout = null,
     pipeline: ?c.VkPipeline = null,
-    /// Render pass the current pipeline was built against; `Surface` recreates
-    /// its render pass on window resize, which requires rebuilding the pipeline.
+    /// Screen-space UI pass: separate pipeline (no depth test/write, alpha
+    /// blending), a growable host-visible vertex buffer, and per-frame quad
+    /// records.  UI quads are recorded after world draws in the same render
+    /// pass and presented with the same frame.
+    ui_vert_module: ?c.VkShaderModule = null,
+    ui_frag_module: ?c.VkShaderModule = null,
+    ui_pipeline: ?c.VkPipeline = null,
+    ui_vertex_buffer: BufferAllocation = .{},
+    ui_vertex_capacity: usize = 0,
+    ui_vertices: std.ArrayListUnmanaged(UiVertex) = .empty,
+    ui_textures: std.ArrayListUnmanaged(u32) = .empty,
+    /// Render pass the current pipelines were built against; `Surface`
+    /// recreates its render pass on window resize, requiring pipeline rebuilds.
     pipeline_render_pass: ?c.VkRenderPass = null,
 
     /// One vertex/index mesh per `Shape` (box, sphere, capsule, plane).
@@ -693,6 +713,8 @@ pub const Scene = struct {
         self.uniform_capacity = initial_object_capacity;
         self.vert_module = try self.createShaderModule(device, vert_spv);
         self.frag_module = try self.createShaderModule(device, frag_spv);
+        self.ui_vert_module = try self.createShaderModule(device, shader_assets.ui_vert_spv);
+        self.ui_frag_module = try self.createShaderModule(device, shader_assets.ui_frag_spv);
 
         try self.createBuffers(device);
         try self.createUploadCommands(device);
@@ -707,6 +729,7 @@ pub const Scene = struct {
         if (self.surface.device) |device| {
             _ = c.vkDeviceWaitIdle(device);
             if (self.pipeline) |v| c.vkDestroyPipeline(device, v, null);
+            if (self.ui_pipeline) |v| c.vkDestroyPipeline(device, v, null);
             if (self.pipeline_layout) |v| c.vkDestroyPipelineLayout(device, v, null);
             if (self.descriptor_pool) |v| c.vkDestroyDescriptorPool(device, v, null);
             if (self.texture_pool) |v| c.vkDestroyDescriptorPool(device, v, null);
@@ -722,19 +745,25 @@ pub const Scene = struct {
             if (self.upload_pool) |v| c.vkDestroyCommandPool(device, v, null);
             if (self.vert_module) |v| c.vkDestroyShaderModule(device, v, null);
             if (self.frag_module) |v| c.vkDestroyShaderModule(device, v, null);
+            if (self.ui_vert_module) |v| c.vkDestroyShaderModule(device, v, null);
+            if (self.ui_frag_module) |v| c.vkDestroyShaderModule(device, v, null);
             for (&self.meshes) |*mesh| {
                 destroyBuffer(device, &mesh.vertex);
                 destroyBuffer(device, &mesh.index);
             }
             self.flushRetiredUniforms();
             destroyBuffer(device, &self.uniform);
+            destroyBuffer(device, &self.ui_vertex_buffer);
         }
         self.recorded_objects.deinit(self.allocator);
         self.retired_uniforms.deinit(self.allocator);
         self.retired_uniform_sets.deinit(self.allocator);
         self.textures.deinit(self.allocator);
         self.custom_meshes.deinit(self.allocator);
+        self.ui_vertices.deinit(self.allocator);
+        self.ui_textures.deinit(self.allocator);
         self.pipeline = null;
+        self.ui_pipeline = null;
         self.pipeline_layout = null;
         self.descriptor_pool = null;
         self.descriptor_set = null;
@@ -746,6 +775,9 @@ pub const Scene = struct {
         self.upload_pool = null;
         self.vert_module = null;
         self.frag_module = null;
+        self.ui_vert_module = null;
+        self.ui_frag_module = null;
+        self.ui_pipeline = null;
         self.surface.deinit();
     }
 
@@ -1534,6 +1566,147 @@ pub const Scene = struct {
         }
         self.pipeline = pipeline;
         self.pipeline_render_pass = self.surface.render_pass.?;
+        try self.createUiPipeline(device);
+    }
+
+    /// Create (or rebuild) the screen-space UI pipeline.  It shares the
+    /// descriptor layout/pipeline layout with the 3D pipeline (set 0 uniforms
+    /// are unused by the UI shaders) but has no depth test/write, alpha
+    /// blending, and its own vertex format.
+    fn createUiPipeline(self: *Scene, device: c.VkDevice) Error!void {
+        if (self.ui_pipeline) |pipeline| {
+            c.vkDestroyPipeline(device, pipeline, null);
+            self.ui_pipeline = null;
+        }
+
+        var stages = [_]c.VkPipelineShaderStageCreateInfo{
+            std.mem.zeroes(c.VkPipelineShaderStageCreateInfo),
+            std.mem.zeroes(c.VkPipelineShaderStageCreateInfo),
+        };
+        stages[0].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = c.VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = self.ui_vert_module.?;
+        stages[0].pName = "main";
+        stages[1].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = self.ui_frag_module.?;
+        stages[1].pName = "main";
+
+        var binding = std.mem.zeroes(c.VkVertexInputBindingDescription);
+        binding.binding = 0;
+        binding.stride = @sizeOf(UiVertex);
+        binding.inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX;
+
+        var attributes = [_]c.VkVertexInputAttributeDescription{
+            std.mem.zeroes(c.VkVertexInputAttributeDescription),
+            std.mem.zeroes(c.VkVertexInputAttributeDescription),
+            std.mem.zeroes(c.VkVertexInputAttributeDescription),
+        };
+        attributes[0].location = 0;
+        attributes[0].binding = 0;
+        attributes[0].format = c.VK_FORMAT_R32G32_SFLOAT;
+        attributes[0].offset = @intCast(@offsetOf(UiVertex, "position"));
+        attributes[1].location = 1;
+        attributes[1].binding = 0;
+        attributes[1].format = c.VK_FORMAT_R32G32_SFLOAT;
+        attributes[1].offset = @intCast(@offsetOf(UiVertex, "uv"));
+        attributes[2].location = 2;
+        attributes[2].binding = 0;
+        attributes[2].format = c.VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributes[2].offset = @intCast(@offsetOf(UiVertex, "color"));
+
+        var vertex_input = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
+        vertex_input.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertex_input.vertexBindingDescriptionCount = 1;
+        vertex_input.pVertexBindingDescriptions = &binding;
+        vertex_input.vertexAttributeDescriptionCount = @intCast(attributes.len);
+        vertex_input.pVertexAttributeDescriptions = &attributes;
+
+        var input_assembly = std.mem.zeroes(c.VkPipelineInputAssemblyStateCreateInfo);
+        input_assembly.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        input_assembly.primitiveRestartEnable = c.VK_FALSE;
+
+        var viewport_state = std.mem.zeroes(c.VkPipelineViewportStateCreateInfo);
+        viewport_state.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport_state.viewportCount = 1;
+        viewport_state.scissorCount = 1;
+
+        var raster = std.mem.zeroes(c.VkPipelineRasterizationStateCreateInfo);
+        raster.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.depthClampEnable = c.VK_FALSE;
+        raster.rasterizerDiscardEnable = c.VK_FALSE;
+        raster.polygonMode = c.VK_POLYGON_MODE_FILL;
+        raster.cullMode = c.VK_CULL_MODE_NONE;
+        raster.frontFace = c.VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.depthBiasEnable = c.VK_FALSE;
+        raster.lineWidth = 1.0;
+
+        var multisample = std.mem.zeroes(c.VkPipelineMultisampleStateCreateInfo);
+        multisample.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
+        multisample.sampleShadingEnable = c.VK_FALSE;
+
+        // UI never tests or writes depth: quads paint over the 3D scene in
+        // draw order.
+        var depth_stencil = std.mem.zeroes(c.VkPipelineDepthStencilStateCreateInfo);
+        depth_stencil.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth_stencil.depthTestEnable = c.VK_FALSE;
+        depth_stencil.depthWriteEnable = c.VK_FALSE;
+        depth_stencil.depthCompareOp = c.VK_COMPARE_OP_ALWAYS;
+        depth_stencil.depthBoundsTestEnable = c.VK_FALSE;
+        depth_stencil.stencilTestEnable = c.VK_FALSE;
+
+        // Straight-alpha source over destination.
+        var blend_attachment = std.mem.zeroes(c.VkPipelineColorBlendAttachmentState);
+        blend_attachment.blendEnable = c.VK_TRUE;
+        blend_attachment.srcColorBlendFactor = c.VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attachment.dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.colorBlendOp = c.VK_BLEND_OP_ADD;
+        blend_attachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE;
+        blend_attachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
+        blend_attachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT |
+            c.VK_COLOR_COMPONENT_G_BIT |
+            c.VK_COLOR_COMPONENT_B_BIT |
+            c.VK_COLOR_COMPONENT_A_BIT;
+        var color_blend = std.mem.zeroes(c.VkPipelineColorBlendStateCreateInfo);
+        color_blend.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        color_blend.logicOpEnable = c.VK_FALSE;
+        color_blend.attachmentCount = 1;
+        color_blend.pAttachments = &blend_attachment;
+
+        var dynamic_states = [_]c.VkDynamicState{
+            c.VK_DYNAMIC_STATE_VIEWPORT,
+            c.VK_DYNAMIC_STATE_SCISSOR,
+        };
+        var dynamic_state = std.mem.zeroes(c.VkPipelineDynamicStateCreateInfo);
+        dynamic_state.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic_state.dynamicStateCount = @intCast(dynamic_states.len);
+        dynamic_state.pDynamicStates = &dynamic_states;
+
+        var pipeline_info = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
+        pipeline_info.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount = @intCast(stages.len);
+        pipeline_info.pStages = &stages;
+        pipeline_info.pVertexInputState = &vertex_input;
+        pipeline_info.pInputAssemblyState = &input_assembly;
+        pipeline_info.pViewportState = &viewport_state;
+        pipeline_info.pRasterizationState = &raster;
+        pipeline_info.pMultisampleState = &multisample;
+        pipeline_info.pDepthStencilState = &depth_stencil;
+        pipeline_info.pColorBlendState = &color_blend;
+        pipeline_info.pDynamicState = &dynamic_state;
+        pipeline_info.layout = self.pipeline_layout.?;
+        pipeline_info.renderPass = self.surface.render_pass.?;
+        pipeline_info.subpass = 0;
+
+        var pipeline: c.VkPipeline = null;
+        if (c.vkCreateGraphicsPipelines(device, null, 1, &pipeline_info, null, &pipeline) != c.VK_SUCCESS) {
+            abi.setError("vkCreateGraphicsPipelines(UI) failed");
+            return error.PipelineCreateFailed;
+        }
+        self.ui_pipeline = pipeline;
     }
 
     /// Rebuild the pipeline when `Surface` recreated its render pass (resize).
@@ -1620,6 +1793,8 @@ pub const Scene = struct {
         // generations retired by the previous frame are no longer referenced.
         self.flushRetiredUniforms();
         self.recorded_objects.clearRetainingCapacity();
+        self.ui_vertices.clearRetainingCapacity();
+        self.ui_textures.clearRetainingCapacity();
         // Keep the uniform buffer at least as large as the previous frame's
         // demand so steady-state frames do not grow mid-recording.
         try self.ensureUniformCapacity(self.recorded_objects.capacity);
@@ -1731,9 +1906,131 @@ pub const Scene = struct {
         self.recordObject(cmd, self.legacyCubeModel(), default_tint, .{ .builtin = .box }, 0) catch {};
     }
 
-    /// Close the render pass and present the acquired image.
+    /// Queue one screen-space textured quad for the current frame.
+    ///
+    /// `x`/`y` are pixel coordinates with a top-left origin, `w`/`h` are pixel
+    /// sizes, and `tint` is straight-alpha RGBA in 0..1.  Quads are recorded
+    /// after the 3D world (same begin/end frame, same present), with depth
+    /// testing/writes disabled and SrcAlpha/OneMinusSrcAlpha blending.  The
+    /// quad list grows on demand; texture id 0 draws solid tint with the
+    /// built-in white texture.
+    pub fn drawUiQuad(
+        self: *Scene,
+        texture_id: u32,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        tint: [4]f32,
+    ) Error!void {
+        if (self.frame_cmd == null) return error.FrameNotActive;
+        if (self.textureSetFor(texture_id) == null) return error.InvalidTexture;
+        if (width <= 0.0 or height <= 0.0) return error.InvalidQuad;
+        const extent = self.surface.extent;
+        const frame_width: f32 = @floatFromInt(extent.width);
+        const frame_height: f32 = @floatFromInt(extent.height);
+        if (frame_width <= 0.0 or frame_height <= 0.0) return error.InvalidQuad;
+
+        // Pixel space (top-left origin) -> Vulkan clip space.  Vulkan's NDC
+        // y axis points down for a positive-height viewport, so pixel y=0 is
+        // clip y=-1 and pixel y=height is clip y=+1.
+        const x0 = x / frame_width * 2.0 - 1.0;
+        const x1 = (x + width) / frame_width * 2.0 - 1.0;
+        const y0 = y / frame_height * 2.0 - 1.0;
+        const y1 = (y + height) / frame_height * 2.0 - 1.0;
+
+        const quad_vertices = [6]UiVertex{
+            .{ .position = .{ x0, y0 }, .uv = .{ 0.0, 0.0 }, .color = tint },
+            .{ .position = .{ x1, y0 }, .uv = .{ 1.0, 0.0 }, .color = tint },
+            .{ .position = .{ x1, y1 }, .uv = .{ 1.0, 1.0 }, .color = tint },
+            .{ .position = .{ x0, y0 }, .uv = .{ 0.0, 0.0 }, .color = tint },
+            .{ .position = .{ x1, y1 }, .uv = .{ 1.0, 1.0 }, .color = tint },
+            .{ .position = .{ x0, y1 }, .uv = .{ 0.0, 1.0 }, .color = tint },
+        };
+        self.ui_vertices.ensureUnusedCapacity(self.allocator, quad_vertices.len) catch
+            return error.OutOfMemory;
+        self.ui_vertices.appendSliceAssumeCapacity(&quad_vertices);
+        self.ui_textures.append(self.allocator, texture_id) catch return error.OutOfMemory;
+    }
+
+    /// Number of UI quads queued for the current/last frame.
+    pub fn uiQuadCount(self: *const Scene) usize {
+        return self.ui_textures.items.len;
+    }
+
+    fn ensureUiVertexBuffer(self: *Scene, byte_size: usize) Error!void {
+        if (byte_size <= self.ui_vertex_capacity) return;
+        const device = self.surface.device.?;
+        const capacity = @max(self.ui_vertex_capacity * 2, @max(byte_size, 4096));
+        const replacement = try self.createHostBuffer(device, capacity, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        destroyBuffer(device, &self.ui_vertex_buffer);
+        self.ui_vertex_buffer = replacement;
+        self.ui_vertex_capacity = capacity;
+    }
+
+    /// Upload `vertices` and record one 6-vertex draw per texture segment.
+    /// Used both for the live frame and for `captureRecordedFrame` replay.
+    fn recordUiVertices(
+        self: *Scene,
+        cmd: c.VkCommandBuffer,
+        vertices: []const UiVertex,
+        textures: []const u32,
+    ) Error!void {
+        if (vertices.len == 0) return;
+        if (textures.len * 6 != vertices.len) return error.InvalidQuad;
+        const byte_size = vertices.len * @sizeOf(UiVertex);
+        try self.ensureUiVertexBuffer(byte_size);
+        @memcpy(self.ui_vertex_buffer.mapped.?[0..byte_size], std.mem.sliceAsBytes(vertices));
+
+        const extent = self.surface.extent;
+        c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, self.ui_pipeline.?);
+        var viewport = std.mem.zeroes(c.VkViewport);
+        viewport.width = @floatFromInt(extent.width);
+        viewport.height = @floatFromInt(extent.height);
+        viewport.minDepth = 0.0;
+        viewport.maxDepth = 1.0;
+        c.vkCmdSetViewport(cmd, 0, 1, &viewport);
+        var scissor = std.mem.zeroes(c.VkRect2D);
+        scissor.extent = extent;
+        c.vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        var vertex_buffer = self.ui_vertex_buffer.buffer.?;
+        var vertex_offset: c.VkDeviceSize = 0;
+        c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
+
+        var dynamic_offsets = [1]u32{0};
+        for (textures, 0..) |texture_id, index| {
+            const texture_set = self.textureSetFor(texture_id) orelse self.textureSetFor(0) orelse
+                return error.InvalidTexture;
+            var descriptor_sets = [2]c.VkDescriptorSet{ self.descriptor_set.?, texture_set };
+            c.vkCmdBindDescriptorSets(
+                cmd,
+                c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                self.pipeline_layout.?,
+                0,
+                2,
+                &descriptor_sets,
+                1,
+                &dynamic_offsets,
+            );
+            c.vkCmdDraw(cmd, 6, 1, @intCast(index * 6), 0);
+        }
+    }
+
+    fn recordUiQuads(self: *Scene, cmd: c.VkCommandBuffer) Error!void {
+        try self.recordUiVertices(cmd, self.ui_vertices.items, self.ui_textures.items);
+    }
+
+    /// Record any queued UI quads, close the render pass, and present the
+    /// acquired image.
     pub fn endFrame(self: *Scene) Error!void {
         const index = self.frame_index orelse return error.FrameNotActive;
+        const cmd = self.frame_cmd orelse return error.FrameNotActive;
+        self.recordUiQuads(cmd) catch |err| {
+            self.frame_cmd = null;
+            self.frame_index = null;
+            return err;
+        };
         self.frame_cmd = null;
         self.frame_index = null;
         try self.surface.endScenePresent(index);
@@ -1790,6 +2087,15 @@ pub const Scene = struct {
         defer self.allocator.free(saved);
         @memcpy(saved, self.recorded_objects.items[0..saved_count]);
 
+        const saved_ui_vertices = self.allocator.alloc(UiVertex, self.ui_vertices.items.len) catch
+            return error.OutOfMemory;
+        defer self.allocator.free(saved_ui_vertices);
+        @memcpy(saved_ui_vertices, self.ui_vertices.items);
+        const saved_ui_textures = self.allocator.alloc(u32, self.ui_textures.items.len) catch
+            return error.OutOfMemory;
+        defer self.allocator.free(saved_ui_textures);
+        @memcpy(saved_ui_textures, self.ui_textures.items);
+
         const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
         try self.ensurePipeline();
         try self.beginRecordedFrame(cmd);
@@ -1800,6 +2106,7 @@ pub const Scene = struct {
                 try self.recordObject(cmd, object.model, object.tint, object.mesh, object.texture);
             }
         }
+        try self.recordUiVertices(cmd, saved_ui_vertices, saved_ui_textures);
         return self.surface.endSceneCapture();
     }
 
@@ -2447,4 +2754,125 @@ test "scene renders full X/Y/Z Euler orientation, not just Y" {
     const custom_frame = try scene.captureRecordedFrame();
     defer std.testing.allocator.free(custom_frame);
     try std.testing.expect(!std.mem.eql(u8, custom_frame, identity));
+}
+
+test "screen-space UI quads blend over the 3D scene" {
+    var window = window_mod.Window.create("engine7 UI quad test", 320, 240, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping UI quad test (no display): {s}\n", .{@errorName(err)});
+        window_mod.shutdownVideo();
+        return;
+    };
+    defer window_mod.shutdownVideo();
+    defer window.destroy();
+
+    var scene = Scene.init(
+        std.testing.allocator,
+        &window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping UI quad test (no Vulkan): {s} ({s})\n", .{ @errorName(err), abi.lastError() });
+        return;
+    };
+    defer scene.deinit();
+    scene.setCamera(.{ 0.0, 1.8, 5.5 }, 0.0, -0.2);
+    scene.setLight(.{ 2.0, 4.0, 3.0 }, .{ 1.0, 0.95, 0.9, 2.5 });
+
+    const white = Vec3{ 1.0, 1.0, 1.0 };
+    const world_box = Box{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.5, 0.5, 0.5 } };
+
+    // 3D-only reference frame.
+    try scene.beginFrame();
+    try scene.drawShapeTextured(.box, world_box, white, 0);
+    try scene.endFrame();
+    const world_only = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(world_only);
+
+    // 2x2 checker texture for the textured-quad path.
+    var checker: [2 * 2 * 4]u8 = undefined;
+    for (0..2) |y| {
+        for (0..2) |x| {
+            const at = (y * 2 + x) * 4;
+            const red = (x + y) % 2 == 0;
+            checker[at + 0] = if (red) 255 else 30;
+            checker[at + 1] = 30;
+            checker[at + 2] = if (red) 30 else 255;
+            checker[at + 3] = 255;
+        }
+    }
+    const checker_texture = try scene.createTextureFromRgba(2, 2, &checker);
+
+    // World + UI: full-screen panel, opaque red, 50%-alpha blue overlapping the
+    // red, and a textured quad.  UI must paint over the 3D scene.
+    try scene.beginFrame();
+    try scene.drawShapeTextured(.box, world_box, white, 0);
+    try scene.drawUiQuad(0, 0.0, 0.0, 320.0, 240.0, .{ 0.05, 0.05, 0.1, 1.0 });
+    try scene.drawUiQuad(0, 20.0, 20.0, 100.0, 60.0, .{ 1.0, 0.0, 0.0, 1.0 });
+    try scene.drawUiQuad(0, 60.0, 40.0, 100.0, 60.0, .{ 0.0, 0.0, 1.0, 0.5 });
+    try scene.drawUiQuad(checker_texture, 200.0, 20.0, 80.0, 80.0, .{ 1.0, 1.0, 1.0, 1.0 });
+    try std.testing.expectEqual(@as(usize, 4), scene.uiQuadCount());
+    try scene.endFrame();
+    const with_ui = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(with_ui);
+    try std.testing.expect(!std.mem.eql(u8, world_only, with_ui));
+
+    const Pixel = struct {
+        fn at(frame: []const u8, x: usize, y: usize) struct { r: u8, g: u8, b: u8, a: u8 } {
+            const offset = (y * 320 + x) * 4;
+            return .{ .r = frame[offset], .g = frame[offset + 1], .b = frame[offset + 2], .a = frame[offset + 3] };
+        }
+    };
+
+    // UI covers the 3D cube: the centre pixel changed away from the world frame.
+    const world_centre = Pixel.at(world_only, 160, 120);
+    const ui_centre = Pixel.at(with_ui, 160, 120);
+    try std.testing.expect(!std.meta.eql(world_centre, ui_centre));
+    // Panel background is the dark blue tint.
+    try std.testing.expect(ui_centre.b > ui_centre.r);
+    try std.testing.expectEqual(@as(u8, 255), ui_centre.a);
+
+    // Alpha blend: red quad then 50%-alpha blue over it -> roughly
+    // (127, 0, 127) with SrcAlpha/OneMinusSrcAlpha (small UNORM tolerance).
+    const blend = Pixel.at(with_ui, 80, 50);
+    try std.testing.expect(blend.r > 90 and blend.r < 160);
+    try std.testing.expect(blend.b > 90 and blend.b < 160);
+    try std.testing.expect(blend.g < 40);
+
+    // Checker texture varies inside the textured quad.
+    const tex0 = Pixel.at(with_ui, 210, 30);
+    const tex1 = Pixel.at(with_ui, 265, 90);
+    try std.testing.expect(!std.meta.eql(tex0, tex1));
+    try std.testing.expectEqual(@as(u8, 255), tex0.a);
+
+    // A few hundred quads are supported (growable list).
+    try scene.beginFrame();
+    try scene.drawShapeTextured(.box, world_box, white, 0);
+    for (0..300) |index| {
+        const x = @as(f32, @floatFromInt(index % 32)) * 9.0;
+        const y = @as(f32, @floatFromInt(index / 32)) * 9.0;
+        try scene.drawUiQuad(0, x, y, 6.0, 6.0, .{ 1.0, 1.0, 1.0, 0.8 });
+    }
+    try std.testing.expectEqual(@as(usize, 300), scene.uiQuadCount());
+    try scene.endFrame();
+    const many_ui = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(many_ui);
+    var lit: usize = 0;
+    var at: usize = 0;
+    while (at + 3 < many_ui.len) : (at += 4) {
+        const sum: u32 = @as(u32, many_ui[at]) + many_ui[at + 1] + many_ui[at + 2];
+        if (sum > 120) lit += 1;
+    }
+    try std.testing.expect(lit > 500);
+
+    // UI draw guards.
+    try std.testing.expectError(error.FrameNotActive, scene.drawUiQuad(0, 0, 0, 10, 10, .{ 1, 1, 1, 1 }));
+    try scene.beginFrame();
+    try std.testing.expectError(error.InvalidTexture, scene.drawUiQuad(999, 0, 0, 10, 10, .{ 1, 1, 1, 1 }));
+    try std.testing.expectError(error.InvalidQuad, scene.drawUiQuad(0, 0, 0, 0, 10, .{ 1, 1, 1, 1 }));
+    try scene.endFrame();
+
+    try scene.destroyTexture(checker_texture);
 }

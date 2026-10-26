@@ -171,6 +171,34 @@ pub fn snapshot(handle: i64) ?struct { width: u32, height: u32, pixels: []u8 } {
     return .{ .width = image.width, .height = image.height, .pixels = pixels };
 }
 
+/// Take ownership of `image` and give it a registry handle.  The caller must
+/// not free the image or its pixels on success.
+fn insertImage(image: *Image) ?u64 {
+    registry_mutex.lock();
+    defer registry_mutex.unlock();
+    if (next_handle == 0 or next_handle == std.math.maxInt(u64)) return null;
+    const handle = next_handle;
+    next_handle += 1;
+    registry.put(allocator(), handle, image) catch return null;
+    return handle;
+}
+
+/// Register an already-decoded, tightly packed top-down RGBA8 image and return
+/// its handle (0 on failure).  Ownership of `pixels` transfers to the registry
+/// on success; on failure the caller still owns it.  Used by the text
+/// rasterizer so rasterized glyph bitmaps share `e7_image_*` accessors.
+pub fn registerRgba(width: u32, height: u32, pixels: []u8) ?u64 {
+    if (width == 0 or height == 0) return null;
+    if (pixels.len != @as(usize, width) * height * 4) return null;
+    const image = allocator().create(Image) catch return null;
+    image.* = .{ .width = width, .height = height, .pixels = pixels };
+    const handle = insertImage(image) orelse {
+        allocator().destroy(image);
+        return null;
+    };
+    return handle;
+}
+
 pub export fn e7_image_load(path: i64) callconv(.c) i64 {
     const path_bytes = e7StringBytes(path) orelse return 0;
     if (path_bytes.len == 0) return 0;
@@ -183,18 +211,7 @@ pub export fn e7_image_load(path: i64) callconv(.c) i64 {
         return 0;
     };
     image.* = decoded;
-
-    registry_mutex.lock();
-    defer registry_mutex.unlock();
-    if (next_handle == 0 or next_handle == std.math.maxInt(u64)) {
-        const pixels = image.pixels;
-        allocator().destroy(image);
-        allocator().free(pixels);
-        return 0;
-    }
-    const handle = next_handle;
-    next_handle += 1;
-    registry.put(allocator(), handle, image) catch {
+    const handle = insertImage(image) orelse {
         const pixels = image.pixels;
         allocator().destroy(image);
         allocator().free(pixels);

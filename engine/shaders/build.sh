@@ -3,6 +3,8 @@
 #
 #   engine/shaders/cube.vert.e7 --(e7s)--> cube_vert.slang --(slangc)--> cube.vert.spv
 #   engine/shaders/cube.frag.e7 --(e7s)--> cube_frag.slang --(slangc)--> cube.frag.spv
+#   engine/shaders/ui.vert.e7   --(e7s)--> ui_vert.slang   --(slangc)--> ui.vert.spv
+#   engine/shaders/ui.frag.e7   --(e7s)--> ui_frag.slang   --(slangc)--> ui.frag.spv
 #
 # The generated Slang and SPIR-V are produced in a temporary directory.  The
 # SPIR-V is copied into this directory and into runtime/shaders/ (the runtime
@@ -93,6 +95,8 @@ transpile() {
 
 transpile cube.vert.e7 cube_vert.slang
 transpile cube.frag.e7 cube_frag.slang
+transpile ui.vert.e7 ui_vert.slang
+transpile ui.frag.e7 ui_frag.slang
 
 # ---------------------------------------------------------------------------
 # Slang -> SPIR-V, then sync the SPIR-V into engine/ and runtime/
@@ -125,18 +129,27 @@ if [ -n "$slangc_bin" ]; then
     }
     compile_pair cube_vert.slang vertex cube.vert.spv
     compile_pair cube_frag.slang fragment cube.frag.spv
+    compile_pair ui_vert.slang vertex ui.vert.spv
+    compile_pair ui_frag.slang fragment ui.frag.spv
     publish cube.vert.spv
     publish cube.frag.spv
-    echo "SPIR-V ready: cube.vert.spv, cube.frag.spv"
+    publish ui.vert.spv
+    publish ui.frag.spv
+    echo "SPIR-V ready: cube.vert.spv, cube.frag.spv, ui.vert.spv, ui.frag.spv"
 else
     echo "warning: no slangc found; keeping checked-in SPIR-V." >&2
     echo "         e7s sources transpiled successfully; install slangc to rebuild." >&2
-    if [ -f "$root/cube.vert.spv" ] && [ -f "$root/cube.frag.spv" ]; then
+    if [ -f "$root/cube.vert.spv" ] && [ -f "$root/cube.frag.spv" ] &&
+        [ -f "$root/ui.vert.spv" ] && [ -f "$root/ui.frag.spv" ]; then
         check_magic "$root/cube.vert.spv"
         check_magic "$root/cube.frag.spv"
+        check_magic "$root/ui.vert.spv"
+        check_magic "$root/ui.frag.spv"
         # Keep the runtime's embedded copies in sync even without slangc.
         cp "$root/cube.vert.spv" "$runtime/cube.vert.spv"
         cp "$root/cube.frag.spv" "$runtime/cube.frag.spv"
+        cp "$root/ui.vert.spv" "$runtime/ui.vert.spv"
+        cp "$root/ui.frag.spv" "$runtime/ui.frag.spv"
     else
         echo "error: no slangc and no checked-in SPIR-V at $root" >&2
         exit 1

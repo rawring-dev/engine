@@ -1,0 +1,19 @@
+# Screen-space UI fragment shader: texture * per-vertex tint, output straight
+# alpha for the UI pipeline's SrcAlpha/OneMinusSrcAlpha blending.
+
+@binding(1, 1)
+albedo: Texture2D<[f32; 4]>
+
+@binding(2, 1)
+albedo_sampler: SamplerState
+
+VSOutput <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) uv: [f32; 2]
+    @location(1) color: [f32; 4]
+
+@fragment
+main <- (input: VSOutput) -> [f32; 4]:
+    tex := albedo.Sample(albedo_sampler, input.uv)
+    tinted := tex * input.color
+    ret [tinted.x, tinted.y, tinted.z, tinted.w]

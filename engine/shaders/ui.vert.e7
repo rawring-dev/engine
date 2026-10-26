@@ -1,0 +1,21 @@
+# Screen-space UI vertex shader.  Positions arrive already in Vulkan clip
+# space (x right, y up, z 0) computed from pixel coordinates by the renderer;
+# UVs are top-left origin and colours are per-vertex RGBA in 0..1.
+
+VSInput <- struct
+    @location(0) position: [f32; 2]
+    @location(1) uv: [f32; 2]
+    @location(2) color: [f32; 4]
+
+VSOutput <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) uv: [f32; 2]
+    @location(1) color: [f32; 4]
+
+@vertex
+main <- (input: VSInput) -> VSOutput:
+    ret VSOutput{
+        position: [input.position.x, input.position.y, 0.0, 1.0],
+        uv: input.uv,
+        color: input.color,
+    }

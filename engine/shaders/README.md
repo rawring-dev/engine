@@ -8,6 +8,8 @@ shading subset).  They are transpiled to Khronos Slang with the repo's
 | --- | --- | --- | --- |
 | `cube.vert.e7` | `cube_vert.slang` | `cube.vert.spv` | vertex |
 | `cube.frag.e7` | `cube_frag.slang` | `cube.frag.spv` | fragment |
+| `ui.vert.e7` | `ui_vert.slang` | `ui.vert.spv` | vertex |
+| `ui.frag.e7` | `ui_frag.slang` | `ui.frag.spv` | fragment |
 
 The generated Slang intermediate is not checked in: `build.sh` produces
 it in a temporary directory so the e7s file is the single source of truth.
@@ -54,6 +56,17 @@ runtime package's dependency on `transpiler/`.
 The fragment shader multiplies each mesh's base (vertex) colour by
 `scene.tint.rgb`, so procedural shapes share one pipeline while each object can
 have its own colour.
+
+## UI pass
+
+`ui.vert.e7`/`ui.frag.e7` are used by a second graphics pipeline created by the
+renderer: positions arrive already converted to Vulkan clip space from pixel
+coordinates (top-left origin), each vertex carries a UV and straight-alpha RGBA
+tint, and the fragment shader outputs `texture * tint`.  The UI pipeline has
+depth test/write disabled and SrcAlpha/OneMinusSrcAlpha blending, and is
+recorded after the 3D draws in the same render pass/frame.  It reuses the
+material texture descriptor sets (set 1); texture 0 is the built-in white
+texture, so a UI quad with no texture draws a solid tinted rectangle.
 
 ## Material textures
 

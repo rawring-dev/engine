@@ -497,6 +497,12 @@ Pickup, hold, and camera follow share that step. The demo starts with a static
 plane, a rotation-locked capsule player, a dynamic ball, and three stacked
 cubes.
 
+The UI library (`engine/ui.e7`) provides font-backed text rendering, panels,
+labels, buttons with action IDs and a `UIButtonPressed` trigger, and editable
+text fields with mouse focus/typing/Backspace/Enter. Text rasterizes through
+SDL3_ttf into image handles, uploads via `Gpu.upload_texture`, and is cached in
+`UIState`; screen-space drawing uses `Gpu.draw_ui_quad` over the 3D scene.
+
 Engine intrinsics are wrapped in e7 inherent methods (`window.pump()`,
 `gpu.begin_frame()`, `gpu.draw_renderable(...)`, `image.upload_texture(gpu)`,
 `mesh.upload(gpu)`); raw `e7_engine_*`/`e7_image_*` calls live only inside those
@@ -563,8 +569,8 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 349 tests: scheduler 8, compiler 206, runtime 112,
-transpiler 20.
+`zig build test` runs 354 tests: scheduler 8, compiler 206, runtime 117,
+transpiler 23.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
   minimization, two-view block recovery, dimension validation;

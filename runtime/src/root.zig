@@ -18,6 +18,7 @@ pub const engine = @import("engine.zig");
 pub const float = @import("float.zig");
 pub const json = @import("json.zig");
 pub const image = @import("image.zig");
+pub const text_render = @import("text.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -65,6 +66,7 @@ test {
     _ = float;
     _ = json;
     _ = image;
+    _ = text_render;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -1179,6 +1181,20 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     try std.testing.expectEqual(@as(u32, 540), capture.height);
     try std.testing.expect(engine.captureIsNonBlack(capture));
     try std.testing.expect(engine.captureHasContent(capture));
+
+    // The UI plugin loaded a font and uploaded cached text textures for the
+    // demo panel/buttons/field over the 3D frame.
+    var ui_state_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "UIState")) ui_state_id = resource.id;
+    }
+    try std.testing.expect(ui_state_id >= 0);
+    const ui_state_ptr = ecs.e7_ecs_resource(ui_state_id);
+    try std.testing.expect(ui_state_ptr != 0);
+    const ui_font = aggregate.e7_load_i64(ui_state_ptr + 64);
+    if (ui_font != 0) {
+        try std.testing.expect(stats.scene_textures >= 2);
+    }
 }
 
 test "JIT executes query projection iteration and mutable component writes" {
@@ -3093,4 +3109,321 @@ test "JIT calls inherent impl methods with receiver-first lowering" {
     // n: 1 -> bump 2 -> bump_by(4) 6; value() 6 + plus(1) 7 (by-value
     // aggregate receivers alias the object pointer) = 13.
     try std.testing.expectEqual(@as(i32, 13), run());
+}
+
+test "JIT resolves UI input and font/text rasterization intrinsics" {
+    engine.reset();
+    defer engine.shutdown();
+    engine.injectMousePositionForTest(11, 22);
+    engine.injectMouseButtonForTest(0, true);
+    engine.injectMouseButtonForTest(1, false);
+    engine.injectTextForTest("ok");
+
+    const font_path: ?[]const u8 = for (text_render.test_font_paths) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        break candidate;
+    } else null;
+    if (font_path == null) {
+        std.debug.print("skipping JIT UI/font test: no system TrueType font found\n", .{});
+        return;
+    }
+    const path = font_path.?;
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    const engine_symbols = engine.symbols();
+    try jit.defineSymbols(&engine_symbols);
+    const text_symbols = text_render.symbols();
+    try jit.defineSymbols(&text_symbols);
+    const intrinsic_symbols = intrinsics.symbols();
+    try jit.defineSymbols(intrinsic_symbols);
+    const aggregate_symbols = aggregate.symbols();
+    try jit.defineSymbols(&aggregate_symbols);
+
+    const ir =
+        \\declare i64 @e7_engine_mouse_x()
+        \\declare i64 @e7_engine_mouse_y()
+        \\declare i64 @e7_engine_mouse_down(i64)
+        \\declare i64 @e7_engine_text_input()
+        \\declare i64 @e7_str_new(i64, i64)
+        \\declare i64 @e7_font_load(i64, i64)
+        \\declare i32 @e7_font_free(i64)
+        \\declare i64 @e7_text_measure(i64, i64)
+        \\declare void @e7_free(ptr)
+        \\define i64 @ui_probe(ptr %path, i64 %path_len, ptr %text, i64 %text_len) {
+        \\entry:
+        \\  %mx = call i64 @e7_engine_mouse_x()
+        \\  %my = call i64 @e7_engine_mouse_y()
+        \\  %button = call i64 @e7_engine_mouse_down(i64 0)
+        \\  %input = call i64 @e7_engine_text_input()
+        \\  %input_ptr = inttoptr i64 %input to ptr
+        \\  %input_len = load i64, ptr %input_ptr
+        \\  call void @e7_free(ptr %input_ptr)
+        \\  %path_i = ptrtoint ptr %path to i64
+        \\  %path_str = call i64 @e7_str_new(i64 %path_i, i64 %path_len)
+        \\  %text_i = ptrtoint ptr %text to i64
+        \\  %text_str = call i64 @e7_str_new(i64 %text_i, i64 %text_len)
+        \\  %font = call i64 @e7_font_load(i64 %path_str, i64 32)
+        \\  %measured = call i64 @e7_text_measure(i64 %font, i64 %text_str)
+        \\  %freed = call i32 @e7_font_free(i64 %font)
+        \\  %t1 = mul i64 %mx, 1
+        \\  %t2 = mul i64 %my, 10
+        \\  %t3 = mul i64 %button, 100
+        \\  %t4 = mul i64 %input_len, 1000
+        \\  %font_bit = icmp ne i64 %font, 0
+        \\  %font_value = zext i1 %font_bit to i64
+        \\  %t5 = mul i64 %font_value, 1000000
+        \\  %measure_bit = icmp ne i64 %measured, 0
+        \\  %measure_value = zext i1 %measure_bit to i64
+        \\  %t6 = mul i64 %measure_value, 2000000
+        \\  %free_ok = icmp eq i32 %freed, 0
+        \\  %free_value = zext i1 %free_ok to i64
+        \\  %t7 = mul i64 %free_value, 4000000
+        \\  %s1 = add i64 %t1, %t2
+        \\  %s2 = add i64 %s1, %t3
+        \\  %s3 = add i64 %s2, %t4
+        \\  %s4 = add i64 %s3, %t5
+        \\  %s5 = add i64 %s4, %t6
+        \\  %s6 = add i64 %s5, %t7
+        \\  ret i64 %s6
+        \\}
+    ;
+    try jit.addIr(ir, "ui-font-probe");
+    const Probe = *const fn ([*]const u8, i64, [*]const u8, i64) callconv(.c) i64;
+    const probe = try jit.get(Probe, "ui_probe");
+    const text = "hello";
+    const result = probe(path.ptr, @intCast(path.len), text.ptr, text.len);
+    // 11 + 22*10 + 1*100 + 2*1000 + font bit + measure bit + free bit.
+    try std.testing.expectEqual(@as(i64, 11 + 220 + 100 + 2000 + 1_000_000 + 2_000_000 + 4_000_000), result);
+}
+
+test "text-image textures render as screen-space UI quads" {
+    const shader_assets = @import("shader_assets");
+    const font_path: ?[]const u8 = for (text_render.test_font_paths) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        break candidate;
+    } else null;
+    if (font_path == null) {
+        std.debug.print("skipping text UI quad test: no system TrueType font found\n", .{});
+        return;
+    }
+
+    var ui_window = window.Window.create("engine7 text UI test", 256, 128, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping text UI quad test (no display): {s}\n", .{@errorName(err)});
+        window.shutdownVideo();
+        return;
+    };
+    defer window.shutdownVideo();
+    defer ui_window.destroy();
+
+    var scene = renderer.Scene.init(
+        std.testing.allocator,
+        &ui_window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping text UI quad test (no Vulkan): {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer scene.deinit();
+
+    const path = font_path.?;
+    const path_value = aggregate.e7_str_new(@intCast(@intFromPtr(path.ptr)), @intCast(path.len));
+    const font = text_render.e7_font_load(path_value, 32);
+    if (font == 0) {
+        std.debug.print("skipping text UI quad test: font load failed\n", .{});
+        return;
+    }
+    defer _ = text_render.e7_font_free(font);
+
+    const label = "Y";
+    const label_value = aggregate.e7_str_new(@intCast(@intFromPtr(label.ptr)), label.len);
+    const text_image_handle = text_render.e7_text_image(font, label_value, 255, 240, 200);
+    if (text_image_handle == 0) return error.TestUnexpectedResult;
+    defer _ = image.e7_image_free(text_image_handle);
+
+    const snapshot = image.snapshot(text_image_handle) orelse return error.TestUnexpectedResult;
+    defer std.heap.c_allocator.free(snapshot.pixels);
+    try std.testing.expect(snapshot.width > 0 and snapshot.height > 0);
+    if (scene.surface.extent.width < snapshot.width) return error.TestUnexpectedResult;
+
+    const texture = try scene.createTextureFromRgba(snapshot.width, snapshot.height, snapshot.pixels);
+    defer scene.destroyTexture(texture) catch {};
+
+    scene.setCamera(.{ 0.0, 1.8, 5.5 }, 0.0, -0.2);
+    scene.setLight(.{ 2.0, 4.0, 3.0 }, .{ 1.0, 0.95, 0.9, 2.5 });
+    const white = renderer.Vec3{ 1.0, 1.0, 1.0 };
+    const box = renderer.Box{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.4, 0.4, 0.4 } };
+
+    try scene.beginFrame();
+    try scene.drawShapeTextured(.box, box, white, 0);
+    try scene.endFrame();
+    const world_only = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(world_only);
+
+    // Draw the rasterized text image as a UI quad over the world.
+    try scene.beginFrame();
+    try scene.drawShapeTextured(.box, box, white, 0);
+    try scene.drawUiQuad(
+        texture,
+        20.0,
+        20.0,
+        @floatFromInt(snapshot.width),
+        @floatFromInt(snapshot.height),
+        .{ 1.0, 1.0, 1.0, 1.0 },
+    );
+    try scene.endFrame();
+    const with_text = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(with_text);
+    try std.testing.expect(with_text.len == world_only.len);
+    try std.testing.expect(!std.mem.eql(u8, world_only, with_text));
+
+    var changed: usize = 0;
+    var at: usize = 0;
+    while (at + 3 < with_text.len) : (at += 4) {
+        if (with_text[at] != world_only[at] or with_text[at + 1] != world_only[at + 1] or
+            with_text[at + 2] != world_only[at + 2]) changed += 1;
+    }
+    try std.testing.expect(changed > 20);
+}
+
+test "JIT UI button click and text field typing" {
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(gfx_source);
+    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(window_source);
+    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(input_source);
+    const ui_source = readRepoTextForTest("engine/ui.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ui_source);
+
+    const root_source =
+        \\mod events
+        \\mod ecs
+        \\mod gfx
+        \\mod window
+        \\mod input
+        \\mod ui
+        \\use ecs::*;
+        \\use events::*;
+        \\use gfx::*;
+        \\use window::*;
+        \\use input::*;
+        \\use ui::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    action: i64
+        \\    text_len: i64
+        \\    revision: i64
+        \\    focused: i64
+        \\pub Capture <- trigger
+        \\pub UIScene <- plugin
+        \\    ui_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { action: 0, text_len: 0, revision: 0, focused: 0 })
+        \\        commands.add_row(Components, {
+        \\            UIRect { x: 100.0, y: 100.0, w: 200.0, h: 40.0 },
+        \\            UIPanel { colour: [0.2, 0.3, 0.4, 1.0] },
+        \\            UILabel { text: "", size: 14, colour: [1.0, 1.0, 1.0, 1.0] },
+        \\            UIButton { label: "Go", action: 7 },
+        \\            UITextField { text: "", max_len: 0, focused: false, revision: 0, rendered_revision: 0, texture: 0, texture_w: 0, texture_h: 0 },
+        \\        })
+        \\        commands.add_row(Components, {
+        \\            UIRect { x: 100.0, y: 100.0, w: 200.0, h: 40.0 },
+        \\            UIPanel { colour: [0.1, 0.12, 0.16, 1.0] },
+        \\            UILabel { text: "", size: 14, colour: [1.0, 1.0, 1.0, 1.0] },
+        \\            UIButton { label: "", action: 0 },
+        \\            UITextField { text: "", max_len: 16, focused: false, revision: 0, rendered_revision: -1, texture: 0, texture_w: 0, texture_h: 0 },
+        \\        })
+        \\@trigger(UIButtonPressed)
+        \\pub ui_action_probe <- sys (ui: res &UIState, probe: res &mut Probe):
+        \\    probe.action = ui.action
+        \\@trigger(Capture)
+        \\pub capture <- sys (probe: res &mut Probe, state: res &UIState, fields: select &UITextField from Components):
+        \\    if probe.action == 0:
+        \\        probe.action = state.action
+        \\    for field in fields:
+        \\        probe.text_len = field.text.len() as i64
+        \\        probe.revision = field.revision
+        \\        probe.focused = 0
+        \\        if field.focused:
+        \\            probe.focused = 1
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(gfx::GfxPlugin)
+        \\    commands.add_plugin(input::InputPlugin)
+        \\    commands.add_plugin(ui::Ui)
+        \\    commands.add_plugin(UIScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await PreUpdate()
+        \\    state := await query &mut UIState
+        \\    if state.clicked_action != 0:
+        \\        state.action = state.clicked_action
+        \\        state.clicked_action = 0
+        \\        await UIButtonPressed()
+        \\    await Capture()
+        \\    await DeInit()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "gfx", .source = gfx_source },
+            .{ .name = "window", .source = window_source },
+            .{ .name = "input", .source = input_source },
+            .{ .name = "ui", .source = ui_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("ui scene diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    engine.reset();
+    defer engine.shutdown();
+    engine.setHeadless(true);
+    engine.injectMousePositionForTest(110, 110);
+    engine.injectMouseButtonForTest(0, true);
+    engine.injectTextForTest("hi");
+    defer engine.injectMouseButtonForTest(0, false);
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "ui-input");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 7), aggregate.e7_load_i64(probe_ptr));
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(probe_ptr + 8));
+    try std.testing.expect(aggregate.e7_load_i64(probe_ptr + 16) > 0);
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_load_i64(probe_ptr + 24));
 }

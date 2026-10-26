@@ -1,56 +1,321 @@
+# Engine UI library: retained ECS widgets (panel/label/button/text field),
+# font-backed text textures, mouse hit-testing, focus/typing, and screen-space
+# quad rendering.  Widget rows carry all five UI components; a zero field marks
+# the row's role:
+#   - UIPanel.colour alpha > 0          -> background
+#   - UILabel.text non-empty             -> label
+#   - UIButton.action != 0               -> button
+#   - UITextField.max_len > 0            -> editable field
+# The demo follows this convention; queries stay to one projection list.
+
 use ecs::*;
 use events::*;
 use gfx::*;
 use input::*;
 
-# ECS/UI surface sample from the engine design notes.
-#
-# `Trait : Parent` is the trait-dependency form: every implementor of
-# UIRenderable must also implement UIElement. Required method signatures live
-# in the trait body; implementations provide the bodies in `impl` blocks.
+@Components
+pub UIRect <- struct
+    x: f32
+    y: f32
+    w: f32
+    h: f32
 
-pub Ui <- plugin
-    init <- sys ( # this is run when commands.add_plugin(Ui) is called
-        commands: &mut Commands
-    ):
-        commands.insert_resource(UINode {
-            pos: [0.0, 0.0],
-            scale: [1.0, 1.0],
-            enabled: true,
-            element: nil,
-            children: [],
-        })
+@Components
+pub UIPanel <- struct
+    colour: [f32; 4]
 
-@plugin(Ui) # the space for this resource is only allocated by the runtime when the Ui plugin has been added
-@resource
-pub UINode <- struct
-    pos: [f32; 2],
-    scale: [f32; 2],
+@Components
+pub UILabel <- struct
+    text: str
+    size: i64
+    colour: [f32; 4]
 
-    enabled: bool,
+@Components
+pub UIButton <- struct
+    label: str
+    action: i64
 
-    element: ?*UIElement,
-    children: [UINode]
+@Components
+pub UITextField <- struct
+    text: str
+    max_len: i64
+    focused: bool
+    revision: i64
+    rendered_revision: i64
+    texture: u64
+    texture_w: i64
+    texture_h: i64
 
-pub UIElement <- trait
-pub UIRenderable <- trait : UIElement
-    render <- async (&self, &mut Gpu) -> !nil
-
-pub UIInteractable <- trait : UIElement
-    interact <- (&mut self, &Input) -> !nil
-
-@plugin(Ui) # system is only run when the Ui plugin is added
-@trigger(PreUpdate)
-pub ui_interact <- sys (
-    ui_root: res &mut UINode,
-    interactable_entities: select &mut UIInteractable from Components,
-):
-    ret # TODO: ui interaction
+# Button trigger: the main loop fires this after PreUpdate when a button has
+# set `clicked_action`.  The handler reads `UIState.action`.
+pub UIButtonPressed <- trigger
 
 @plugin(Ui)
-@trigger(Render)
-pub ui_render <- sys (
-    ui_root: res &UINode,
+@resource
+pub UIState <- struct
+    mouse_x: f32
+    mouse_y: f32
+    mouse_down: bool
+    mouse_was_down: bool
+    hover_entity: i64
+    focused_entity: i64
+    clicked_action: i64
+    action: i64
+    font: u64
+    font_size: i64
+    # Text textures for static labels/buttons, keyed by entity id.
+    textures: map[i64, [i64]]
+
+pub Ui <- plugin
+    init <- sys (commands: &mut Commands):
+        font := e7_font_load("/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 20)
+        if font == 0:
+            font = e7_font_load("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 20)
+        if font == 0:
+            font = e7_font_load("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+        if font == 0:
+            font = e7_font_load("/usr/share/fonts/TTF/DejaVuSans.ttf", 20)
+        commands.insert_resource(UIState {
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            mouse_down: false,
+            mouse_was_down: false,
+            hover_entity: 0,
+            focused_entity: 0,
+            clicked_action: 0,
+            action: 0,
+            font: font,
+            font_size: 20,
+            textures: map[i64, [i64]] {},
+        })
+
+# ---------------------------------------------------------------------------
+# Text texture helpers
+# ---------------------------------------------------------------------------
+
+pub TextTexture <- struct
+    texture: u64
+    width: i64
+    height: i64
+
+make_text_texture <- (gpu: &mut Gpu, font: u64, text: str, colour: [f32; 4]) -> TextTexture:
+    if font == 0:
+        ret TextTexture { texture: 0, width: 0, height: 0 }
+    if text.len() == 0:
+        ret TextTexture { texture: 0, width: 0, height: 0 }
+    r := e7_f32_to_i64(e7_f32_clamp(colour[0] * 255.0, 0.0, 255.0))
+    g := e7_f32_to_i64(e7_f32_clamp(colour[1] * 255.0, 0.0, 255.0))
+    b := e7_f32_to_i64(e7_f32_clamp(colour[2] * 255.0, 0.0, 255.0))
+    image := e7_text_image(font, text, r, g, b)
+    if image == 0:
+        ret TextTexture { texture: 0, width: 0, height: 0 }
+    width := e7_image_width(image)
+    height := e7_image_height(image)
+    texture := gpu.upload_texture(image)
+    e7_image_free(image)
+    ret TextTexture { texture: texture, width: width, height: height }
+
+ensure_cached_text <- (
+    gpu: &mut Gpu,
+    state: &mut UIState,
+    entity: i64,
+    text: str,
+    colour: [f32; 4],
+) -> nil:
+    if text.len() == 0:
+        ret
+    existing := 0
+    entry := state.textures[entity]
+    if entry.len() > 0:
+        existing = entry[0]
+    if existing != 0:
+        ret
+    made := make_text_texture(gpu, state.font, text, colour)
+    if made.texture != 0:
+        state.textures[entity] = [made.texture as i64, made.width, made.height]
+
+ensure_field_texture <- (gpu: &mut Gpu, state: &mut UIState, field: &mut UITextField) -> nil:
+    if field.revision == field.rendered_revision:
+        ret
+    if field.texture != 0:
+        gpu.destroy_texture(field.texture)
+        field.texture = 0
+    display := field.text
+    if display.len() == 0:
+        display = "type here"
+    colour := [0.82, 0.86, 0.92, 1.0]
+    if field.focused:
+        colour = [1.0, 1.0, 1.0, 1.0]
+    made := make_text_texture(gpu, state.font, display, colour)
+    field.texture = made.texture
+    field.texture_w = made.width
+    field.texture_h = made.height
+    field.rendered_revision = field.revision
+
+# ---------------------------------------------------------------------------
+# Interaction
+# ---------------------------------------------------------------------------
+
+@plugin(Ui)
+@trigger(PreUpdate)
+pub ui_interact <- sys (
+    input: res &Input,
     gpu: res &mut Gpu,
+    state: res &mut UIState,
+    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
 ):
-    ret # TODO: ui render
+    mouse_x := input.cursor_x()
+    mouse_y := input.cursor_y()
+    down := input.mouse_down(0)
+    clicked := down and not state.mouse_was_down
+    state.mouse_x = mouse_x
+    state.mouse_y = mouse_y
+    state.hover_entity = 0
+    clicked_field := false
+
+    for (rect, panel, label, button, field) in widgets:
+        entity := widgets.entity()
+        hit := mouse_x >= rect.x and mouse_x <= rect.x + rect.w and mouse_y >= rect.y and mouse_y <= rect.y + rect.h
+        if hit:
+            state.hover_entity = entity
+
+        if label.text.len() > 0:
+            ensure_cached_text(gpu, state, entity, label.text, label.colour)
+
+        if button.action != 0:
+            ensure_cached_text(gpu, state, entity, button.label, label.colour)
+            if clicked and hit:
+                state.clicked_action = button.action
+
+        if field.max_len > 0:
+            if clicked and hit:
+                state.focused_entity = entity
+                clicked_field = true
+            focused := state.focused_entity == entity
+            if focused != field.focused:
+                field.focused = focused
+                field.revision = field.revision + 1
+            field.focused = focused
+            if focused:
+                typed := input.text_input()
+                text_len := field.text.len() as i64
+                if typed.len() > 0 and text_len < field.max_len:
+                    field.text = field.text + typed
+                    if field.text.len() as i64 > field.max_len:
+                        field.text = field.text.slice(0, field.max_len as usize)
+                    field.revision = field.revision + 1
+                if input.key_down(12) and field.text.len() as i64 > 0:
+                    field.text = field.text.slice(0, (field.text.len() as i64 - 1) as usize)
+                    field.revision = field.revision + 1
+                if input.key_down(13):
+                    state.focused_entity = 0
+                    field.focused = false
+            ensure_field_texture(gpu, state, field)
+
+    if clicked and not clicked_field:
+        state.focused_entity = 0
+    state.mouse_down = down
+    state.mouse_was_down = down
+
+# ---------------------------------------------------------------------------
+# Rendering helpers (called from scene.e7 after world draws, before end_frame)
+# ---------------------------------------------------------------------------
+
+quad <- (gpu: &Gpu, x: f32, y: f32, w: f32, h: f32, colour: [f32; 4]) -> nil:
+    gpu.draw_ui_quad(
+        0 as u64,
+        e7_f32_to_i64(x),
+        e7_f32_to_i64(y),
+        e7_f32_to_i64(w),
+        e7_f32_to_i64(h),
+        e7_f32_to_i64(e7_f32_clamp(colour[0] * 255.0, 0.0, 255.0)),
+        e7_f32_to_i64(e7_f32_clamp(colour[1] * 255.0, 0.0, 255.0)),
+        e7_f32_to_i64(e7_f32_clamp(colour[2] * 255.0, 0.0, 255.0)),
+        e7_f32_to_i64(e7_f32_clamp(colour[3] * 255.0, 0.0, 255.0)),
+    )
+
+draw_text_texture <- (
+    gpu: &Gpu,
+    texture: u64,
+    width: f32,
+    height: f32,
+    x: f32,
+    y: f32,
+) -> nil:
+    if texture == 0 or width <= 0.0 or height <= 0.0:
+        ret
+    gpu.draw_ui_quad(
+        texture,
+        e7_f32_to_i64(x),
+        e7_f32_to_i64(y),
+        e7_f32_to_i64(width),
+        e7_f32_to_i64(height),
+        255, 255, 255, 255,
+    )
+
+pub draw_widget <- (
+    gpu: &Gpu,
+    state: &mut UIState,
+    entity: i64,
+    rect: &UIRect,
+    panel: &UIPanel,
+    label: &UILabel,
+    button: &UIButton,
+    field: &UITextField,
+) -> nil:
+    # Background / button field.
+    if panel.colour[3] > 0.0:
+        background := panel.colour
+        if button.action != 0 and state.hover_entity == entity:
+            background = [e7_f32_clamp(panel.colour[0] * 1.35, 0.0, 1.0), e7_f32_clamp(panel.colour[1] * 1.35, 0.0, 1.0), e7_f32_clamp(panel.colour[2] * 1.35, 0.0, 1.0), panel.colour[3]]
+        if field.max_len > 0 and field.focused:
+            background = [e7_f32_clamp(panel.colour[0] * 1.25, 0.0, 1.0), e7_f32_clamp(panel.colour[1] * 1.25, 0.0, 1.0), e7_f32_clamp(panel.colour[2] * 1.25, 0.0, 1.0), panel.colour[3]]
+        quad(gpu, rect.x, rect.y, rect.w, rect.h, background)
+
+    if label.text.len() > 0:
+        entry := state.textures[entity]
+        texture: u64 := 0
+        width := 0
+        height := 0
+        if entry.len() >= 3:
+            texture = entry[0] as u64
+            width = entry[1]
+            height = entry[2]
+        if texture != 0:
+            draw_text_texture(gpu, texture, e7_f32_from_i64(width), e7_f32_from_i64(height), rect.x + 10.0, rect.y + (rect.h - e7_f32_from_i64(height)) * 0.5)
+
+    if button.action != 0:
+        entry := state.textures[entity]
+        texture: u64 := 0
+        width := 0
+        height := 0
+        if entry.len() >= 3:
+            texture = entry[0] as u64
+            width = entry[1]
+            height = entry[2]
+        if texture != 0:
+            draw_text_texture(
+                gpu,
+                texture,
+                e7_f32_from_i64(width),
+                e7_f32_from_i64(height),
+                rect.x + (rect.w - e7_f32_from_i64(width)) * 0.5,
+                rect.y + (rect.h - e7_f32_from_i64(height)) * 0.5,
+            )
+
+    if field.max_len > 0 and field.texture != 0:
+        draw_text_texture(
+            gpu,
+            field.texture,
+            e7_f32_from_i64(field.texture_w),
+            e7_f32_from_i64(field.texture_h),
+            rect.x + 8.0,
+            rect.y + (rect.h - e7_f32_from_i64(field.texture_h)) * 0.5,
+        )
+
+@plugin(Ui)
+@trigger(DeInit)
+pub ui_shutdown <- sys (state: res &mut UIState):
+    if state.font != 0:
+        e7_font_free(state.font)
+        state.font = 0

@@ -30,6 +30,7 @@ use physics_narrowphase::*;
 use physics::*;
 use assets::*;
 use obj::*;
+use ui::*;
 
 # Demo-specific configuration serialized through the engine's JSON derive.
 @resource
@@ -40,6 +41,26 @@ pub DemoSettings <- struct
     move_speed: f32
     look_speed: f32
     title: str
+
+# UI helper constructors keep every widget row on the same five-component
+# projection while letting each row override only the fields it uses.
+default_label <- () -> UILabel:
+    ret UILabel { text: "", size: 14, colour: [0.92, 0.94, 0.98, 1.0] }
+
+default_button <- () -> UIButton:
+    ret UIButton { label: "", action: 0 }
+
+default_field <- () -> UITextField:
+    ret UITextField {
+        text: "",
+        max_len: 0,
+        focused: false,
+        revision: 0,
+        rendered_revision: 0,
+        texture: 0,
+        texture_w: 0,
+        texture_h: 0,
+    }
 
 # Demo-specific content: the scene entity rows, cube collider, and light.
 pub DemoPlugin <- plugin
@@ -272,6 +293,103 @@ pub DemoPlugin <- plugin
         obj_material := Material { texture: 0, tint: [0.85, 0.9, 1.0] }
         commands.add_row(Components, { obj_transform, obj_renderer, obj_material })
 
+
+        # ---------------------------------------------------------------- UI
+        # Overlay panel (first widget row draws the background).
+        commands.add_row(Components, {
+            UIRect { x: 30.0, y: 20.0, w: 340.0, h: 270.0 },
+            UIPanel { colour: [0.055, 0.07, 0.105, 0.86] },
+            default_label(),
+            default_button(),
+            default_field(),
+        })
+        # Title.
+        commands.add_row(Components, {
+            UIRect { x: 48.0, y: 34.0, w: 300.0, h: 30.0 },
+            UIPanel { colour: [0.0, 0.0, 0.0, 0.0] },
+            UILabel { text: "engine7 UI", size: 20, colour: [1.0, 0.95, 0.82, 1.0] },
+            default_button(),
+            default_field(),
+        })
+        # Button: reset the cube stack via the UIButtonPressed trigger.
+        commands.add_row(Components, {
+            UIRect { x: 52.0, y: 80.0, w: 280.0, h: 36.0 },
+            UIPanel { colour: [0.16, 0.22, 0.32, 0.96] },
+            default_label(),
+            UIButton { label: "Reset Stack", action: 1 },
+            default_field(),
+        })
+        # Button: toggle the demo light.
+        commands.add_row(Components, {
+            UIRect { x: 52.0, y: 124.0, w: 280.0, h: 36.0 },
+            UIPanel { colour: [0.16, 0.22, 0.32, 0.96] },
+            default_label(),
+            UIButton { label: "Toggle Light", action: 2 },
+            default_field(),
+        })
+        # Field label.
+        commands.add_row(Components, {
+            UIRect { x: 52.0, y: 178.0, w: 280.0, h: 20.0 },
+            UIPanel { colour: [0.0, 0.0, 0.0, 0.0] },
+            UILabel { text: "Name", size: 14, colour: [0.75, 0.8, 0.9, 1.0] },
+            default_button(),
+            default_field(),
+        })
+        # Text field: click, type, Backspace, Enter.
+        commands.add_row(Components, {
+            UIRect { x: 52.0, y: 200.0, w: 280.0, h: 34.0 },
+            UIPanel { colour: [0.09, 0.12, 0.17, 0.96] },
+            default_label(),
+            default_button(),
+            UITextField {
+                text: "",
+                max_len: 24,
+                focused: false,
+                revision: 0,
+                rendered_revision: -1,
+                texture: 0,
+                texture_w: 0,
+                texture_h: 0,
+            },
+        })
+
+@trigger(UIButtonPressed)
+pub demo_ui_actions <- sys (
+    ui: res &UIState,
+    world: res &mut PhysicsWorld,
+    bodies: select &mut Transform, &mut RigidBody, &BodyId from Components,
+    lights: select &mut PointLight from Components,
+):
+    if ui.action == 1:
+        # Reset the three demo cubes upright on the plane and wake them.
+        for (transform, body, id) in bodies:
+            if id.id < 4 or id.id > 6:
+                cont
+            index := id.id - 4
+            transform.translation[0] = -2.0
+            transform.translation[1] = 0.5 + e7_f32_from_i64(index)
+            transform.translation[2] = 0.0
+            transform.rotation[0] = 0.0
+            transform.rotation[1] = 0.0
+            transform.rotation[2] = 0.0
+            body.velocity[0] = 0.0
+            body.velocity[1] = 0.0
+            body.velocity[2] = 0.0
+            body.angular_velocity[0] = 0.0
+            body.angular_velocity[1] = 0.0
+            body.angular_velocity[2] = 0.0
+            body.orientation[0] = 0.0
+            body.orientation[1] = 0.0
+            body.orientation[2] = 0.0
+            world.quaternions[id.id] = [0.0, 0.0, 0.0, 1.0]
+            world.sleep_state[id.id] = [0.0, 0.0]
+    elif ui.action == 2:
+        for light in lights:
+            if light.intensity > 1.0:
+                light.intensity = 0.35
+            else:
+                light.intensity = 2.8
+
 pub main <- async () -> i32:
     commands := await query &mut Commands
 
@@ -295,6 +413,11 @@ pub main <- async () -> i32:
     while not window.quit_requested:
         await FrameInit()
         await PreUpdate()
+        ui_state := await query &mut UIState
+        if ui_state.clicked_action != 0:
+            ui_state.action = ui_state.clicked_action
+            ui_state.clicked_action = 0
+            await UIButtonPressed()
         await Update()
         await PostUpdate()
         await Render()

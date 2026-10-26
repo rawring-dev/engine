@@ -9,7 +9,10 @@ The runtime is the bridge between generated code and the host. It provides:
 - the host-side FFI implementations under `src/ffi/`;
 - a basic Vulkan 3D scene renderer (`src/ffi/renderer.zig`) with e7s shader
   sources (`../engine/shaders/`) compiled to embedded SPIR-V (`shaders/`) and a
-  native demo (`src/scene_demo.zig`).
+  native demo (`src/scene_demo.zig`);
+- low-level UI input and text rasterization: absolute mouse position/buttons,
+  per-frame SDL text input, Backspace/Enter key codes, and SDL3_ttf fonts whose
+  rendered text becomes a normal RGBA8 image handle (`src/text.zig`).
 
 ## Intrinsic ABI
 
@@ -80,6 +83,9 @@ entry:
 | `src/ffi/vulkan.zig` | instance, device, swapchain, colour+depth offscreen target, capture, scene frame hooks |
 | `src/ffi/renderer.zig` | SPIR-V pipeline, cube buffers, camera/light uniforms, indexed draw, present/capture |
 | `src/scene_demo.zig` | native SDL3 + Vulkan demo executable (`zig build run-scene`) |
+| `src/text.zig` | SDL3_ttf font handles, text measurement, text -> RGBA8 image handle |
+| `src/image.zig` | PNG/JPEG decoding + text output registry (`e7_image_*`) |
+| `src/engine.zig` | e7 engine host ABI: window, scene, camera/light, input, frame limiter |
 | `src/ffi/fs.zig` | executable-directory sandbox |
 | `src/ffi/stdio.zig` | stdin/stdout/stderr byte and line I/O |
 | `src/ffi/net.zig` | host resolution, TCP listener/stream, UDP socket |
@@ -227,6 +233,60 @@ as a smoke test on headless machines. On nested/remote Wayland sessions where a
 visible window never gets composited, force the X11 backend with
 `SDL_VIDEODRIVER=x11`; the headless capture mode does not need a shown window.
 
+## UI input and text rasterization
+
+Low-level input state for an e7 UI layer (no widget policy lives here):
+
+| Intrinsic | Notes |
+| --- | --- |
+| `e7_engine_mouse_x() -> i64`, `e7_engine_mouse_y() -> i64` | absolute cursor position in SDL window coordinates (top-left origin), updated from `SDL_EVENT_MOUSE_MOTION` |
+| `e7_engine_mouse_down(button) -> i64` | `0` left, `1` right, `2` middle; other indices return 0. Tracked from mouse-button events |
+| `e7_engine_text_input() -> str` | UTF-8 bytes collected from `SDL_EVENT_TEXT_INPUT` since the last `e7_engine_window_pump`; empty when nothing was typed, cleared at the start of the next pump |
+| `e7_engine_key_down(code)` | existing action codes 0-11 plus `12` Backspace and `13` Enter (Return/Keypad Enter) |
+| `e7_engine_scene_draw_ui_quad(handle, texture_id, x, y, w, h, r, g, b, a) -> i64` | screen-space textured quad for UI; see below |
+
+The existing `e7_engine_mouse_dx/dy` relative-motion intrinsics still drive
+camera look; absolute position is for hit-testing. `text_input` returns a
+freshly allocated e7 `str` per call, so UI code should query it once per frame
+(or free the handle). HiDPI callers may need to scale window coordinates to
+pixel coordinates using the window size they already track.
+
+Text/font ABI (`src/text.zig`, links `SDL3_ttf`):
+
+| Intrinsic | Notes |
+| --- | --- |
+| `e7_font_load(path: str, size: i64) -> u64` | `TTF_OpenFont` at `size` points; `0` on failure (missing font/init error) |
+| `e7_font_free(handle) -> i32` | closes the font; `0` success, `1` invalid/duplicate free |
+| `e7_text_measure(font, text: str) -> i64` | packed `(width << 32) \| height` in pixels; `0` on invalid handle/API failure |
+| `e7_text_image(font, text: str, r, g, b) -> u64` | blended UTF-8 text on a transparent background; returns an **image handle** in the existing image registry (tightly packed top-down RGBA8), usable with `e7_image_width/height/pixels/free` and as a GPU texture via `e7_engine_scene_texture_create` |
+
+`path` is an ordinary filesystem path; the runtime does not bundle a font.
+Callers can pass a system font path (e.g. `/usr/share/fonts/TTF/DejaVuSans.ttf`)
+or a project asset path. Glyph colour components are clamped to 0..255. The
+headless tests skip gracefully when no system TrueType font is installed.
+
+### Screen-space UI quads
+
+`e7_engine_scene_draw_ui_quad` must be called between
+`e7_engine_scene_begin_frame` and `e7_engine_scene_end_frame`, after the 3D
+world draws.  It records into the same render pass/frame and is presented with
+the world (no separate pass or present):
+
+- `x`/`y` are pixels from the **top-left** of the swapchain; `w`/`h` are pixel
+  sizes.  The renderer converts them to Vulkan clip space with the current
+  swapchain extent (y is flipped to match Vulkan's NDC), so it tracks window
+  resizes.
+- `r`/`g`/`b`/`a` are 0..255 straight-alpha tint components (multiplied with
+  the texture).  Texture ids come from `e7_engine_scene_texture_create` (text
+  images from `e7_text_image` work directly); id 0 is the built-in white
+  texture, i.e. a solid tinted rectangle.
+- Depth test and depth writes are disabled for the UI pipeline: quads paint
+  over the 3D scene in call order.  Colour blending is straight alpha
+  (`SrcAlpha`, `OneMinusSrcAlpha`; alpha `One`, `OneMinusSrcAlpha`).
+- Up to a few hundred quads per frame are supported; the vertex buffer and the
+  queued-quad list grow on demand.  Invalid frame/texture/size returns `-1`.
+  `e7_engine_scene_capture`/engine captures replay the queued quads.
+
 ## Backend notes and limits
 
 - **SDL/Vulkan** work must be serialized per window/surface. Window creation and
@@ -263,7 +323,8 @@ visible window never gets composited, force the X11 backend with
 ## Build dependencies
 
 `build.zig` links `LLVM-23`, `SDL3`, `vulkan`, `curl`, `ssl`, `crypto`,
-`ngtcp2`, `ngtcp2_crypto_ossl`, and `datachannel`, plus the workspace
+`ngtcp2`, `ngtcp2_crypto_ossl`, `datachannel`, and `SDL3_ttf` (with `png` and
+`turbojpeg` for image decoding), plus the workspace
 `scheduler`/`compiler` modules and LAPACK/BLAS. The `scene-demo` executable is
 lighter: it links only SDL3 and Vulkan and embeds the checked-in SPIR-V through
 the `shader_assets` module, so it does not need LLVM or the compiler. The vendored Khronos headers in
@@ -286,6 +347,14 @@ distribution names the shared objects differently.
   (skipped without display/Vulkan);
 - QUIC client/server handshake and stream exchange;
 - WebRTC offer/answer and data-channel loopback;
+- SDL3_ttf text tests (system font -> measure -> RGBA8 text image with opaque
+  glyphs and transparent background; skipped if no font exists);
+- engine UI input tests (mouse position/buttons, per-frame text input,
+  Backspace/Enter key codes) and a JIT probe that resolves the input and
+  font/text intrinsics from generated IR;
+- screen-space UI quad tests: world + overlapping opaque/50%-alpha/checker
+  quads (blend values checked), 300-quad growable frame, capture replay, and a
+  system-font `e7_text_image` uploaded as a UI texture;
 - ORC JIT tests that install the full manifest and call filesystem, STDIO,
   TCP, UDP, HTTP, window, Vulkan, scene, QUIC, and WebRTC intrinsics from
   generated IR.

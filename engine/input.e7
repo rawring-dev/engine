@@ -36,6 +36,24 @@ impl Input:
     pub mouse_dy <- (input: &Input) -> f32:
         ret e7_f32_from_i64(e7_engine_mouse_dy())
 
+    pub mouse_x <- (input: &Input) -> i64:
+        ret e7_engine_mouse_x()
+
+    pub mouse_y <- (input: &Input) -> i64:
+        ret e7_engine_mouse_y()
+
+    pub cursor_x <- (input: &Input) -> f32:
+        ret e7_f32_from_i64(e7_engine_mouse_x())
+
+    pub cursor_y <- (input: &Input) -> f32:
+        ret e7_f32_from_i64(e7_engine_mouse_y())
+
+    pub mouse_down <- (input: &Input, button: i64) -> bool:
+        ret e7_engine_mouse_down(button) != 0
+
+    pub text_input <- (input: &Input) -> str:
+        ret e7_engine_text_input()
+
 
 pub InputPlugin <- plugin
     input_plugin_init <- sys (commands: &mut Commands):
