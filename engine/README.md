@@ -68,9 +68,12 @@ engine/
   `e7_engine_key_down` / `e7_engine_mouse_dx` / `e7_engine_mouse_dy`; and
   `move_camera` only updates look orientation; player movement/jump is handled by
   `physics.e7` from the player capsule; the fixed step integrates quaternion
-  orientation/inverse inertia and uses OBB SAT/oriented-capsule manifolds, then
-  follows the player with the first-person Camera eye. Pickup picks the nearest
-  body (deterministic body-id tie-break). `render_scene` reads the Camera row, then submits
+  orientation with rotated world inverse inertia, uses OBB SAT/oriented-capsule
+  manifolds and corner contact points, and applies high Coulomb friction
+  (μ=0.9/1.15) so boxes tip and stop sliding. It then follows the player with
+  the first-person Camera eye. Pickup picks the nearest body (deterministic
+  body-id tie-break). Rendering uses full X/Y/Z Euler orientation, so contact
+  torques are visible. `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
   one `draw_shape_rot` per `Renderable` + `Transform` + `BodyBounds` +
   `Material` row (object count is dynamic; there is no fixed per-frame limit),

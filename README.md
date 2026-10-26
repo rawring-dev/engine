@@ -488,10 +488,11 @@ PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
 AABB/sphere raycasts, gravity integration, pickup/hold, and a camera raycast
 resource. `physics_broadphase.e7` maintains a spatial grid with aggregated
 region/ray candidate queries; `physics_narrowphase.e7` provides oriented
-capsule/OBB/SAT manifolds, quaternion orientation, inverse-inertia angular
-impulses, and true capsule/plane, capsule/AABB, sphere/plane and box/plane
-tests. The fixed step integrates quaternions and applies angular contact
-impulses; pickup selects the nearest body with a deterministic tie-break.
+capsule/OBB/SAT manifolds, quaternion orientation, rotated world inverse
+inertia, multi-point box contact impulses, and true capsule/plane,
+capsule/AABB, sphere/plane and box/plane tests. Contact points drive box
+tipping/rolling; Coulomb friction uses μ=0.9 dynamic/1.15 static at every
+contact. Pickup selects the nearest body with a deterministic tie-break.
 Pickup, hold, and camera follow share that step. The demo starts with a static
 plane, a rotation-locked capsule player, a dynamic ball, and three stacked
 cubes.
@@ -557,7 +558,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 339 tests: scheduler 8, compiler 204, runtime 104,
+`zig build test` runs 345 tests: scheduler 8, compiler 204, runtime 110,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

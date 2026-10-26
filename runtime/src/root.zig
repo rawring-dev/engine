@@ -2307,3 +2307,512 @@ test "JIT nearest pickup uses distance then body id tie-break" {
     try std.testing.expectEqual(@as(i64, 11), aggregate.e7_load_i64(probe_ptr));
     try std.testing.expectEqual(@as(i64, 10), aggregate.e7_load_i64(probe_ptr + 8));
 }
+
+test "JIT contact friction slows and tips boxes" {
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(time_source);
+    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(input_source);
+    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(camera_source);
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(physics_source);
+
+    const root_source =
+        \\mod events
+        \\mod ecs
+        \\mod time
+        \\mod input
+        \\mod camera
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\mod physics
+        \\use ecs::*;
+        \\use events::*;
+        \\use time::*;
+        \\use input::*;
+        \\use camera::*;
+        \\use physics_broadphase::*;
+        \\use physics_narrowphase::*;
+        \\use physics::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    vx: i64
+        \\    rot_z: i64
+        \\    max_speed: i64
+        \\    max_angular: i64
+        \\    min_y: i64
+        \\    max_y: i64
+        \\pub Capture <- trigger
+        \\pub ContactScene <- plugin
+        \\    contact_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { vx: 0, rot_z: 0, max_speed: 0, max_angular: 0, min_y: 1000000, max_y: -1000000 })
+        \\        commands.insert_resource(Input {
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        friction_transform := Transform { translation: [-3.0, 0.55, 0.0], rotation: [0.0, 0.0, 0.25], scale: [1.0, 1.0, 1.0] }
+        \\        friction_id := BodyId { id: 10 }
+        \\        friction_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        friction_body := RigidBody {
+        \\            velocity: [2.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 1.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        friction_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        friction_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 10, held_by: 0 }
+        \\        commands.add_row(Components, { friction_transform, friction_id, friction_bounds, friction_body, friction_collider, friction_flags })
+        \\        stack_index := 0
+        \\        while stack_index < 3:
+        \\            stack_y := 0.5 + e7_f32_from_i64(stack_index)
+        \\            stack_transform := Transform { translation: [0.0, stack_y, 0.0], rotation: [0.04, 0.0, 0.03], scale: [1.0, 1.0, 1.0] }
+        \\            stack_id := BodyId { id: 11 + stack_index }
+        \\            stack_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\            stack_body := RigidBody {
+        \\                velocity: [0.0, 0.0, 0.0],
+        \\                angular_velocity: [0.0, 0.0, 0.0],
+        \\                orientation: [0.0, 0.0, 0.0],
+        \\                inv_mass: 1.0,
+        \\                gravity_scale: 1.0,
+        \\                rotation_locked: false,
+        \\                is_static: false,
+        \\            }
+        \\            stack_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\            stack_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 11 + stack_index, held_by: 0 }
+        \\            commands.add_row(Components, { stack_transform, stack_id, stack_bounds, stack_body, stack_collider, stack_flags })
+        \\            stack_index = stack_index + 1
+        \\@trigger(Capture)
+        \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
+        \\    for (transform, body, id) in boxes:
+        \\        speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[1]) + e7_f32_abs(body.velocity[2])
+        \\        angular := e7_f32_abs(body.angular_velocity[0]) + e7_f32_abs(body.angular_velocity[1]) + e7_f32_abs(body.angular_velocity[2])
+        \\        speed_milli := e7_f32_to_milli(speed)
+        \\        angular_milli := e7_f32_to_milli(angular)
+        \\        y_milli := e7_f32_to_milli(transform.translation[1])
+        \\        if speed_milli > probe.max_speed:
+        \\            probe.max_speed = speed_milli
+        \\        if angular_milli > probe.max_angular:
+        \\            probe.max_angular = angular_milli
+        \\        if y_milli < probe.min_y:
+        \\            probe.min_y = y_milli
+        \\        if y_milli > probe.max_y:
+        \\            probe.max_y = y_milli
+        \\        if id.id == 10:
+        \\            probe.vx = e7_f32_to_milli(body.velocity[0])
+        \\            probe.rot_z = e7_f32_to_milli(transform.rotation[2])
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(ContactScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Capture()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "time", .source = time_source },
+            .{ .name = "input", .source = input_source },
+            .{ .name = "camera", .source = camera_source },
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "physics", .source = physics_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("contact scene diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "contact-friction-stack");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const vx = aggregate.e7_load_i64(probe_ptr);
+    const rot_z = aggregate.e7_load_i64(probe_ptr + 8);
+    const max_speed = aggregate.e7_load_i64(probe_ptr + 16);
+    const max_angular = aggregate.e7_load_i64(probe_ptr + 24);
+    const min_y = aggregate.e7_load_i64(probe_ptr + 32);
+    const max_y = aggregate.e7_load_i64(probe_ptr + 40);
+    try std.testing.expect(vx > -500 and vx < 500);
+    try std.testing.expect(e7Abs(i64, rot_z - 250) > 50);
+    try std.testing.expect(min_y > 300);
+    try std.testing.expect(max_y < 5000);
+    try std.testing.expect(max_speed > 0);
+    try std.testing.expect(max_angular > 0);
+}
+
+fn e7Abs(comptime T: type, value: T) T {
+    return if (value < 0) -value else value;
+}
+
+test "JIT demo box stack settles after contact iterations" {
+    const candidates = [_][]const u8{ "engine/main.e7", "../engine/main.e7", "../../engine/main.e7" };
+    var root_path: []const u8 = "";
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    for (candidates) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
+        defer std.testing.allocator.free(absolute);
+        if (absolute.len > path_buffer.len) continue;
+        @memcpy(path_buffer[0..absolute.len], absolute);
+        root_path = path_buffer[0..absolute.len];
+        break;
+    }
+    if (root_path.len == 0) return error.SkipZigTest;
+
+    var compiled = try compiler.pipeline.compileProject(std.testing.allocator, root_path, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    engine.reset();
+    defer engine.shutdown();
+    engine.setHeadless(true);
+    engine.setMaxFrames(240);
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "stack-settle");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var transform_id: i64 = -1;
+    var body_id_id: i64 = -1;
+    var rigid_id: i64 = -1;
+    for (compiled.analysis.components) |component| {
+        if (std.mem.endsWith(u8, component.name, "Transform")) transform_id = component.id;
+        if (std.mem.endsWith(u8, component.name, "BodyId")) body_id_id = component.id;
+        if (std.mem.endsWith(u8, component.name, "RigidBody")) rigid_id = component.id;
+    }
+    try std.testing.expect(transform_id >= 0 and body_id_id >= 0 and rigid_id >= 0);
+    var max_speed: f64 = 0;
+    var max_angular: f64 = 0;
+    var min_y: f64 = 1000;
+    var max_y: f64 = -1000;
+    var entity: i64 = 0;
+    var found: i64 = 0;
+    while (entity < ecs.e7_ecs_entity_count()) : (entity += 1) {
+        const id_ptr = ecs.e7_ecs_component_get(entity, body_id_id);
+        if (id_ptr == 0) continue;
+        const body_id = aggregate.e7_load_i64(id_ptr);
+        if (body_id < 4 or body_id > 6) continue;
+        found += 1;
+        const transform_ptr = ecs.e7_ecs_component_get(entity, transform_id);
+        const body_ptr = ecs.e7_ecs_component_get(entity, rigid_id);
+        try std.testing.expect(transform_ptr != 0 and body_ptr != 0);
+        const vel = aggregate.e7_load_i64(body_ptr);
+        const ang = aggregate.e7_load_i64(body_ptr + 8);
+        const speed = @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 0)))) +
+            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 1)))) +
+            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 2))));
+        const angular = @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 0)))) +
+            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 1)))) +
+            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 2))));
+        const translation = aggregate.e7_load_i64(transform_ptr);
+        const y = @as(f64, @bitCast(aggregate.e7_vec_get(translation, 1)));
+        if (speed > max_speed) max_speed = speed;
+        if (angular > max_angular) max_angular = angular;
+        if (y < min_y) min_y = y;
+        if (y > max_y) max_y = y;
+    }
+    try std.testing.expectEqual(@as(i64, 3), found);
+    try std.testing.expect(max_speed < 2.0);
+    try std.testing.expect(max_angular < 2.0);
+    try std.testing.expect(min_y > 0.3);
+    try std.testing.expect(max_y < 5.0);
+}
+
+test "JIT rotates body inverse inertia by quaternion" {
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+    const root_source =
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\Vec3 <- struct
+        \\    x: f32
+        \\    y: f32
+        \\    z: f32
+        \\Ray <- struct
+        \\    origin: Vec3
+        \\    direction: Vec3
+        \\Aabb <- struct
+        \\    min: Vec3
+        \\    max: Vec3
+        \\RayHit <- struct
+        \\    hit: bool
+        \\    distance: f32
+        \\    point: Vec3
+        \\ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit = RayHit { hit: false, distance: 0.0, point: center }
+        \\main <- () -> i32:
+        \\    half := Vec3 { x: 2.0, y: 1.0, z: 0.5 }
+        \\    upright := inverse_inertia_world(0, half, 0.0, 0.0, 1.0, quat_identity())
+        \\    turned := inverse_inertia_world(0, Vec3 { x: 2.0, y: 1.0, z: 0.5 }, 0.0, 0.0, 1.0, quat_from_euler(0.0, 0.0, 1.5707963))
+        \\    diagonal := inverse_inertia_world(0, Vec3 { x: 2.0, y: 1.0, z: 0.5 }, 0.0, 0.0, 1.0, quat_from_euler(0.0, 0.0, 0.7853982))
+        \\    score := 0
+        \\    if upright.m00 > 2.399 and upright.m00 < 2.401:
+        \\        score = score + 1
+        \\    if upright.m11 > 0.7057 and upright.m11 < 0.7060:
+        \\        score = score + 2
+        \\    if upright.m22 > 0.5999 and upright.m22 < 0.6001:
+        \\        score = score + 4
+        \\    if e7_f32_abs(upright.m01) < 0.001 and e7_f32_abs(upright.m12) < 0.001:
+        \\        score = score + 8
+        \\    if turned.m00 > 0.7057 and turned.m00 < 0.7060:
+        \\        score = score + 16
+        \\    if turned.m11 > 2.399 and turned.m11 < 2.401:
+        \\        score = score + 32
+        \\    if e7_f32_abs(diagonal.m01) > 0.5:
+        \\        score = score + 64
+        \\    ret score
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "rotated-inertia");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    try std.testing.expectEqual(@as(i64, 127), main());
+}
+
+test "JIT body pairs exchange equal and opposite impulses" {
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(time_source);
+    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(input_source);
+    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(camera_source);
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(physics_source);
+
+    const root_source =
+        \\mod events
+        \\mod ecs
+        \\mod time
+        \\mod input
+        \\mod camera
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\mod physics
+        \\use ecs::*;
+        \\use events::*;
+        \\use time::*;
+        \\use input::*;
+        \\use camera::*;
+        \\use physics_broadphase::*;
+        \\use physics_narrowphase::*;
+        \\use physics::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    avx: i64
+        \\    bvx: i64
+        \\    awz: i64
+        \\    bwz: i64
+        \\pub Capture <- trigger
+        \\pub PairScene <- plugin
+        \\    pair_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { avx: 0, bvx: 0, awz: 0, bwz: 0 })
+        \\        commands.insert_resource(Input {
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        a_transform := Transform { translation: [0.0, 5.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        a_id := BodyId { id: 10 }
+        \\        a_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        a_body := RigidBody {
+        \\            velocity: [2.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 0.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        a_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        a_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 10, held_by: 0 }
+        \\        commands.add_row(Components, { a_transform, a_id, a_bounds, a_body, a_collider, a_flags })
+        \\        b_transform := Transform { translation: [0.8, 5.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        b_id := BodyId { id: 11 }
+        \\        b_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        b_body := RigidBody {
+        \\            velocity: [0.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 0.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        b_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        b_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 11, held_by: 0 }
+        \\        commands.add_row(Components, { b_transform, b_id, b_bounds, b_body, b_collider, b_flags })
+        \\@trigger(Capture)
+        \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
+        \\    for (transform, body, id) in boxes:
+        \\        if id.id == 10:
+        \\            probe.avx = e7_f32_to_milli(body.velocity[0])
+        \\            probe.awz = e7_f32_to_milli(body.angular_velocity[2])
+        \\        if id.id == 11:
+        \\            probe.bvx = e7_f32_to_milli(body.velocity[0])
+        \\            probe.bwz = e7_f32_to_milli(body.angular_velocity[2])
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(PairScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await Capture()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "time", .source = time_source },
+            .{ .name = "input", .source = input_source },
+            .{ .name = "camera", .source = camera_source },
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "physics", .source = physics_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("pair scene diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "symmetric-pair");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const avx = aggregate.e7_load_i64(probe_ptr);
+    const bvx = aggregate.e7_load_i64(probe_ptr + 8);
+    const awz = aggregate.e7_load_i64(probe_ptr + 16);
+    const bwz = aggregate.e7_load_i64(probe_ptr + 24);
+    try std.testing.expect(avx < 1950);
+    try std.testing.expect(bvx > 50);
+    try std.testing.expect(avx + bvx > 1800 and avx + bvx < 2200);
+    try std.testing.expect(awz != 0 or bwz != 0);
+}

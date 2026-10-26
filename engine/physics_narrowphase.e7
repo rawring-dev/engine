@@ -1320,6 +1320,167 @@ pub contact_impulse <- (
         wx: out_wx, wy: out_wy, wz: out_wz,
     }
 
+# Equal/opposite two-body contact impulse with normal + Coulomb friction.
+pub PairImpulseResult <- struct
+    avx: f32
+    avy: f32
+    avz: f32
+    awx: f32
+    awy: f32
+    awz: f32
+    bvx: f32
+    bvy: f32
+    bvz: f32
+    bwx: f32
+    bwy: f32
+    bwz: f32
+
+pub pair_contact_impulse <- (
+    avx: f32, avy: f32, avz: f32,
+    awx: f32, awy: f32, awz: f32,
+    rx: f32, ry: f32, rz: f32,
+    bvx: f32, bvy: f32, bvz: f32,
+    bwx: f32, bwy: f32, bwz: f32,
+    brx: f32, bry: f32, brz: f32,
+    nx: f32, ny: f32, nz: f32,
+    inv_ia: Mat3,
+    inv_ib: Mat3,
+    inv_mass_a: f32,
+    inv_mass_b: f32,
+    friction: f32,
+    static_friction: f32,
+) -> PairImpulseResult:
+    pax := avx + awy * rz - awz * ry
+    pay := avy + awz * rx - awx * rz
+    paz := avz + awx * ry - awy * rx
+    pbx := bvx + bwy * brz - bwz * bry
+    pby := bvy + bwz * brx - bwx * brz
+    pbz := bvz + bwx * bry - bwy * brx
+    rvx := pax - pbx
+    rvy := pay - pby
+    rvz := paz - pbz
+    vn := rvx * nx + rvy * ny + rvz * nz
+    o_avx := avx
+    o_avy := avy
+    o_avz := avz
+    o_awx := awx
+    o_awy := awy
+    o_awz := awz
+    o_bvx := bvx
+    o_bvy := bvy
+    o_bvz := bvz
+    o_bwx := bwx
+    o_bwy := bwy
+    o_bwz := bwz
+    normal_impulse := 0.0
+    if vn < 0.0:
+        rnax := ry * nz - rz * ny
+        rnay := rz * nx - rx * nz
+        rnaz := rx * ny - ry * nx
+        anga := mat3_mul_vec(Mat3 {
+            m00: inv_ia.m00, m01: inv_ia.m01, m02: inv_ia.m02,
+            m10: inv_ia.m10, m11: inv_ia.m11, m12: inv_ia.m12,
+            m20: inv_ia.m20, m21: inv_ia.m21, m22: inv_ia.m22,
+        }, Vec3 { x: rnax, y: rnay, z: rnaz })
+        angaxr_x := anga.y * rz - anga.z * ry
+        angaxr_y := anga.z * rx - anga.x * rz
+        angaxr_z := anga.x * ry - anga.y * rx
+        rnbx := bry * nz - brz * ny
+        rnby := brz * nx - brx * nz
+        rnbz := brx * ny - bry * nx
+        angb := mat3_mul_vec(Mat3 {
+            m00: inv_ib.m00, m01: inv_ib.m01, m02: inv_ib.m02,
+            m10: inv_ib.m10, m11: inv_ib.m11, m12: inv_ib.m12,
+            m20: inv_ib.m20, m21: inv_ib.m21, m22: inv_ib.m22,
+        }, Vec3 { x: rnbx, y: rnby, z: rnbz })
+        angbxr_x := angb.y * brz - angb.z * bry
+        angbxr_y := angb.z * brx - angb.x * brz
+        angbxr_z := angb.x * bry - angb.y * brx
+        denom := inv_mass_a + inv_mass_b + angaxr_x * nx + angaxr_y * ny + angaxr_z * nz + angbxr_x * nx + angbxr_y * ny + angbxr_z * nz
+        if denom > 0.000001:
+            jn := (0.0 - vn) / denom
+            normal_impulse = jn
+            o_avx = o_avx + nx * jn * inv_mass_a
+            o_avy = o_avy + ny * jn * inv_mass_a
+            o_avz = o_avz + nz * jn * inv_mass_a
+            o_awx = o_awx + anga.x * jn
+            o_awy = o_awy + anga.y * jn
+            o_awz = o_awz + anga.z * jn
+            o_bvx = o_bvx - nx * jn * inv_mass_b
+            o_bvy = o_bvy - ny * jn * inv_mass_b
+            o_bvz = o_bvz - nz * jn * inv_mass_b
+            o_bwx = o_bwx - angb.x * jn
+            o_bwy = o_bwy - angb.y * jn
+            o_bwz = o_bwz - angb.z * jn
+    # Friction in the tangential plane after the normal impulse.
+    pax = o_avx + o_awy * rz - o_awz * ry
+    pay = o_avy + o_awz * rx - o_awx * rz
+    paz = o_avz + o_awx * ry - o_awy * rx
+    pbx = o_bvx + o_bwy * brz - o_bwz * bry
+    pby = o_bvy + o_bwz * brx - o_bwx * brz
+    pbz = o_bvz + o_bwx * bry - o_bwy * brx
+    rvx = pax - pbx
+    rvy = pay - pby
+    rvz = paz - pbz
+    vn = rvx * nx + rvy * ny + rvz * nz
+    tx := rvx - nx * vn
+    ty := rvy - ny * vn
+    tz := rvz - nz * vn
+    speed := e7_f32_sqrt(tx * tx + ty * ty + tz * tz)
+    if speed > 0.000001:
+        tx = tx / speed
+        ty = ty / speed
+        tz = tz / speed
+        rt_ax := ry * tz - rz * ty
+        rt_ay := rz * tx - rx * tz
+        rt_az := rx * ty - ry * tx
+        anga_t := mat3_mul_vec(Mat3 {
+            m00: inv_ia.m00, m01: inv_ia.m01, m02: inv_ia.m02,
+            m10: inv_ia.m10, m11: inv_ia.m11, m12: inv_ia.m12,
+            m20: inv_ia.m20, m21: inv_ia.m21, m22: inv_ia.m22,
+        }, Vec3 { x: rt_ax, y: rt_ay, z: rt_az })
+        atr_x := anga_t.y * rz - anga_t.z * ry
+        atr_y := anga_t.z * rx - anga_t.x * rz
+        atr_z := anga_t.x * ry - anga_t.y * rx
+        rt_bx := bry * tz - brz * ty
+        rt_by := brz * tx - brx * tz
+        rt_bz := brx * ty - bry * tx
+        angb_t := mat3_mul_vec(Mat3 {
+            m00: inv_ib.m00, m01: inv_ib.m01, m02: inv_ib.m02,
+            m10: inv_ib.m10, m11: inv_ib.m11, m12: inv_ib.m12,
+            m20: inv_ib.m20, m21: inv_ib.m21, m22: inv_ib.m22,
+        }, Vec3 { x: rt_bx, y: rt_by, z: rt_bz })
+        btr_x := angb_t.y * brz - angb_t.z * bry
+        btr_y := angb_t.z * brx - angb_t.x * brz
+        btr_z := angb_t.x * bry - angb_t.y * brx
+        denom_t := inv_mass_a + inv_mass_b + atr_x * tx + atr_y * ty + atr_z * tz + btr_x * tx + btr_y * ty + btr_z * tz
+        if denom_t > 0.000001:
+            mu := friction
+            if speed < 0.5 and static_friction > friction:
+                mu = static_friction
+            max_friction := mu * (normal_impulse + 0.1)
+            jt := speed / denom_t
+            if jt > max_friction:
+                jt = max_friction
+            o_avx = o_avx - tx * jt * inv_mass_a
+            o_avy = o_avy - ty * jt * inv_mass_a
+            o_avz = o_avz - tz * jt * inv_mass_a
+            o_awx = o_awx - anga_t.x * jt
+            o_awy = o_awy - anga_t.y * jt
+            o_awz = o_awz - anga_t.z * jt
+            o_bvx = o_bvx + tx * jt * inv_mass_b
+            o_bvy = o_bvy + ty * jt * inv_mass_b
+            o_bvz = o_bvz + tz * jt * inv_mass_b
+            o_bwx = o_bwx + angb_t.x * jt
+            o_bwy = o_bwy + angb_t.y * jt
+            o_bwz = o_bwz + angb_t.z * jt
+    ret PairImpulseResult {
+        avx: o_avx, avy: o_avy, avz: o_avz,
+        awx: o_awx, awy: o_awy, awz: o_awz,
+        bvx: o_bvx, bvy: o_bvy, bvz: o_bvz,
+        bwx: o_bwx, bwy: o_bwy, bwz: o_bwz,
+    }
+
 # Plugin marker: keeps the module in the project plugin graph; all narrowphase
 # work is exposed as pure functions called by `physics.e7` systems.
 pub NarrowphasePlugin <- plugin

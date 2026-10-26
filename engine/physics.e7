@@ -68,6 +68,9 @@ pub PhysicsWorld <- struct
     # boxes stop sliding and stack instead of gliding.
     friction: f32
     friction_static: f32
+    # Deferred equal-and-opposite impulses for the earlier body in a pair
+    # (flattened dvx,dvy,dvz,dwx,dwy,dwz).  Applied in the next body pass.
+    pending_impulses: map[i64, [f32]]
 
 @resource
 pub RaycastState <- struct
@@ -100,6 +103,7 @@ pub PhysicsPlugin <- plugin
             plane_offset: 0.0,
             friction: 0.9,
             friction_static: 1.15,
+            pending_impulses: map[i64, [f32]] {},
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -235,6 +239,7 @@ pub physics_step <- sys (
     plane_z := world.plane_normal[2]
     ground := world.plane_offset
     world.grounded = false
+    world.pending_impulses = map[i64, [f32]] {}
 
     cells := map[i64, [i64]] {}
     ids: [i64] := []
@@ -244,6 +249,10 @@ pub physics_step <- sys (
     stored_half_height: [f32] := []
     stored_half: [f32] := []
     stored_quats: [f32] := []
+    stored_vel: [f32] := []
+    stored_ang: [f32] := []
+    stored_inv_mass: [f32] := []
+    stored_locked: [i64] := []
     body_count := 0
 
     for (transform, body, body_bounds, flags) in bodies:
@@ -682,38 +691,100 @@ pub physics_step <- sys (
                         m10: 0.0, m11: 0.0, m12: 0.0,
                         m20: 0.0, m21: 0.0, m22: 0.0,
                     }
+                other_inv_mass := stored_inv_mass[other_index as usize]
+                other_inv_i := inverse_inertia_world(
+                    other_shape,
+                    Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
+                    stored_radius[other_index as usize],
+                    stored_half_height[other_index as usize],
+                    other_inv_mass,
+                    Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
+                )
+                if stored_locked[other_index as usize] != 0:
+                    other_inv_i = Mat3 {
+                        m00: 0.0, m01: 0.0, m02: 0.0,
+                        m10: 0.0, m11: 0.0, m12: 0.0,
+                        m20: 0.0, m21: 0.0, m22: 0.0,
+                    }
+                other_vel_base := other_index * 3
+                b_vx := stored_vel[(other_vel_base + 0) as usize]
+                b_vy := stored_vel[(other_vel_base + 1) as usize]
+                b_vz := stored_vel[(other_vel_base + 2) as usize]
+                b_wx := stored_ang[(other_vel_base + 0) as usize]
+                b_wy := stored_ang[(other_vel_base + 1) as usize]
+                b_wz := stored_ang[(other_vel_base + 2) as usize]
+                pending_dvx := 0.0
+                pending_dvy := 0.0
+                pending_dvz := 0.0
+                pending_dwx := 0.0
+                pending_dwy := 0.0
+                pending_dwz := 0.0
                 point_index := 0
                 point_count := points.len()
                 while point_index < point_count:
                     rx := points[point_index as usize] - transform.translation[0]
                     ry := points[(point_index + 1) as usize] - transform.translation[1]
                     rz := points[(point_index + 2) as usize] - transform.translation[2]
-                    result := contact_impulse(
+                    brx := points[point_index as usize] - other_center.x
+                    bry := points[(point_index + 1) as usize] - other_center.y
+                    brz := points[(point_index + 2) as usize] - other_center.z
+                    result := pair_contact_impulse(
                         body.velocity[0], body.velocity[1], body.velocity[2],
                         body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
                         rx, ry, rz,
+                        b_vx, b_vy, b_vz,
+                        b_wx, b_wy, b_wz,
+                        brx, bry, brz,
                         contact.normal.x, contact.normal.y, contact.normal.z,
                         Mat3 {
                             m00: collision_inv_i.m00, m01: collision_inv_i.m01, m02: collision_inv_i.m02,
                             m10: collision_inv_i.m10, m11: collision_inv_i.m11, m12: collision_inv_i.m12,
                             m20: collision_inv_i.m20, m21: collision_inv_i.m21, m22: collision_inv_i.m22,
                         },
+                        Mat3 {
+                            m00: other_inv_i.m00, m01: other_inv_i.m01, m02: other_inv_i.m02,
+                            m10: other_inv_i.m10, m11: other_inv_i.m11, m12: other_inv_i.m12,
+                            m20: other_inv_i.m20, m21: other_inv_i.m21, m22: other_inv_i.m22,
+                        },
                         body.inv_mass,
+                        other_inv_mass,
                         world.friction,
                         world.friction_static,
                     )
-                    body.velocity[0] = result.vx
-                    body.velocity[1] = result.vy
-                    body.velocity[2] = result.vz
+                    pending_dvx = pending_dvx + (result.bvx - b_vx)
+                    pending_dvy = pending_dvy + (result.bvy - b_vy)
+                    pending_dvz = pending_dvz + (result.bvz - b_vz)
+                    pending_dwx = pending_dwx + (result.bwx - b_wx)
+                    pending_dwy = pending_dwy + (result.bwy - b_wy)
+                    pending_dwz = pending_dwz + (result.bwz - b_wz)
+                    b_vx = result.bvx
+                    b_vy = result.bvy
+                    b_vz = result.bvz
+                    b_wx = result.bwx
+                    b_wy = result.bwy
+                    b_wz = result.bwz
+                    body.velocity[0] = result.avx
+                    body.velocity[1] = result.avy
+                    body.velocity[2] = result.avz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
-                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
-                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                        body.angular_velocity[0] = e7_f32_clamp(result.awx, -12.0, 12.0)
+                        body.angular_velocity[1] = e7_f32_clamp(result.awy, -12.0, 12.0)
+                        body.angular_velocity[2] = e7_f32_clamp(result.awz, -12.0, 12.0)
                     else:
                         body.angular_velocity[0] = 0.0
                         body.angular_velocity[1] = 0.0
                         body.angular_velocity[2] = 0.0
                     point_index = point_index + 3
+                pending := world.pending_impulses[other_id]
+                if pending.len() < 6:
+                    pending = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                pending[0] = pending[0] + pending_dvx
+                pending[1] = pending[1] + pending_dvy
+                pending[2] = pending[2] + pending_dvz
+                pending[3] = pending[3] + pending_dwx
+                pending[4] = pending[4] + pending_dwy
+                pending[5] = pending[5] + pending_dwz
+                world.pending_impulses[other_id] = pending
 
         # Store final broadphase/collision data (after push-out).
         final_aabb := shape_aabb(
@@ -741,6 +812,17 @@ pub physics_step <- sys (
         stored_quats = e7_vec_push(stored_quats, q.y)
         stored_quats = e7_vec_push(stored_quats, q.z)
         stored_quats = e7_vec_push(stored_quats, q.w)
+        stored_vel = e7_vec_push(stored_vel, body.velocity[0])
+        stored_vel = e7_vec_push(stored_vel, body.velocity[1])
+        stored_vel = e7_vec_push(stored_vel, body.velocity[2])
+        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[0])
+        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[1])
+        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[2])
+        stored_inv_mass = e7_vec_push(stored_inv_mass, body.inv_mass)
+        locked_value := 0
+        if body.rotation_locked:
+            locked_value = 1
+        stored_locked = e7_vec_push(stored_locked, locked_value)
         body_count = body_count + 1
         broadphase_insert(
             &mut cells,
@@ -788,7 +870,17 @@ pub physics_step <- sys (
     hold_yaw := world.camera_yaw
     forward_x := e7_f32_sin(hold_yaw)
     forward_z := 0.0 - e7_f32_cos(hold_yaw)
+    pending_map := world.pending_impulses
     for (transform, body, flags) in hold_bodies:
+        pending := pending_map[flags.target_id]
+        if pending.len() >= 6:
+            body.velocity[0] = body.velocity[0] + pending[0]
+            body.velocity[1] = body.velocity[1] + pending[1]
+            body.velocity[2] = body.velocity[2] + pending[2]
+            if not body.rotation_locked:
+                body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + pending[3], -12.0, 12.0)
+                body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + pending[4], -12.0, 12.0)
+                body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + pending[5], -12.0, 12.0)
         if not flags.is_pickup:
             cont
         if flags.target_id == pickup_state.held_id:
@@ -806,6 +898,7 @@ pub physics_step <- sys (
             flags.held_by = 0
         if released and flags.target_id == released_id and not body.rotation_locked:
             body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + 1.6, -10.0, 10.0)
+    world.pending_impulses = map[i64, [f32]] {}
 
     # ------------------------------------------- camera look + follow (same step)
     for (camera, controller) in cameras:
