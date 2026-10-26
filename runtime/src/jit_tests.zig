@@ -1120,7 +1120,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
-test "e7 SDL+Vulkan platform module captures a cleared frame" {
+test "e7 SDL+Vulkan platform creates render targets and captures a frame" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
 
     const io = std.testing.io;
@@ -1188,6 +1188,21 @@ test "e7 SDL+Vulkan platform module captures a cleared frame" {
         \\                width := e7_load_u32(width_out)
         \\                height := e7_load_u32(height_out)
         \\                image_count := e7_load_u32(image_count_out)
+        \\                image_format := e7_load_u32(format_out)
+        \\                rp_targets := e7_alloc_bytes(8)
+        \\                view_targets := e7_alloc_bytes(8)
+        \\                fb_targets := e7_alloc_bytes(8)
+        \\                targets_ok := vulkan_render_targets(device, images, image_count, image_format, width, height, rp_targets, view_targets, fb_targets)
+        \\                render_pass_handle := e7_load_u64(rp_targets)
+        \\                views_handle := e7_load_u64(view_targets)
+        \\                framebuffers_handle := e7_load_u64(fb_targets)
+        \\                if targets_ok != 0:
+        \\                    vulkan_render_targets_destroy(device, render_pass_handle, views_handle, framebuffers_handle, image_count)
+        \\                e7_free_ptr(rp_targets)
+        \\                e7_free_ptr(view_targets)
+        \\                e7_free_ptr(fb_targets)
+        \\                if targets_ok == 0:
+        \\                    result = -13
         \\                index_out := e7_alloc_bytes(4)
         \\                presented := vulkan_present_clear(device, queue, family, swapchain, index_out)
         \\                e7_free_ptr(index_out)

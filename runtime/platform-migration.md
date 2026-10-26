@@ -60,8 +60,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   copies the cleared swapchain image into it with `vkCmdCopyImageToBuffer`, maps
   it, copies the pixels into an e7 allocation with the new `e7_memcpy`
   intrinsic, and verifies the readback color.  Verified with lavapipe.
-- Remaining: e7 intrinsic wrappers, renderer, image/text, and deletion of the
-  Zig layer.
+- **3a (done):** `vulkan_render_targets` creates a single-color-attachment
+  render pass, one image view per swapchain image, and matching framebuffers;
+  `vulkan_render_targets_destroy` tears them down.  Verified with lavapipe.
+- Remaining: graphics pipeline, draw calls, e7 intrinsic wrappers, image/text,
+  and deletion of the Zig layer.
 
 ## Migration stages
 
