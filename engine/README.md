@@ -70,7 +70,9 @@ engine/
   `physics.e7` from the player capsule; the fixed step integrates quaternion
   orientation with rotated world inverse inertia, uses OBB SAT/oriented-capsule
   manifolds and corner contact points, and applies high Coulomb friction
-  (μ=0.9/1.15) so boxes tip and stop sliding. It then follows the player with
+  (μ=0.9/1.15) so boxes tip and stop sliding. Supported bodies sleep after
+  0.35 s below velocity thresholds with resting-contact damping, so the starting
+  stack stays upright. It then follows the player with
   the first-person Camera eye. Pickup picks the nearest body (deterministic
   body-id tie-break). Rendering uses full X/Y/Z Euler orientation, so contact
   torques are visible. `render_scene` reads the Camera row, then submits

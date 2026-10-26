@@ -558,7 +558,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 345 tests: scheduler 8, compiler 204, runtime 110,
+`zig build test` runs 346 tests: scheduler 8, compiler 204, runtime 111,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
