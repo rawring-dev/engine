@@ -1,0 +1,50 @@
+# Vulkan platform bootstrap implemented in e7 through the generic C FFI.
+#
+# The instance is created with the platform extensions reported by SDL, and the
+# surface is created by SDL for the window owned by the e7 SDL state block.
+# Struct layouts are the Vulkan 1.1/1.4 core layouts for x86_64:
+#   VkApplicationInfo:     48 bytes (sType 0, pNext 8, pAppName 16,
+#                          appVersion 24, pEngineName 32, engineVersion 40,
+#                          apiVersion 44)
+#   VkInstanceCreateInfo:  64 bytes (sType 0, pNext 8, flags 16, pAppInfo 24,
+#                          layerCount 32, ppLayers 40, extCount 48, ppExts 56)
+#   VkSurfaceKHR / VkInstance are 64-bit handles.
+
+bind_vk <- (name: str) -> u64:
+    ret e7_cffi_bind("vulkan", name)
+
+vulkan_instance_create <- (extensions: u64, extension_count: i64, out_instance: u64) -> i64:
+    app_name := e7_cstr("engine7-e7")
+    engine_name := e7_cstr("engine7")
+    app := e7_alloc_bytes(48)
+    e7_store_u32(app, 0)
+    e7_store_u64(app + 16, app_name)
+    e7_store_u32(app + 24, 1)
+    e7_store_u64(app + 32, engine_name)
+    e7_store_u32(app + 40, 1)
+    e7_store_u32(app + 44, 4198400)
+    info := e7_alloc_bytes(64)
+    e7_store_u32(info, 1)
+    e7_store_u64(info + 24, app)
+    e7_store_u32(info + 48, extension_count)
+    e7_store_u64(info + 56, extensions)
+    create := bind_vk("vkCreateInstance")
+    result := e7_ffi_call3(create, info, 0, out_instance)
+    e7_free_ptr(app_name)
+    e7_free_ptr(engine_name)
+    e7_free_ptr(app)
+    e7_free_ptr(info)
+    ret result as i64
+
+vulkan_instance_destroy <- (instance: i64) -> nil:
+    destroy := bind_vk("vkDestroyInstance")
+    e7_ffi_call2(destroy, instance, 0)
+
+vulkan_surface_create <- (window_state: u64, instance: i64, out_surface: u64) -> i64:
+    window := e7_load_u64(window_state)
+    create := e7_cffi_bind("SDL3", "SDL_Vulkan_CreateSurface")
+    ret e7_ffi_call4(create, window, instance, 0, out_surface) as i64
+
+vulkan_surface_destroy <- (instance: i64, surface: i64) -> nil:
+    destroy := bind_vk("vkDestroySurfaceKHR")
+    e7_ffi_call3(destroy, instance, surface, 0)

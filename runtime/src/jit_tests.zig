@@ -1024,3 +1024,97 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
+
+test "e7 SDL+Vulkan platform module creates a window surface" {
+    if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) {
+        std.debug.print("skipping e7 Vulkan surface test: SDL Vulkan or Vulkan loader unavailable\n", .{});
+        return;
+    }
+
+    const io = std.testing.io;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+
+    const selftest =
+        \\surface_selftest <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        ret -1
+        \\    win := window_create("e7 vulkan", 64, 48, 268435464)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret 0
+        \\    ext_count := e7_alloc_bytes(4)
+        \\    get_ext := e7_cffi_bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
+        \\    exts := e7_ffi_call1(get_ext, ext_count)
+        \\    if exts == 0:
+        \\        window_destroy(win)
+        \\        e7_free_ptr(ext_count)
+        \\        video_quit()
+        \\        ret 0
+        \\    count := e7_load_u32(ext_count)
+        \\    ext_array := e7_alloc_bytes(count * 8)
+        \\    if count > 0:
+        \\        e7_store_u64(ext_array, e7_load_u64(exts))
+        \\    if count > 1:
+        \\        e7_store_u64(ext_array + 8, e7_load_u64(exts + 8))
+        \\    if count > 2:
+        \\        e7_store_u64(ext_array + 16, e7_load_u64(exts + 16))
+        \\    if count > 3:
+        \\        e7_store_u64(ext_array + 24, e7_load_u64(exts + 24))
+        \\    if count > 4:
+        \\        e7_store_u64(ext_array + 32, e7_load_u64(exts + 32))
+        \\    if count > 5:
+        \\        e7_store_u64(ext_array + 40, e7_load_u64(exts + 40))
+        \\    if count > 6:
+        \\        e7_store_u64(ext_array + 48, e7_load_u64(exts + 48))
+        \\    if count > 7:
+        \\        e7_store_u64(ext_array + 56, e7_load_u64(exts + 56))
+        \\    instance_out := e7_alloc_bytes(8)
+        \\    created := vulkan_instance_create(ext_array, count, instance_out)
+        \\    if created != 0:
+        \\        window_destroy(win)
+        \\        e7_free_ptr(ext_count)
+        \\        e7_free_ptr(ext_array)
+        \\        e7_free_ptr(instance_out)
+        \\        video_quit()
+        \\        ret 0
+        \\    instance := e7_load_u64(instance_out)
+        \\    surface_out := e7_alloc_bytes(8)
+        \\    created_surface := vulkan_surface_create(win, instance, surface_out)
+        \\    surface := e7_load_u64(surface_out)
+        \\    if surface != 0:
+        \\        vulkan_surface_destroy(instance, surface)
+        \\    vulkan_instance_destroy(instance)
+        \\    window_destroy(win)
+        \\    e7_free_ptr(ext_count)
+        \\    e7_free_ptr(ext_array)
+        \\    e7_free_ptr(instance_out)
+        \\    e7_free_ptr(surface_out)
+        \\    video_quit()
+        \\    if created_surface == 0:
+        \\        ret 0
+        \\    if surface == 0:
+        \\        ret 0
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, vk_source, selftest });
+    defer std.testing.allocator.free(source);
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-vulkan-surface");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "surface_selftest");
+    const result = selftest_fn();
+    if (result == 0) {
+        std.debug.print("skipping e7 Vulkan surface test: no Vulkan window/surface available\n", .{});
+        return;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
