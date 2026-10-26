@@ -59,6 +59,10 @@ pub Commands <- struct
 @Components
 pub RigidBody <- struct
     velocity: [f32; 3]
+    # Euler angular velocity in radians/second; orientation mirrors
+    # Transform.rotation for bodies that are not rotation-locked.
+    angular_velocity: [f32; 3]
+    orientation: [f32; 3]
     inv_mass: f32
     gravity_scale: f32
     rotation_locked: bool
@@ -100,8 +104,25 @@ pub Player <- struct
 pub Pickup <- struct
     body_id: i64
 
-# `by` is the holder body id (0 = not held).  Components cannot be removed at
-# runtime, so a held object keeps this marker and toggles `by`.
+# `by` is the holder body id (0 = not held).  This is a renderer/tooling marker
+# synced from BodyFlags.held_by.  Physics pickup timing uses BodyFlags directly;
+# when the runtime removal/despawn ABI is available, adding/removing Held can
+# replace this append-only marker with no physics change.
 @Components
 pub Held <- struct
     by: i64
+
+# Compact physics shape/interaction metadata, present on every physics body.
+# Collider components remain the public shape API; this component lets a single
+# ECS query drive broadphase, narrowphase, pickup, and camera follow.
+@Components
+pub BodyFlags <- struct
+    # 0 = box, 1 = sphere, 2 = capsule, 3 = plane
+    shape: i64
+    radius: f32
+    half_height: f32
+    is_player: bool
+    is_pickup: bool
+    # Player body id for Player rows, pickup body id for Pickup rows.
+    target_id: i64
+    held_by: i64

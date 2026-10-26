@@ -86,12 +86,23 @@ pub DemoPlugin <- plugin
         plane_bounds := BodyBounds { half_extents: [50.0, 0.1, 50.0] }
         plane_body := RigidBody {
             velocity: [0.0, 0.0, 0.0],
+            angular_velocity: [0.0, 0.0, 0.0],
+            orientation: [0.0, 0.0, 0.0],
             inv_mass: 0.0,
             gravity_scale: 0.0,
             rotation_locked: true,
             is_static: true,
         }
         plane_collider := PlaneCollider { normal: [0.0, 1.0, 0.0], offset: 0.0 }
+        plane_flags := BodyFlags {
+            shape: 3,
+            radius: 0.0,
+            half_height: 0.0,
+            is_player: false,
+            is_pickup: false,
+            target_id: 1,
+            held_by: 0,
+        }
         plane_renderable := Renderable { kind: 3 }
         commands.add_row(Components, {
             plane_transform,
@@ -99,52 +110,37 @@ pub DemoPlugin <- plugin
             plane_bounds,
             plane_body,
             plane_collider,
+            plane_flags,
             plane_renderable,
         })
 
-        # Rotation-locked capsule player, starting above the plane.
-        player_transform := Transform {
-            translation: [0.0, 1.2, 5.0],
-            rotation: [0.0, 0.0, 0.0],
-            scale: [1.0, 1.0, 1.0],
-        }
-        player_id := BodyId { id: 2 }
-        player_bounds := BodyBounds { half_extents: [0.4, 1.0, 0.4] }
-        player_body := RigidBody {
-            velocity: [0.0, 0.0, 0.0],
-            inv_mass: 1.0,
-            gravity_scale: 1.0,
-            rotation_locked: true,
-            is_static: false,
-        }
-        player_capsule := CapsuleCollider { radius: 0.4, half_height: 0.6 }
-        player := Player { body_id: 2 }
-        # First-person: the player capsule is physics-only (the eye is inside).
-        commands.add_row(Components, {
-            player_transform,
-            player_id,
-            player_bounds,
-            player_body,
-            player_capsule,
-            player,
-        })
-
-        # Pickable dynamic ball.
+        # Pickable dynamic ball (unlocked rotation; collisions impart spin).
         ball_transform := Transform {
-            translation: [1.6, 2.0, 4.0],
+            translation: [-1.2, 2.0, 3.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
         }
         ball_id := BodyId { id: 3 }
         ball_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
         ball_body := RigidBody {
-            velocity: [0.0, 0.0, 0.0],
+            velocity: [0.8, 0.0, 0.5],
+            angular_velocity: [0.0, 2.0, 0.0],
+            orientation: [0.0, 0.0, 0.0],
             inv_mass: 1.0,
             gravity_scale: 1.0,
             rotation_locked: false,
             is_static: false,
         }
         ball_collider := SphereCollider { radius: 0.5 }
+        ball_flags := BodyFlags {
+            shape: 1,
+            radius: 0.5,
+            half_height: 0.0,
+            is_player: false,
+            is_pickup: true,
+            target_id: 3,
+            held_by: 0,
+        }
         ball_pickup := Pickup { body_id: 3 }
         ball_held := Held { by: 0 }
         ball_renderable := Renderable { kind: 1 }
@@ -154,12 +150,13 @@ pub DemoPlugin <- plugin
             ball_bounds,
             ball_body,
             ball_collider,
+            ball_flags,
             ball_pickup,
             ball_held,
             ball_renderable,
         })
 
-        # Three pickable cubes stacked vertically.
+        # Three dynamic cubes stacked vertically (unlocked rotation).
         cube_x := -2.0
         cube_y := 0.5
         stack_index := 0
@@ -169,17 +166,28 @@ pub DemoPlugin <- plugin
                 rotation: [0.0, 0.0, 0.0],
                 scale: [1.0, 1.0, 1.0],
             }
-            cube_id := BodyId { id: 4 + stack_index }
+            cube_body_id := 4 + stack_index
+            cube_id := BodyId { id: cube_body_id }
             cube_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
             cube_body := RigidBody {
                 velocity: [0.0, 0.0, 0.0],
+                angular_velocity: [0.0, 1.4, 0.0],
+                orientation: [0.0, 0.0, 0.0],
                 inv_mass: 1.0,
                 gravity_scale: 1.0,
                 rotation_locked: false,
                 is_static: false,
             }
             cube_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
-            cube_visual := CubeMesh { spin_phase: e7_f32_from_i64(stack_index) * 0.4 }
+            cube_flags := BodyFlags {
+                shape: 0,
+                radius: 0.0,
+                half_height: 0.0,
+                is_player: false,
+                is_pickup: true,
+                target_id: 4 + stack_index,
+                held_by: 0,
+            }
             cube_renderable := Renderable { kind: 0 }
             cube_pickup := Pickup { body_id: 4 + stack_index }
             cube_held := Held { by: 0 }
@@ -189,13 +197,53 @@ pub DemoPlugin <- plugin
                 cube_bounds,
                 cube_body,
                 cube_collider,
-                cube_visual,
+                cube_flags,
+                cube_renderable,
                 cube_pickup,
                 cube_held,
-                cube_renderable,
             })
             cube_y = cube_y + 1.0
             stack_index = stack_index + 1
+
+        # Rotation-locked capsule player, processed last so its capsule
+        # narrowphase sees every other body in the broadphase grid.
+        player_transform := Transform {
+            translation: [-2.0, 1.2, 4.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+        player_id := BodyId { id: 2 }
+        player_bounds := BodyBounds { half_extents: [0.4, 1.0, 0.4] }
+        player_body := RigidBody {
+            velocity: [0.0, 0.0, 0.0],
+            angular_velocity: [0.0, 0.0, 0.0],
+            orientation: [0.0, 0.0, 0.0],
+            inv_mass: 1.0,
+            gravity_scale: 1.0,
+            rotation_locked: true,
+            is_static: false,
+        }
+        player_capsule := CapsuleCollider { radius: 0.4, half_height: 0.6 }
+        player_flags := BodyFlags {
+            shape: 2,
+            radius: 0.4,
+            half_height: 0.6,
+            is_player: true,
+            is_pickup: false,
+            target_id: 2,
+            held_by: 0,
+        }
+        player := Player { body_id: 2 }
+        # First-person: the player capsule is physics-only (the eye is inside).
+        commands.add_row(Components, {
+            player_transform,
+            player_id,
+            player_bounds,
+            player_body,
+            player_capsule,
+            player_flags,
+            player,
+        })
 
         light := PointLight {
             position: [2.0, 3.0, 4.0],

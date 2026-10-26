@@ -1892,6 +1892,30 @@ const Parser = struct {
                     const name = (try self.expect(.identifier, "expected field name")).lexeme;
                     expr = try self.createExpr(.{ .field = .{ .target = expr, .name = name } });
                 },
+                .colon_colon => {
+                    // Method turbofish: `commands.remove_component::<Held>(e)`.
+                    if (self.peekAt(1).kind != .lt) break;
+                    _ = self.advance();
+                    const type_args = try self.parseTypeArgs();
+                    if (!self.at(.lparen)) {
+                        return self.fail("expected `(` after method type arguments");
+                    }
+                    _ = self.advance();
+                    var args = std.ArrayList(*ast.Expr).empty;
+                    if (!self.at(.rparen)) {
+                        while (true) {
+                            try args.append(self.allocator, try self.parseExpression());
+                            if (self.match(.comma) == null) break;
+                            if (self.at(.rparen)) break;
+                        }
+                    }
+                    _ = try self.expect(.rparen, "expected `)` after call arguments");
+                    expr = try self.createExpr(.{ .call = .{
+                        .callee = expr,
+                        .args = try args.toOwnedSlice(self.allocator),
+                        .type_args = type_args,
+                    } });
+                },
                 .lbracket => {
                     _ = self.advance();
                     var indices = std.ArrayList(*ast.Expr).empty;
@@ -3227,4 +3251,22 @@ test "parses derive attributes and turbofish decode calls" {
     try std.testing.expectEqualStrings("json_decode", call.callee.path.segments[0].name);
     try std.testing.expectEqual(@as(usize, 1), call.callee.path.segments[0].args.len);
     try std.testing.expectEqualStrings("Point", call.callee.path.segments[0].args[0].path.segments[0].name);
+}
+
+test "parses method turbofish type arguments" {
+    var tree = try expectAst(
+        \\f <- (commands: &mut Commands, e: i64) -> !nil:
+        \\    commands.remove_component::<Held>(e)
+        \\    ret
+    );
+    defer tree.deinit();
+    const block = tree.module.items[0].kind.function.body.block;
+    const entry = block.entries[0];
+    const call = switch (entry) {
+        .stmt => |stmt| stmt.expr.call,
+        .item => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(usize, 1), call.type_args.len);
+    try std.testing.expectEqualStrings("Held", call.type_args[0].path.segments[0].name);
+    try std.testing.expectEqual(@as(usize, 1), call.args.len);
 }

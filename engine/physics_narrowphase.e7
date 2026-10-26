@@ -1,15 +1,17 @@
 # Narrowphase collision tests and penetration resolution.
 #
 # Pure e7 functions over the shared Vec3/Aabb/Ray types declared in
-# `engine/physics.e7`.  Shapes are approximated conservatively for the demo:
+# `engine/physics.e7`:
 #   - box:    axis-aligned box (AABB)
-#   - sphere: centre + radius
-#   - capsule: vertical capsule approximated by its enclosing AABB (or a sphere
-#              for ray tests)
+#   - sphere: centre + radius (sphere-AABB/plane/capsule penetration)
+#   - capsule: vertical capsule (axis +Y) with true plane, AABB, and sphere
+#              closest-point tests; AABB helpers remain for coarse queries
 #   - plane:  infinite plane dot(normal, p) == offset
 #
-# `aabb_penetration` returns the minimum translation that pushes the first AABB
-# out of the second; the integrate systems apply it to transforms.
+# Each penetration helper returns the minimum translation vector that separates
+# the first shape from the second; physics.e7 applies it to transforms, zeroes
+# the normal velocity, and adds a deterministic angular impulse on unlocked
+# bodies.
 
 pub vec3_dot <- (a: Vec3, b: Vec3) -> f32:
     ret a.x * b.x + a.y * b.y + a.z * b.z
@@ -89,6 +91,153 @@ pub capsule_aabb_overlap <- (
         z: center.z + radius,
     }
     ret aabb_overlap(Aabb { min: capsule_min, max: capsule_max }, box)
+
+# Penetration of a vertical capsule (axis +Y) with an infinite plane.
+# `support` is the capsule's extent along the plane normal.
+pub capsule_plane_penetration <- (
+    center: Vec3,
+    radius: f32,
+    half_height: f32,
+    normal: Vec3,
+    offset: f32,
+) -> Vec3:
+    normalized := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if normalized < 0.000001:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    nx := normal.x / normalized
+    ny := normal.y / normalized
+    nz := normal.z / normalized
+    distance := nx * center.x + ny * center.y + nz * center.z - offset
+    support := radius + half_height * e7_f32_abs(ny)
+    if distance >= support:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    push := support - distance
+    ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
+
+pub sphere_plane_penetration <- (
+    center: Vec3,
+    radius: f32,
+    normal: Vec3,
+    offset: f32,
+) -> Vec3:
+    normalized := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if normalized < 0.000001:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    nx := normal.x / normalized
+    ny := normal.y / normalized
+    nz := normal.z / normalized
+    distance := nx * center.x + ny * center.y + nz * center.z - offset
+    if distance >= radius:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    push := radius - distance
+    ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
+
+pub box_plane_penetration <- (box: Aabb, normal: Vec3, offset: f32) -> Vec3:
+    normalized := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if normalized < 0.000001:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    nx := normal.x / normalized
+    ny := normal.y / normalized
+    nz := normal.z / normalized
+    center_x := (box.min.x + box.max.x) * 0.5
+    center_y := (box.min.y + box.max.y) * 0.5
+    center_z := (box.min.z + box.max.z) * 0.5
+    extent_x := (box.max.x - box.min.x) * 0.5
+    extent_y := (box.max.y - box.min.y) * 0.5
+    extent_z := (box.max.z - box.min.z) * 0.5
+    distance := nx * center_x + ny * center_y + nz * center_z - offset
+    support := e7_f32_abs(nx) * extent_x + e7_f32_abs(ny) * extent_y + e7_f32_abs(nz) * extent_z
+    if distance >= support:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    push := support - distance
+    ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
+
+# True capsule-AABB test via the closest point between the capsule's vertical
+# segment and the box.  Falls back to AABB penetration when the capsule centre
+# is inside the box (degenerate direction).
+pub capsule_aabb_penetration <- (
+    center: Vec3,
+    radius: f32,
+    half_height: f32,
+    box: Aabb,
+) -> Vec3:
+    segment_min_y := center.y - half_height
+    segment_max_y := center.y + half_height
+    overlap_low := max_f32(segment_min_y, box.min.y)
+    overlap_high := min_f32(segment_max_y, box.max.y)
+    segment_y := center.y
+    if overlap_low <= overlap_high:
+        segment_y = e7_f32_clamp(center.y, overlap_low, overlap_high)
+    elif segment_max_y < box.min.y:
+        segment_y = segment_max_y
+    else:
+        segment_y = segment_min_y
+
+    point_x := e7_f32_clamp(center.x, box.min.x, box.max.x)
+    point_y := e7_f32_clamp(segment_y, box.min.y, box.max.y)
+    point_z := e7_f32_clamp(center.z, box.min.z, box.max.z)
+    dx := center.x - point_x
+    dy := segment_y - point_y
+    dz := center.z - point_z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    if distance >= radius:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    if distance > 0.000001:
+        push := radius - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
+    capsule_min := Vec3 {
+        x: center.x - radius,
+        y: center.y - half_height - radius,
+        z: center.z - radius,
+    }
+    capsule_max := Vec3 {
+        x: center.x + radius,
+        y: center.y + half_height + radius,
+        z: center.z + radius,
+    }
+    ret aabb_penetration(Aabb { min: capsule_min, max: capsule_max }, box)
+
+pub sphere_aabb_penetration <- (center: Vec3, radius: f32, box: Aabb) -> Vec3:
+    point_x := e7_f32_clamp(center.x, box.min.x, box.max.x)
+    point_y := e7_f32_clamp(center.y, box.min.y, box.max.y)
+    point_z := e7_f32_clamp(center.z, box.min.z, box.max.z)
+    dx := center.x - point_x
+    dy := center.y - point_y
+    dz := center.z - point_z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    if distance >= radius:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    if distance > 0.000001:
+        push := radius - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
+    sphere_min := Vec3 { x: center.x - radius, y: center.y - radius, z: center.z - radius }
+    sphere_max := Vec3 { x: center.x + radius, y: center.y + radius, z: center.z + radius }
+    ret aabb_penetration(Aabb { min: sphere_min, max: sphere_max }, box)
+
+# Sphere vs capsule: push the sphere out of the capsule's vertical segment.
+pub sphere_capsule_penetration <- (
+    capsule_center: Vec3,
+    radius: f32,
+    half_height: f32,
+    sphere_center: Vec3,
+    sphere_radius: f32,
+) -> Vec3:
+    segment_y := e7_f32_clamp(
+        sphere_center.y,
+        capsule_center.y - half_height,
+        capsule_center.y + half_height,
+    )
+    dx := sphere_center.x - capsule_center.x
+    dy := sphere_center.y - segment_y
+    dz := sphere_center.z - capsule_center.z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    combined := radius + sphere_radius
+    if distance >= combined:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    if distance > 0.000001:
+        push := combined - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
+    ret Vec3 { x: 0.0, y: combined, z: 0.0 }
 
 # True when the AABB crosses the infinite plane (signed distances straddle 0).
 pub plane_aabb_overlap <- (normal: Vec3, offset: f32, box: Aabb) -> bool:

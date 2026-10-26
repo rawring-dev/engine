@@ -1566,3 +1566,62 @@ test "compiles maps of vectors for spatial cells" {
     try std.testing.expect(result.functionNamed("main") != null);
 }
 
+test "lowers ECS component removal, re-add, and despawn commands" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\@Components
+        \\Held <- struct
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Remove <- sys (commands: &mut Commands, pairs: select &mut Held, &mut Counter from Components):
+        \\    for (held, counter) in pairs:
+        \\        counter.b = counter.b + 1
+        \\        commands.remove_component::<Held>(pairs.entity())
+        \\Attach <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.add_component::<Held>(counters.entity(), Held {})
+        \\Despawn <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.despawn(counters.entity())
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    counter := Counter { b: 0 }
+        \\    held := Held
+        \\    commands.add_row(Components, { counter, held })
+        \\    disown commands
+        \\    await Remove()
+        \\    await Attach()
+        \\    await Despawn()
+        \\    ret 0
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const expectations = [_]struct {
+        function: []const u8,
+        intrinsic: bytecode.RuntimeFunction,
+    }{
+        .{ .function = "Remove__body", .intrinsic = .ecs_query_entity },
+        .{ .function = "Remove__body", .intrinsic = .ecs_commands_remove_component },
+        .{ .function = "Attach__body", .intrinsic = .ecs_commands_add_component },
+        .{ .function = "Despawn__body", .intrinsic = .ecs_commands_despawn },
+    };
+    for (expectations) |expectation| {
+        const function = result.functionNamed(expectation.function).?;
+        var found = false;
+        for (function.code) |op| switch (op) {
+            .runtime_call => |call| {
+                if (call.function == expectation.intrinsic) found = true;
+            },
+            else => {},
+        };
+        try std.testing.expect(found);
+    }
+}

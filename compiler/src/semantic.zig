@@ -1723,3 +1723,70 @@ test "checks @derive(Serialize, Deserialize) and JSON builtins" {
         \\    inner: Inner
     , "must also derive Serialize");
 }
+
+test "checks ECS component removal, re-add, and despawn Commands methods" {
+    try expectClean(
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\@Components
+        \\Held <- struct
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Remove <- sys (commands: &mut Commands, pairs: select &mut Held, &mut Counter from Components):
+        \\    for (held, counter) in pairs:
+        \\        counter.b = counter.b + 1
+        \\        commands.remove_component::<Held>(pairs.entity())
+        \\Attach <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.add_component::<Held>(counters.entity(), Held {})
+        \\Despawn <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.despawn(counters.entity())
+    );
+    try expectDiagnostic(
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Remove <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    commands.remove_component::<Missing>(counters.entity())
+    , "expects a @Components type argument");
+    try expectDiagnostic(
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\@Components
+        \\Held <- struct
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Attach <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.add_component::<Counter>(counters.entity(), Held {})
+    , "does not match component");
+    try expectDiagnostic(
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Despawn <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    commands.despawn("not an entity")
+    , "entity id");
+    try expectDiagnostic(
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Attach <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.add_component(counters.entity(), Counter { b: 1 })
+    , "expects exactly one component type argument");
+}

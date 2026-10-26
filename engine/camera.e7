@@ -1,30 +1,12 @@
-# Camera look policy.  Translation follows the player capsule through
-# `physics::camera_follow`; this system only turns yaw/pitch from mouse and
-# arrow-key input.  Player movement itself lives in `physics::player_move`.
+# Camera plugin marker.
+#
+# Look input and player-follow translation are applied inside
+# `physics.e7::physics_step` (same deterministic Update system as the body
+# step), so the camera cannot race or lag the physics core by a full frame.
+# Rendering reads the resulting Camera component in the Render phase.
 
 use ecs::*;
 use events::*;
 use input::*;
 
 pub CameraPlugin <- plugin
-
-@trigger(Update)
-pub move_camera <- sys (
-    input: res &Input,
-    controllers: select &mut Camera, &mut CameraController from Components,
-):
-    delta := 0.016
-    pitch_limit := 1.5533430343
-    for (camera, controller) in controllers:
-        camera.yaw = camera.yaw + input.look_dx * controller.look_speed
-        camera.pitch = camera.pitch - input.look_dy * controller.look_speed
-        keyboard_look := 1.6 * delta
-        if input.look_left:
-            camera.yaw = camera.yaw - keyboard_look
-        if input.look_right:
-            camera.yaw = camera.yaw + keyboard_look
-        if input.look_up:
-            camera.pitch = camera.pitch + keyboard_look
-        if input.look_down:
-            camera.pitch = camera.pitch - keyboard_look
-        camera.pitch = e7_f32_clamp(camera.pitch, -pitch_limit, pitch_limit)

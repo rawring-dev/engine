@@ -6,11 +6,14 @@
 #   - physics_narrowphase.e7: AABB/sphere/capsule/plane tests + raycasts
 #   - physics.e7 (this file): public Vec3/Ray/Aabb API, ECS resources, systems
 #
-# All physics work happens in one system so the order is deterministic even
-# though trigger phases run systems concurrently:
-#   broadphase rebuild -> gravity integrate -> ground -> body-body collisions
-#   -> player movement/jump -> pickup hold -> camera follow -> raycast.
-# The step is fixed at 16 ms.
+# All gameplay physics happens in one Update system so the order is
+# deterministic even though trigger phases run systems concurrently:
+#   broadphase rebuild + gravity/integrate + true-shape ground contact
+#   -> body-body narrowphase (AABB/capsule/sphere/plane, each pair once)
+#   -> player movement/jump -> pickup acquire/release/hold
+#   -> camera look + player-follow -> (PostUpdate: Held marker sync, debug ray).
+# The step is fixed at 16 ms.  Pickup and camera follow therefore observe the
+# same step's transforms instead of lagging a phase behind.
 
 use ecs::*;
 use events::*;
@@ -41,6 +44,14 @@ pub PhysicsWorld <- struct
     grounded: bool
     # Prevents held-Space from auto-hopping on every landing.
     jump_latched: bool
+    # Player world position and latest camera look (used by movement, pickup,
+    # and camera follow; the camera pass updates these at the end of the step).
+    player_x: f32
+    player_y: f32
+    player_z: f32
+    camera_yaw: f32
+    camera_pitch: f32
+    move_speed: f32
 
 @resource
 pub RaycastState <- struct
@@ -62,6 +73,12 @@ pub PhysicsPlugin <- plugin
             max_step: 0.05,
             grounded: false,
             jump_latched: false,
+            player_x: 0.0,
+            player_y: 0.0,
+            player_z: 0.0,
+            camera_yaw: 0.0,
+            camera_pitch: 0.0,
+            move_speed: 4.0,
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -166,39 +183,14 @@ pub ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit:
 # Broadphase lookup helpers used by the collision pass
 # ---------------------------------------------------------------------------
 
-find_bound_index <- (spatial: &SpatialMap, id: i64) -> i64:
-    index := 0
-    count := spatial.ids.len() as i64
-    while index < count:
-        if spatial.ids[index as usize] == id:
-            ret index
-        index = index + 1
-    ret -1
-
-bound_min <- (spatial: &SpatialMap, index: i64) -> Vec3:
-    base := index * 6
-    ret Vec3 {
-        x: spatial.bounds[base as usize],
-        y: spatial.bounds[(base + 1) as usize],
-        z: spatial.bounds[(base + 2) as usize],
-    }
-
-bound_max <- (spatial: &SpatialMap, index: i64) -> Vec3:
-    base := index * 6
-    ret Vec3 {
-        x: spatial.bounds[(base + 3) as usize],
-        y: spatial.bounds[(base + 4) as usize],
-        z: spatial.bounds[(base + 5) as usize],
-    }
-
-candidate_contains <- (ids: [i64], id: i64) -> bool:
+find_bound_index_local <- (ids: [i64], id: i64) -> i64:
     index := 0
     count := ids.len() as i64
     while index < count:
         if ids[index as usize] == id:
-            ret true
+            ret index
         index = index + 1
-    ret false
+    ret -1
 
 # ---------------------------------------------------------------------------
 # The fixed-step system
@@ -209,39 +201,178 @@ pub physics_step <- sys (
     input: res &Input,
     world: res &mut PhysicsWorld,
     spatial: res &mut SpatialMap,
-    bodies: select &mut Transform, &mut RigidBody, &BodyId, &BodyBounds from Components,
-    collide_bodies: select &mut Transform, &mut RigidBody, &BodyId, &BodyBounds from Components,
+    bodies: select &mut Transform, &mut RigidBody, &BodyBounds, &BodyFlags from Components,
+    interaction_bodies: select &mut Transform, &mut RigidBody, &mut BodyFlags from Components,
     planes: select &PlaneCollider from Components,
-    player_views: select &Camera, &CameraController from Components,
-    player_bodies: select &mut Transform, &mut RigidBody, &Player, &BodyBounds from Components,
+    cameras: select &mut Camera, &CameraController from Components,
+    pickup_state: res &mut PickupState,
 ):
     dt := 0.016
+    cell_size := spatial.cell_size
+
+    # Plane used for ground contact (demo has a single y-up plane).
+    plane_x := 0.0
+    plane_y := 1.0
+    plane_z := 0.0
     ground := 0.0
     for plane in planes:
+        plane_x = plane.normal[0]
+        plane_y = plane.normal[1]
+        plane_z = plane.normal[2]
         ground = plane.offset
 
-    # ---------------------------------------------------------------- rebuild
+    world.grounded = false
+
+    # ---------------------------------------------------------------- bodies
     cells := map[i64, [i64]] {}
     ids: [i64] := []
     stored_bounds: [f32] := []
+    stored_shapes: [i64] := []
+    stored_radius: [f32] := []
+    stored_half_height: [f32] := []
     body_count := 0
-    cell_size := spatial.cell_size
-    world.grounded = false
 
-    for (transform, body, body_id, body_bounds) in bodies:
+    for (transform, body, body_bounds, flags) in bodies:
+        on_ground := false
+
         if not body.is_static:
+            # Angular integration: orientation mirrors Transform.rotation for
+            # unlocked bodies; locked bodies keep both at rest.
+            if body.rotation_locked:
+                body.angular_velocity[0] = 0.0
+                body.angular_velocity[1] = 0.0
+                body.angular_velocity[2] = 0.0
+                body.orientation[0] = transform.rotation[0]
+                body.orientation[1] = transform.rotation[1]
+                body.orientation[2] = transform.rotation[2]
+            else:
+                transform.rotation[0] = transform.rotation[0] + body.angular_velocity[0] * dt
+                transform.rotation[1] = transform.rotation[1] + body.angular_velocity[1] * dt
+                transform.rotation[2] = transform.rotation[2] + body.angular_velocity[2] * dt
+                body.orientation[0] = transform.rotation[0]
+                body.orientation[1] = transform.rotation[1]
+                body.orientation[2] = transform.rotation[2]
+                body.angular_velocity[0] = body.angular_velocity[0] * 0.99
+                body.angular_velocity[1] = body.angular_velocity[1] * 0.99
+                body.angular_velocity[2] = body.angular_velocity[2] * 0.99
+
             body.velocity[1] = body.velocity[1] + world.gravity_y * body.gravity_scale * dt
             transform.translation[0] = transform.translation[0] + body.velocity[0] * dt
             transform.translation[1] = transform.translation[1] + body.velocity[1] * dt
             transform.translation[2] = transform.translation[2] + body.velocity[2] * dt
 
-            bottom := body_bounds.half_extents[1]
-            if transform.translation[1] < ground + bottom:
-                transform.translation[1] = ground + bottom
-                if body.velocity[1] < 0.0:
-                    body.velocity[1] = 0.0
+            # Ground contact uses the true collider shape.
+            ground_push := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+            if flags.shape == 2:
+                ground_push = capsule_plane_penetration(
+                    Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                    flags.radius,
+                    flags.half_height,
+                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    ground,
+                )
+            elif flags.shape == 1:
+                ground_push = sphere_plane_penetration(
+                    Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                    flags.radius,
+                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    ground,
+                )
+            elif flags.shape == 0:
+                ground_push = box_plane_penetration(
+                    Aabb {
+                        min: Vec3 {
+                            x: transform.translation[0] - body_bounds.half_extents[0],
+                            y: transform.translation[1] - body_bounds.half_extents[1],
+                            z: transform.translation[2] - body_bounds.half_extents[2],
+                        },
+                        max: Vec3 {
+                            x: transform.translation[0] + body_bounds.half_extents[0],
+                            y: transform.translation[1] + body_bounds.half_extents[1],
+                            z: transform.translation[2] + body_bounds.half_extents[2],
+                        },
+                    },
+                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    ground,
+                )
+
+            if ground_push.x != 0.0 or ground_push.y != 0.0 or ground_push.z != 0.0:
+                transform.translation[0] = transform.translation[0] + ground_push.x
+                transform.translation[1] = transform.translation[1] + ground_push.y
+                transform.translation[2] = transform.translation[2] + ground_push.z
+                normal_speed := body.velocity[0] * plane_x + body.velocity[1] * plane_y + body.velocity[2] * plane_z
+                if normal_speed < 0.0:
+                    body.velocity[0] = body.velocity[0] - plane_x * normal_speed
+                    body.velocity[1] = body.velocity[1] - plane_y * normal_speed
+                    body.velocity[2] = body.velocity[2] - plane_z * normal_speed
+                on_ground = true
+                if not body.rotation_locked:
+                    body.velocity[0] = body.velocity[0] * 0.98
+                    body.velocity[2] = body.velocity[2] * 0.98
+                    # Rolling contact: horizontal motion imparts yaw spin so
+                    # the box/sphere proxies visibly rotate, then it damps.
+                    body.angular_velocity[1] = e7_f32_clamp(
+                        body.angular_velocity[1] + (body.velocity[0] - body.velocity[2]) * 1.2,
+                        -8.0,
+                        8.0,
+                    )
+                    body.angular_velocity[0] = body.angular_velocity[0] * 0.94
+                    body.angular_velocity[1] = body.angular_velocity[1] * 0.94
+                    body.angular_velocity[2] = body.angular_velocity[2] * 0.94
+
+            if on_ground:
                 world.grounded = true
 
+            # Player movement is applied as velocity; collisions resolve the
+            # capsule before the next translation step.
+            if flags.is_player:
+                yaw := world.camera_yaw
+                sin_yaw := e7_f32_sin(yaw)
+                cos_yaw := e7_f32_cos(yaw)
+                forward_x := sin_yaw
+                forward_z := 0.0 - cos_yaw
+                right_x := cos_yaw
+                right_z := sin_yaw
+                wish_x := 0.0
+                wish_z := 0.0
+                if input.move_forward:
+                    wish_x = wish_x + forward_x
+                    wish_z = wish_z + forward_z
+                if input.move_backward:
+                    wish_x = wish_x - forward_x
+                    wish_z = wish_z - forward_z
+                if input.move_right:
+                    wish_x = wish_x + right_x
+                    wish_z = wish_z + right_z
+                if input.move_left:
+                    wish_x = wish_x - right_x
+                    wish_z = wish_z - right_z
+                length := e7_f32_sqrt(wish_x * wish_x + wish_z * wish_z)
+                speed := world.move_speed
+                if input.sprint:
+                    speed = speed * 2.5
+                if length > 0.000001:
+                    scale := speed / length
+                    body.velocity[0] = wish_x * scale
+                    body.velocity[2] = wish_z * scale
+                else:
+                    body.velocity[0] = 0.0
+                    body.velocity[2] = 0.0
+
+                capsule_bottom := ground + flags.radius + flags.half_height
+                player_on_ground := transform.translation[1] <= capsule_bottom + 0.02
+                if not input.jump_down:
+                    world.jump_latched = false
+                if input.jump_down and player_on_ground and not world.jump_latched:
+                    body.velocity[1] = 5.2
+                    world.jump_latched = true
+                    world.grounded = false
+                world.player_x = transform.translation[0]
+                world.player_y = transform.translation[1]
+                world.player_z = transform.translation[2]
+
+        # Store the broadphase entry *before* collisions so later bodies see
+        # this body; earlier bodies are already inserted.
         min_x := transform.translation[0] - body_bounds.half_extents[0]
         min_y := transform.translation[1] - body_bounds.half_extents[1]
         min_z := transform.translation[2] - body_bounds.half_extents[2]
@@ -249,39 +380,11 @@ pub physics_step <- sys (
         max_y := transform.translation[1] + body_bounds.half_extents[1]
         max_z := transform.translation[2] + body_bounds.half_extents[2]
 
-        ids = e7_vec_push(ids, body_id.id)
-        stored_bounds = e7_vec_push(stored_bounds, min_x)
-        stored_bounds = e7_vec_push(stored_bounds, min_y)
-        stored_bounds = e7_vec_push(stored_bounds, min_z)
-        stored_bounds = e7_vec_push(stored_bounds, max_x)
-        stored_bounds = e7_vec_push(stored_bounds, max_y)
-        stored_bounds = e7_vec_push(stored_bounds, max_z)
-        body_count = body_count + 1
-        broadphase_insert(
-            &mut cells,
+        # Body-body narrowphase against bodies already in the grid (each pair
+        # is handled once, when the later body is processed).
+        candidates := query_cells(
+            &cells,
             cell_size,
-            body_id.id,
-            Vec3 { x: min_x, y: min_y, z: min_z },
-            Vec3 { x: max_x, y: max_y, z: max_z },
-        )
-
-    spatial.cells = cells
-    spatial.ids = ids
-    spatial.bounds = stored_bounds
-    spatial.count = body_count
-
-    # ------------------------------------------------------- body-body contacts
-    for (transform, body, body_id, body_bounds) in collide_bodies:
-        if body.is_static:
-            cont
-        min_x := transform.translation[0] - body_bounds.half_extents[0]
-        min_y := transform.translation[1] - body_bounds.half_extents[1]
-        min_z := transform.translation[2] - body_bounds.half_extents[2]
-        max_x := transform.translation[0] + body_bounds.half_extents[0]
-        max_y := transform.translation[1] + body_bounds.half_extents[1]
-        max_z := transform.translation[2] + body_bounds.half_extents[2]
-        candidates := query_region(
-            spatial,
             Vec3 { x: min_x, y: min_y, z: min_z },
             Vec3 { x: max_x, y: max_y, z: max_z },
         )
@@ -290,29 +393,100 @@ pub physics_step <- sys (
         while candidate < candidate_count:
             other_id := candidates[candidate as usize]
             candidate = candidate + 1
-            if other_id <= body_id.id:
-                cont
-            other_index := find_bound_index(spatial, other_id)
+            other_index := find_bound_index_local(ids, other_id)
             if other_index < 0:
                 cont
-            other_min := bound_min(spatial, other_index)
-            other_max := bound_max(spatial, other_index)
-            if aabb_overlap(
-                Aabb {
-                    min: Vec3 { x: min_x, y: min_y, z: min_z },
-                    max: Vec3 { x: max_x, y: max_y, z: max_z },
-                },
-                Aabb { min: other_min, max: other_max },
-            ):
-                other_min2 := bound_min(spatial, other_index)
-                other_max2 := bound_max(spatial, other_index)
-                push := aabb_penetration(
+            other_shape := stored_shapes[other_index as usize]
+            if other_shape == 3:
+                # Static plane contact is handled by the ground pass.
+                cont
+            other_base := other_index * 6
+            other_min_x := stored_bounds[(other_base + 0) as usize]
+            other_min_y := stored_bounds[(other_base + 1) as usize]
+            other_min_z := stored_bounds[(other_base + 2) as usize]
+            other_max_x := stored_bounds[(other_base + 3) as usize]
+            other_max_y := stored_bounds[(other_base + 4) as usize]
+            other_max_z := stored_bounds[(other_base + 5) as usize]
+            other_center_x := (other_min_x + other_max_x) * 0.5
+            other_center_y := (other_min_y + other_max_y) * 0.5
+            other_center_z := (other_min_z + other_max_z) * 0.5
+
+            push := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+            if flags.shape == 2:
+                if other_shape == 1:
+                    sphere_push := sphere_capsule_penetration(
+                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                        flags.radius,
+                        flags.half_height,
+                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                        stored_radius[other_index as usize],
+                    )
+                    push = Vec3 { x: 0.0 - sphere_push.x, y: 0.0 - sphere_push.y, z: 0.0 - sphere_push.z }
+                elif other_shape == 0:
+                    push = capsule_aabb_penetration(
+                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                        flags.radius,
+                        flags.half_height,
+                        Aabb {
+                            min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
+                            max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
+                        },
+                    )
+            elif flags.shape == 1:
+                if other_shape == 2:
+                    push = sphere_capsule_penetration(
+                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                        stored_radius[other_index as usize],
+                        stored_half_height[other_index as usize],
+                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                        flags.radius,
+                    )
+                elif other_shape == 0:
+                    push = sphere_aabb_penetration(
+                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                        flags.radius,
+                        Aabb {
+                            min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
+                            max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
+                        },
+                    )
+            elif flags.shape == 0:
+                if other_shape == 1:
+                    sphere_push := sphere_aabb_penetration(
+                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                        stored_radius[other_index as usize],
+                        Aabb {
+                            min: Vec3 { x: min_x, y: min_y, z: min_z },
+                            max: Vec3 { x: max_x, y: max_y, z: max_z },
+                        },
+                    )
+                    push = Vec3 { x: 0.0 - sphere_push.x, y: 0.0 - sphere_push.y, z: 0.0 - sphere_push.z }
+                elif other_shape == 2:
+                    capsule_push := capsule_aabb_penetration(
+                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                        stored_radius[other_index as usize],
+                        stored_half_height[other_index as usize],
+                        Aabb {
+                            min: Vec3 { x: min_x, y: min_y, z: min_z },
+                            max: Vec3 { x: max_x, y: max_y, z: max_z },
+                        },
+                    )
+                    push = Vec3 { x: 0.0 - capsule_push.x, y: 0.0 - capsule_push.y, z: 0.0 - capsule_push.z }
+
+            if push.x == 0.0 and push.y == 0.0 and push.z == 0.0:
+                # AABB fallback for box/box, sphere/sphere, capsule/capsule.
+                push = aabb_penetration(
                     Aabb {
                         min: Vec3 { x: min_x, y: min_y, z: min_z },
                         max: Vec3 { x: max_x, y: max_y, z: max_z },
                     },
-                    Aabb { min: other_min2, max: other_max2 },
+                    Aabb {
+                        min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
+                        max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
+                    },
                 )
+
+            if push.x != 0.0 or push.y != 0.0 or push.z != 0.0:
                 transform.translation[0] = transform.translation[0] + push.x
                 transform.translation[1] = transform.translation[1] + push.y
                 transform.translation[2] = transform.translation[2] + push.z
@@ -322,117 +496,126 @@ pub physics_step <- sys (
                     body.velocity[1] = 0.0
                 if push.z != 0.0:
                     body.velocity[2] = 0.0
+                if not body.rotation_locked:
+                    body.angular_velocity[0] = e7_f32_clamp(
+                        body.angular_velocity[0] + push.z * 0.8,
+                        -8.0,
+                        8.0,
+                    )
+                    body.angular_velocity[1] = e7_f32_clamp(
+                        body.angular_velocity[1] + (push.x - push.z) * 1.6,
+                        -8.0,
+                        8.0,
+                    )
+                    body.angular_velocity[2] = e7_f32_clamp(
+                        body.angular_velocity[2] - push.x * 0.8,
+                        -8.0,
+                        8.0,
+                    )
 
-    # ------------------------------------------------------- player movement
-    yaw := 0.0
-    move_speed := 4.0
-    for (camera, controller) in player_views:
-        yaw = camera.yaw
-        move_speed = controller.move_speed
-    sin_yaw := e7_f32_sin(yaw)
-    cos_yaw := e7_f32_cos(yaw)
-    forward_x := sin_yaw
-    forward_z := 0.0 - cos_yaw
-    right_x := cos_yaw
-    right_z := sin_yaw
-    wish_x := 0.0
-    wish_z := 0.0
-    if input.move_forward:
-        wish_x = wish_x + forward_x
-        wish_z = wish_z + forward_z
-    if input.move_backward:
-        wish_x = wish_x - forward_x
-        wish_z = wish_z - forward_z
-    if input.move_right:
-        wish_x = wish_x + right_x
-        wish_z = wish_z + right_z
-    if input.move_left:
-        wish_x = wish_x - right_x
-        wish_z = wish_z - right_z
-    length := e7_f32_sqrt(wish_x * wish_x + wish_z * wish_z)
-    speed := move_speed
-    if input.sprint:
-        speed = speed * 2.5
-    if length > 0.000001:
-        scale := speed / length
-        wish_x = wish_x * scale
-        wish_z = wish_z * scale
-    else:
-        wish_x = 0.0
-        wish_z = 0.0
+        # Recompute bounds after collision resolution and insert into the grid.
+        final_min_x := transform.translation[0] - body_bounds.half_extents[0]
+        final_min_y := transform.translation[1] - body_bounds.half_extents[1]
+        final_min_z := transform.translation[2] - body_bounds.half_extents[2]
+        final_max_x := transform.translation[0] + body_bounds.half_extents[0]
+        final_max_y := transform.translation[1] + body_bounds.half_extents[1]
+        final_max_z := transform.translation[2] + body_bounds.half_extents[2]
+        ids = e7_vec_push(ids, flags.target_id)
+        body_count = body_count + 1
+        stored_bounds = e7_vec_push(stored_bounds, final_min_x)
+        stored_bounds = e7_vec_push(stored_bounds, final_min_y)
+        stored_bounds = e7_vec_push(stored_bounds, final_min_z)
+        stored_bounds = e7_vec_push(stored_bounds, final_max_x)
+        stored_bounds = e7_vec_push(stored_bounds, final_max_y)
+        stored_bounds = e7_vec_push(stored_bounds, final_max_z)
+        stored_shapes = e7_vec_push(stored_shapes, flags.shape)
+        stored_radius = e7_vec_push(stored_radius, flags.radius)
+        stored_half_height = e7_vec_push(stored_half_height, flags.half_height)
+        broadphase_insert(
+            &mut cells,
+            cell_size,
+            flags.target_id,
+            Vec3 { x: final_min_x, y: final_min_y, z: final_min_z },
+            Vec3 { x: final_max_x, y: final_max_y, z: final_max_z },
+        )
+        if flags.is_player:
+            world.player_x = transform.translation[0]
+            world.player_y = transform.translation[1]
+            world.player_z = transform.translation[2]
 
-    if not input.jump_down:
-        world.jump_latched = false
-    for (transform, body, player, body_bounds) in player_bodies:
-        body.velocity[0] = wish_x
-        body.velocity[2] = wish_z
-        on_ground := transform.translation[1] <= ground + body_bounds.half_extents[1] + 0.01
-        if on_ground:
-            world.grounded = true
-        if input.jump_down and on_ground and not world.jump_latched:
-            body.velocity[1] = 5.2
-            world.grounded = false
-            world.jump_latched = true
+    spatial.cells = cells
+    spatial.ids = ids
+    spatial.bounds = stored_bounds
+    spatial.count = body_count
 
-    # ---------------------------------------------------------------------------
-# Deferred interaction systems (PostUpdate, after the fixed-step Update)
-# ---------------------------------------------------------------------------
-
-@trigger(PostUpdate)
-pub physics_pickup_interact <- sys (
-    input: res &Input,
-    state: res &mut PickupState,
-    spatial: res &SpatialMap,
-    players: select &Transform, &Player from Components,
-    pickups: select &Transform, &Pickup from Components,
-):
-    if not input.interact_pressed:
-        ret
-    if state.held_id != 0:
-        state.held_id = 0
-        ret
-    player_position := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    found_player := false
-    for (transform, player) in players:
-        if not found_player:
-            player_position = Vec3 {
-                x: transform.translation[0],
-                y: transform.translation[1],
-                z: transform.translation[2],
-            }
-            found_player = true
-    if not found_player:
-        ret
-    reach := 2.6
-    candidates := query_region(
-        spatial,
-        Vec3 {
-            x: player_position.x - reach,
-            y: player_position.y - reach,
-            z: player_position.z - reach,
-        },
-        Vec3 {
-            x: player_position.x + reach,
-            y: player_position.y + reach,
-            z: player_position.z + reach,
-        },
-    )
-    best_id := 0
-    best_distance := 1000000.0
-    for (transform, pickup) in pickups:
-        if not candidate_contains(candidates, pickup.body_id):
+    # ---------------------------------------------------------- interactions
+    released := false
+    released_id := 0
+    if input.interact_pressed:
+        if pickup_state.held_id != 0:
+            released_id = pickup_state.held_id
+            pickup_state.held_id = 0
+            released = true
+    # Player yaw for held-body placement (camera pass refreshes it after this).
+    hold_yaw := world.camera_yaw
+    forward_x := e7_f32_sin(hold_yaw)
+    forward_z := 0.0 - e7_f32_cos(hold_yaw)
+    acquired := released
+    for (transform, body, flags) in interaction_bodies:
+        if not flags.is_pickup:
             cont
-        dx := transform.translation[0] - player_position.x
-        dy := transform.translation[1] - player_position.y
-        dz := transform.translation[2] - player_position.z
-        distance := dx * dx + dy * dy + dz * dz
-        if distance < best_distance:
-            best_distance = distance
-            best_id = pickup.body_id
-    state.held_id = best_id
+        if input.interact_pressed and pickup_state.held_id == 0 and not acquired:
+            dx := transform.translation[0] - world.player_x
+            dy := transform.translation[1] - world.player_y
+            dz := transform.translation[2] - world.player_z
+            distance_sq := dx * dx + dy * dy + dz * dz
+            if distance_sq <= 6.76:
+                pickup_state.held_id = flags.target_id
+                acquired = true
+        if flags.target_id == pickup_state.held_id:
+            flags.held_by = 1
+            transform.translation[0] = world.player_x + forward_x * 1.8
+            transform.translation[1] = world.player_y + 1.4
+            transform.translation[2] = world.player_z + forward_z * 1.8
+            body.velocity[0] = 0.0
+            body.velocity[1] = 0.0
+            body.velocity[2] = 0.0
+            body.angular_velocity[0] = 0.0
+            body.angular_velocity[1] = 0.0
+            body.angular_velocity[2] = 0.0
+        else:
+            flags.held_by = 0
+        if released and flags.target_id == released_id:
+            # Release impulse: a small deterministic spin from letting go.
+            if not body.rotation_locked:
+                body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + 1.6, -8.0, 8.0)
 
+    # ------------------------------------------- camera look + follow (same step)
+    for (camera, controller) in cameras:
+        camera.yaw = camera.yaw + input.look_dx * controller.look_speed
+        camera.pitch = camera.pitch - input.look_dy * controller.look_speed
+        keyboard_look := 1.6 * dt
+        if input.look_left:
+            camera.yaw = camera.yaw - keyboard_look
+        if input.look_right:
+            camera.yaw = camera.yaw + keyboard_look
+        if input.look_up:
+            camera.pitch = camera.pitch + keyboard_look
+        if input.look_down:
+            camera.pitch = camera.pitch - keyboard_look
+        camera.pitch = e7_f32_clamp(camera.pitch, -1.5533430343, 1.5533430343)
+        camera.position[0] = world.player_x
+        camera.position[1] = world.player_y + 1.55
+        camera.position[2] = world.player_z
+        world.camera_yaw = camera.yaw
+        world.camera_pitch = camera.pitch
+        world.move_speed = controller.move_speed
+
+# Cosmetic marker sync: ECS cannot remove components, so Held.by is kept in
+# sync with the core pickup state for renderers/tools.  Pickup timing itself is
+# in physics_step above; this system is not on the gameplay path.
 @trigger(PostUpdate)
-pub physics_held_sync <- sys (
+pub physics_held_marker <- sys (
     state: res &PickupState,
     held_components: select &mut Held, &Pickup from Components,
 ):
@@ -442,59 +625,7 @@ pub physics_held_sync <- sys (
         else:
             held.by = 0
 
-@trigger(PostUpdate)
-pub physics_pickup_hold <- sys (
-    state: res &PickupState,
-    held_bodies: select &mut Transform, &mut RigidBody, &Pickup from Components,
-    views: select &Camera from Components,
-    players: select &Transform, &Player from Components,
-):
-    if state.held_id == 0:
-        ret
-    player_position := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    for (transform, player) in players:
-        player_position = Vec3 {
-            x: transform.translation[0],
-            y: transform.translation[1],
-            z: transform.translation[2],
-        }
-    yaw := 0.0
-    for camera in views:
-        yaw = camera.yaw
-    hold_forward_x := e7_f32_sin(yaw)
-    hold_forward_z := 0.0 - e7_f32_cos(yaw)
-    for (transform, body, pickup) in held_bodies:
-        if pickup.body_id != state.held_id:
-            cont
-        transform.translation[0] = player_position.x + hold_forward_x * 1.8
-        transform.translation[1] = player_position.y + 1.4
-        transform.translation[2] = player_position.z + hold_forward_z * 1.8
-        body.velocity[0] = 0.0
-        body.velocity[1] = 0.0
-        body.velocity[2] = 0.0
-
-@trigger(PostUpdate)
-pub camera_follow <- sys (
-    players: select &Transform, &Player from Components,
-    cameras: select &mut Camera from Components,
-):
-    target_x := 0.0
-    target_y := 0.0
-    target_z := 0.0
-    found := false
-    for (transform, player) in players:
-        if not found:
-            target_x = transform.translation[0]
-            target_y = transform.translation[1]
-            target_z = transform.translation[2]
-            found = true
-    if not found:
-        ret
-    for camera in cameras:
-        camera.position[0] = target_x
-        camera.position[1] = target_y + 1.55
-        camera.position[2] = target_z
-
+# Camera-space debug raycast against box colliders (cosmetic/resource only).
 @trigger(PostUpdate)
 pub physics_raycast <- sys (
     state: res &mut RaycastState,

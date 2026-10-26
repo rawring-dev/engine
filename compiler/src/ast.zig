@@ -554,6 +554,9 @@ pub const Cast = struct {
 pub const Call = struct {
     callee: *Expr,
     args: []*Expr,
+    /// Turbofish type arguments attached to a method call
+    /// (`commands.remove_component::<Held>(entity)`).
+    type_args: []*Type = &.{},
 };
 
 pub const FieldAccess = struct {

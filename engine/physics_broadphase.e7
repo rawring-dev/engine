@@ -95,18 +95,21 @@ pub broadphase_insert <- (
         cx = cx + 1
     ret
 
-# Candidate body ids whose broadphase cells intersect the world-space AABB
-# [minimum, maximum].  Deduplicated; caller must narrowphase-test each id.
-pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64]:
+# Candidate body ids whose broadphase cells intersect the AABB.  Takes the raw
+# cell map so the physics step can query a map it is still building.
+pub query_cells <- (
+    cells: &map[i64, [i64]],
+    cell_size: f32,
+    minimum: Vec3,
+    maximum: Vec3,
+) -> [i64]:
     result: [i64] := []
-    cell_size := spatial.cell_size
     min_cx := cell_floor(minimum.x, cell_size)
     min_cy := cell_floor(minimum.y, cell_size)
     min_cz := cell_floor(minimum.z, cell_size)
     max_cx := cell_floor(maximum.x, cell_size)
     max_cy := cell_floor(maximum.y, cell_size)
     max_cz := cell_floor(maximum.z, cell_size)
-
     cx := min_cx
     while cx <= max_cx:
         cy := min_cy
@@ -114,7 +117,7 @@ pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64
             cz := min_cz
             while cz <= max_cz:
                 key := cell_key(cx, cy, cz)
-                cell_ids := spatial.cells[key]
+                cell_ids := cells[key]
                 member_count := cell_ids.len() as i64
                 member := 0
                 while member < member_count:
@@ -124,6 +127,11 @@ pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64
             cy = cy + 1
         cx = cx + 1
     ret result
+
+# Candidate body ids whose broadphase cells intersect the world-space AABB
+# [minimum, maximum].  Deduplicated; caller must narrowphase-test each id.
+pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64]:
+    ret query_cells(&spatial.cells, spatial.cell_size, minimum, maximum)
 
 # Ray candidates: sample the ray at cell-size steps up to `max_distance` and
 # aggregate the small AABBs around the sample points.  This is conservative

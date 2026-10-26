@@ -1149,6 +1149,43 @@ const Builder = struct {
             return true;
         }
 
+        if (std.mem.eql(u8, name, "remove_component")) {
+            if (call.type_args.len != 1 or call.args.len != 1) return error.UnsupportedFeature;
+            const type_name = typeLastName(call.type_args[0]) orelse return error.UnsupportedFeature;
+            const info = self.findComponentInfo(type_name) orelse return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.lowerExpr(call.args[0]);
+            try self.push(info.id);
+            try self.runtimeCall(.ecs_commands_remove_component, 3);
+            try self.pop();
+            try self.push(0);
+            return true;
+        }
+
+        if (std.mem.eql(u8, name, "add_component")) {
+            if (call.type_args.len != 1 or call.args.len != 2) return error.UnsupportedFeature;
+            const type_name = typeLastName(call.type_args[0]) orelse return error.UnsupportedFeature;
+            const info = self.findComponentInfo(type_name) orelse return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.lowerExpr(call.args[0]);
+            try self.push(info.id);
+            try self.lowerExpr(call.args[1]);
+            try self.runtimeCall(.ecs_commands_add_component, 4);
+            try self.pop();
+            try self.push(0);
+            return true;
+        }
+
+        if (std.mem.eql(u8, name, "despawn")) {
+            if (call.type_args.len != 0 or call.args.len != 1) return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.lowerExpr(call.args[0]);
+            try self.runtimeCall(.ecs_commands_despawn, 2);
+            try self.pop();
+            try self.push(0);
+            return true;
+        }
+
         if (std.mem.eql(u8, name, "add_plugin")) {
             if (call.args.len != 1) return error.UnsupportedFeature;
             const plugin = self.pluginInfoForExpr(call.args[0]) orelse return error.UnsupportedFeature;
@@ -2641,9 +2678,16 @@ const Builder = struct {
         const is_len = std.mem.eql(u8, name, "len");
         const is_slice = std.mem.eql(u8, name, "slice");
         const is_char_at = std.mem.eql(u8, name, "char_at");
-        if (!is_len and !is_slice and !is_char_at) return false;
+        const is_entity = std.mem.eql(u8, name, "entity");
+        if (!is_len and !is_slice and !is_char_at and !is_entity) return false;
         const target_ty = self.exprType(field.target) orelse return false;
         const resolved = self.unwrapReferences(target_ty);
+        if (is_entity) {
+            if (resolved.* != .query or call.args.len != 0) return error.UnsupportedFeature;
+            try self.lowerExpr(field.target);
+            try self.runtimeCall(.ecs_query_entity, 1);
+            return true;
+        }
         if (is_len) {
             try self.lowerExpr(field.target);
             try self.emit(switch (resolved.*) {

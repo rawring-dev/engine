@@ -15,12 +15,15 @@
 //!   returns its address; the block is stable until the resource is replaced
 //!   by a flush or the world is reset.
 //! * A **component column** is keyed by a numeric `type_id`.  A column stores
-//!   the entity ids that own the component (ascending append order) and one
-//!   heap copy of the value per entity.  Rows are append-only and there is no
-//!   component removal in this ABI slice, so column entries stay ordered.
-//! * **Entities** are zero-based row indices assigned at flush time:
-//!   `0 .. e7_ecs_entity_count() - 1`.  A query's *row handle* is
-//!   `entity_id + 1`, reserving `0` as the "end of iteration" marker.
+//!   the entity ids that own the component (kept sorted ascending) and one heap
+//!   copy of the value per entity.  Presence is represented by membership in
+//!   the column: removing a component deletes its entry, so there are no
+//!   tombstones and re-adding the component re-inserts the entity.
+//! * **Entities** are zero-based row indices assigned at flush time.  The id
+//!   space is monotonic (`0 .. e7_ecs_entity_count() - 1`), but an entity can be
+//!   despawned: its alive flag is cleared, every component entry is removed, and
+//!   `e7_ecs_entity_alive` reports `0`.  Despawned ids are not reused.  A query's
+//!   *row handle* is `entity_id + 1`, reserving `0` as the "end of iteration".
 //!
 //! ## Commands
 //!
@@ -211,6 +214,17 @@ const PendingResource = struct {
     ptr: [*]i64,
 };
 
+const PendingComponentAdd = struct {
+    entity: i64,
+    type_id: i64,
+    ptr: [*]i64,
+};
+
+const PendingComponentRemove = struct {
+    entity: i64,
+    type_id: i64,
+};
+
 /// A materialized query snapshot.  Entity ids are captured at `begin`; component
 /// pointers are looked up live.  `generation` identifies the world structure the
 /// snapshot was taken against.
@@ -236,8 +250,13 @@ const World = struct {
 
     pending_resources: std.ArrayListUnmanaged(PendingResource) = .empty,
     pending_rows: std.ArrayListUnmanaged(PendingRow) = .empty,
+    pending_component_adds: std.ArrayListUnmanaged(PendingComponentAdd) = .empty,
+    pending_component_removes: std.ArrayListUnmanaged(PendingComponentRemove) = .empty,
+    pending_despawns: std.ArrayListUnmanaged(i64) = .empty,
     pending_plugins: std.ArrayListUnmanaged(i64) = .empty,
 
+    /// One alive flag per allocated entity id (high-water `entity_count`).
+    alive: std.ArrayListUnmanaged(bool) = .empty,
     entity_count: i64 = 0,
     /// Incremented by every successful flush.  Queries from an older
     /// generation are stale and are discarded on their next use.
@@ -307,6 +326,66 @@ fn entityHasColumn(type_id: i64, entity: i64) bool {
     return columnIndexForEntity(column, entity) != null;
 }
 
+fn entityAliveLocked(entity: i64) bool {
+    if (entity < 0) return false;
+    const index: usize = @intCast(entity);
+    if (index >= world.alive.items.len) return false;
+    return world.alive.items[index];
+}
+
+/// Insert or replace `entity`'s value in a column, keeping entity ids sorted.
+/// The value block is copied from `value_ptr` (zero-filled when 0).
+fn columnSetLocked(type_id: i64, entity: i64, value_ptr: i64) !void {
+    const column = world.columns.getPtr(type_id) orelse return error.NotFound;
+    const copy = copyValueBlock(value_ptr, column.slots) orelse return error.OutOfMemory;
+    errdefer freeValueSlots(copy);
+    var low: usize = 0;
+    var high: usize = column.entity_ids.items.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (column.entity_ids.items[middle] < entity) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if (low < column.entity_ids.items.len and column.entity_ids.items[low] == entity) {
+        // Re-add/update: replace the existing value block in place.
+        freeValueSlots(column.values.items[low]);
+        column.values.items[low] = copy;
+        return;
+    }
+    try column.entity_ids.ensureUnusedCapacity(allocator, 1);
+    try column.values.ensureUnusedCapacity(allocator, 1);
+    column.entity_ids.insertAssumeCapacity(low, entity);
+    column.values.insertAssumeCapacity(low, copy);
+}
+
+fn columnRemoveLocked(type_id: i64, entity: i64) bool {
+    const column = world.columns.getPtr(type_id) orelse return false;
+    const index = columnIndexForEntity(column, entity) orelse return false;
+    freeValueSlots(column.values.items[index]);
+    _ = column.entity_ids.orderedRemove(index);
+    _ = column.values.orderedRemove(index);
+    return true;
+}
+
+/// Clear every component presence for `entity` and mark it dead.  Resources,
+/// other entities, and pending commands are untouched.
+fn despawnLocked(entity: i64) bool {
+    if (!entityAliveLocked(entity)) return false;
+    world.alive.items[@intCast(entity)] = false;
+    var column_it = world.columns.valueIterator();
+    while (column_it.next()) |column| {
+        if (columnIndexForEntity(column, entity)) |index| {
+            freeValueSlots(column.values.items[index]);
+            _ = column.entity_ids.orderedRemove(index);
+            _ = column.values.orderedRemove(index);
+        }
+    }
+    return true;
+}
+
 fn componentPtr(entity: i64, type_id: i64) i64 {
     const column = world.columns.getPtr(type_id) orelse return 0;
     const index = columnIndexForEntity(column, entity) orelse return 0;
@@ -361,6 +440,12 @@ fn resetLocked() void {
     for (world.pending_rows.items) |*pending| freePendingRow(pending);
     world.pending_rows.deinit(allocator);
 
+    for (world.pending_component_adds.items) |pending| freeValueSlots(pending.ptr);
+    world.pending_component_adds.deinit(allocator);
+    world.pending_component_removes.deinit(allocator);
+    world.pending_despawns.deinit(allocator);
+
+    world.alive.deinit(allocator);
     world.pending_plugins.deinit(allocator);
 
     world = .{};
@@ -448,8 +533,40 @@ pub export fn e7_ecs_entity_count() callconv(.c) i64 {
 pub export fn e7_ecs_component_get(entity: i64, type_id: i64) callconv(.c) i64 {
     beginCall();
     defer endCall();
-    if (entity < 0 or entity >= world.entity_count) return 0;
+    if (!entityAliveLocked(entity)) return 0;
     return componentPtr(entity, type_id);
+}
+
+/// Whether `entity` is a live (non-despawned) allocated row.
+pub export fn e7_ecs_entity_alive(entity: i64) callconv(.c) i64 {
+    beginCall();
+    defer endCall();
+    return if (entityAliveLocked(entity)) 1 else 0;
+}
+
+/// Immediately remove `entity`'s component `type_id`.
+///
+/// Returns `0` on success (including when the component was already absent),
+/// `-1` for an invalid/despawned entity, and `-2` for an unregistered component.
+/// This is the synchronous counterpart to the deferred
+/// `e7_ecs_commands_remove_component`; live queries created before the removal
+/// may still iterate the entity but `e7_ecs_query_component` returns `0` for the
+/// removed projection.
+pub export fn e7_ecs_component_remove(entity: i64, type_id: i64) callconv(.c) i64 {
+    beginCall();
+    defer endCall();
+    if (!entityAliveLocked(entity)) return -1;
+    if (!world.columns.contains(type_id)) return -2;
+    _ = columnRemoveLocked(type_id, entity);
+    return 0;
+}
+
+/// Immediately despawn `entity`: clear all component presences and mark the id
+/// dead.  Returns `0` on success or `-1` if the entity is already dead/invalid.
+pub export fn e7_ecs_entity_despawn(entity: i64) callconv(.c) i64 {
+    beginCall();
+    defer endCall();
+    return if (despawnLocked(entity)) 0 else -1;
 }
 
 pub export fn e7_ecs_plugin_active(plugin_id: i64) callconv(.c) i64 {
@@ -574,6 +691,64 @@ pub export fn e7_ecs_commands_add_plugin(cmd: i64, plugin_id: i64) callconv(.c) 
     return status_ok;
 }
 
+/// Queue removal of `type_id` from a live entity.  Applied at the next flush
+/// (after pending rows, before pending component additions); queuing validates
+/// the entity and registration immediately.  Duplicate removals are harmless.
+pub export fn e7_ecs_commands_remove_component(
+    cmd: i64,
+    entity: i64,
+    type_id: i64,
+) callconv(.c) i32 {
+    beginCall();
+    defer endCall();
+
+    if (!validCommand(cmd)) return status_invalid_argument;
+    if (!entityAliveLocked(entity)) return status_invalid_argument;
+    if (!world.columns.contains(type_id)) return status_not_found;
+    world.pending_component_removes.append(allocator, .{ .entity = entity, .type_id = type_id }) catch
+        return status_out_of_memory;
+    return status_ok;
+}
+
+/// Queue adding (or replacing) `type_id` on a live entity.  The value block is
+/// copied immediately.  Applied at the next flush after removals/despawns.
+pub export fn e7_ecs_commands_add_component(
+    cmd: i64,
+    entity: i64,
+    type_id: i64,
+    value_ptr: i64,
+) callconv(.c) i32 {
+    beginCall();
+    defer endCall();
+
+    if (!validCommand(cmd)) return status_invalid_argument;
+    if (!entityAliveLocked(entity)) return status_invalid_argument;
+    const column = world.columns.get(type_id) orelse return status_not_found;
+    const copy = copyValueBlock(value_ptr, column.slots) orelse return status_out_of_memory;
+    world.pending_component_adds.append(allocator, .{
+        .entity = entity,
+        .type_id = type_id,
+        .ptr = copy,
+    }) catch {
+        freeValueSlots(copy);
+        return status_out_of_memory;
+    };
+    return status_ok;
+}
+
+/// Queue a despawn.  Applied at the next flush after row/component removals and
+/// before component additions (so a queued add for a despawned entity is
+/// skipped).  Despawned ids are never reused.
+pub export fn e7_ecs_commands_despawn(cmd: i64, entity: i64) callconv(.c) i32 {
+    beginCall();
+    defer endCall();
+
+    if (!validCommand(cmd)) return status_invalid_argument;
+    if (!entityAliveLocked(entity)) return status_invalid_argument;
+    world.pending_despawns.append(allocator, entity) catch return status_out_of_memory;
+    return status_ok;
+}
+
 /// Apply all pending resource insertions, rows, and plugin activations.
 ///
 /// The flush is all-or-nothing with respect to allocation failure: column and
@@ -587,6 +762,9 @@ pub export fn e7_ecs_commands_flush(cmd: i64) callconv(.c) i32 {
     if (!validCommand(cmd)) return status_invalid_argument;
     if (world.pending_resources.items.len == 0 and
         world.pending_rows.items.len == 0 and
+        world.pending_component_adds.items.len == 0 and
+        world.pending_component_removes.items.len == 0 and
+        world.pending_despawns.items.len == 0 and
         world.pending_plugins.items.len == 0)
     {
         return status_ok;
@@ -599,6 +777,15 @@ pub export fn e7_ecs_commands_flush(cmd: i64) callconv(.c) i32 {
             column.entity_ids.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
             column.values.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
         }
+    }
+    for (world.pending_component_adds.items) |pending| {
+        const column = world.columns.getPtr(pending.type_id) orelse continue;
+        column.entity_ids.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
+        column.values.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
+    }
+    if (world.pending_rows.items.len > 0) {
+        world.alive.ensureUnusedCapacity(allocator, @intCast(world.pending_rows.items.len)) catch
+            return status_out_of_memory;
     }
     const pending_plugin_count = std.math.cast(u32, world.pending_plugins.items.len) orelse
         return status_out_of_memory;
@@ -620,6 +807,7 @@ pub export fn e7_ecs_commands_flush(cmd: i64) callconv(.c) i32 {
     for (world.pending_rows.items) |*pending| {
         const entity = world.entity_count;
         world.entity_count += 1;
+        world.alive.appendAssumeCapacity(true);
         for (pending.entries.items) |entry| {
             const column = world.columns.getPtr(entry.type_id) orelse continue;
             column.entity_ids.appendAssumeCapacity(entity);
@@ -630,6 +818,27 @@ pub export fn e7_ecs_commands_flush(cmd: i64) callconv(.c) i32 {
         pending.entries.deinit(allocator);
     }
     world.pending_rows.clearRetainingCapacity();
+
+    // Removals first, then despawns, then additions.  This makes a flush that
+    // removes and re-adds the same component deterministic, and a despawn wins
+    // over any queued add for that entity.
+    for (world.pending_component_removes.items) |pending| {
+        _ = columnRemoveLocked(pending.type_id, pending.entity);
+    }
+    world.pending_component_removes.clearRetainingCapacity();
+
+    for (world.pending_despawns.items) |entity| {
+        _ = despawnLocked(entity);
+    }
+    world.pending_despawns.clearRetainingCapacity();
+
+    for (world.pending_component_adds.items) |pending| {
+        if (entityAliveLocked(pending.entity)) {
+            columnSetLocked(pending.type_id, pending.entity, @intCast(@intFromPtr(pending.ptr))) catch {};
+        }
+        freeValueSlots(pending.ptr);
+    }
+    world.pending_component_adds.clearRetainingCapacity();
 
     for (world.pending_plugins.items) |plugin_id| {
         world.plugins.putAssumeCapacity(plugin_id, {});
@@ -683,6 +892,7 @@ pub export fn e7_ecs_query_begin(
     var match_count: usize = 0;
     for (0..entity_total) |index| {
         const entity: i64 = @intCast(index);
+        if (!entityAliveLocked(entity)) continue;
         if (has_id >= 0 and !entityHasColumn(has_id, entity)) continue;
         var matches = true;
         for (type_ids) |type_id| {
@@ -704,6 +914,7 @@ pub export fn e7_ecs_query_begin(
         var cursor: usize = 0;
         for (0..entity_total) |index| {
             const entity: i64 = @intCast(index);
+            if (!entityAliveLocked(entity)) continue;
             if (has_id >= 0 and !entityHasColumn(has_id, entity)) continue;
             var matches = true;
             for (type_ids) |type_id| {
@@ -788,12 +999,27 @@ pub export fn e7_ecs_query_component(query_handle: i64, type_index: i64) callcon
     return componentPtr(query.current_entity, query.type_ids[@intCast(type_index)]);
 }
 
+/// Entity id for the row most recently returned by `e7_ecs_query_next`, or `-1`
+/// before the first row / for a stale handle.  This is the value e7 passes to
+/// `Commands.remove_component::<T>` / `Commands.despawn`.
+pub export fn e7_ecs_query_entity(query_handle: i64) callconv(.c) i64 {
+    beginCall();
+    defer endCall();
+
+    const query = queryHandleOwner(query_handle) orelse return -1;
+    if (query.generation != world.generation) {
+        retireQuery(query_handle);
+        return -1;
+    }
+    return query.current_entity;
+}
+
 // ---------------------------------------------------------------------------
 // Symbol manifest and test diagnostics
 // ---------------------------------------------------------------------------
 
 /// Host symbols to register with the JIT (`Jit.defineSymbols`).
-pub fn symbols() [18]Symbol {
+pub fn symbols() [25]Symbol {
     return .{
         .{ .name = "e7_ecs_reset", .address = @intFromPtr(&e7_ecs_reset) },
         .{ .name = "e7_ecs_register_resource", .address = @intFromPtr(&e7_ecs_register_resource) },
@@ -813,6 +1039,13 @@ pub fn symbols() [18]Symbol {
         .{ .name = "e7_ecs_query_begin", .address = @intFromPtr(&e7_ecs_query_begin) },
         .{ .name = "e7_ecs_query_next", .address = @intFromPtr(&e7_ecs_query_next) },
         .{ .name = "e7_ecs_query_component", .address = @intFromPtr(&e7_ecs_query_component) },
+        .{ .name = "e7_ecs_query_entity", .address = @intFromPtr(&e7_ecs_query_entity) },
+        .{ .name = "e7_ecs_component_remove", .address = @intFromPtr(&e7_ecs_component_remove) },
+        .{ .name = "e7_ecs_entity_despawn", .address = @intFromPtr(&e7_ecs_entity_despawn) },
+        .{ .name = "e7_ecs_entity_alive", .address = @intFromPtr(&e7_ecs_entity_alive) },
+        .{ .name = "e7_ecs_commands_remove_component", .address = @intFromPtr(&e7_ecs_commands_remove_component) },
+        .{ .name = "e7_ecs_commands_add_component", .address = @intFromPtr(&e7_ecs_commands_add_component) },
+        .{ .name = "e7_ecs_commands_despawn", .address = @intFromPtr(&e7_ecs_commands_despawn) },
     };
 }
 
@@ -1160,4 +1393,128 @@ test "reset releases every owned block and leaves a reusable world" {
 
     e7_ecs_reset();
     try testing.expectEqual(@as(usize, 0), debugLiveBlocks());
+}
+
+test "component removal, re-add, and despawn presence semantics" {
+    e7_ecs_reset();
+    defer e7_ecs_reset();
+
+    try testing.expectEqual(status_ok, e7_ecs_register_resource(7, 1));
+    const resource_ptr = e7_ecs_resource(7);
+    try testing.expect(resource_ptr != 0);
+    try testing.expectEqual(0, e7_ecs_register_component(10, 1));
+    try testing.expectEqual(0, e7_ecs_register_component(11, 0));
+
+    const cmd = e7_ecs_commands();
+    const row = e7_ecs_commands_row_begin(cmd);
+    var value: i64 = 42;
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_add(row, 10, @intCast(@intFromPtr(&value))));
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_add(row, 11, 0));
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_finish(row));
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 1), e7_ecs_entity_count());
+    try testing.expectEqual(@as(i64, 1), e7_ecs_entity_alive(0));
+    try testing.expect(e7_ecs_component_get(0, 10) != 0);
+    try testing.expect(e7_ecs_component_get(0, 11) != 0);
+
+    // A query over the component sees the row until it is removed.
+    var ids = [_]i64{10};
+    var muts = [_]i64{1};
+    var query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 1), e7_ecs_query_next(query));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_entity(query));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_remove(0, 10));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 10));
+    try testing.expect(e7_ecs_component_get(0, 11) != 0);
+    query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+    // The marker query still sees the live entity.
+    var marker_ids = [_]i64{11};
+    query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&marker_ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 1), e7_ecs_query_next(query));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+
+    // Removal is idempotent; unregistered ids and dead entities are errors.
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_remove(0, 10));
+    try testing.expectEqual(@as(i64, -1), e7_ecs_component_remove(99, 10));
+    try testing.expectEqual(@as(i64, -2), e7_ecs_component_remove(0, 99));
+
+    // Re-add through deferred commands and observe the value.
+    var restored: i64 = 77;
+    try testing.expectEqual(status_ok, e7_ecs_commands_add_component(cmd, 0, 10, @intCast(@intFromPtr(&restored))));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 10)); // deferred
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    const readded = e7_ecs_component_get(0, 10);
+    try testing.expect(readded != 0);
+    const readded_values: [*]const i64 = @ptrFromInt(@as(usize, @intCast(readded)));
+    try testing.expectEqual(@as(i64, 77), readded_values[0]);
+
+    // Despawn clears every presence, keeps resources, and invalidates the id.
+    try testing.expectEqual(@as(i64, 0), e7_ecs_entity_despawn(0));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_entity_alive(0));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 10));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 11));
+    try testing.expect(e7_ecs_resource(7) != 0);
+    try testing.expectEqual(@as(i64, -1), e7_ecs_entity_despawn(0));
+    try testing.expectEqual(@as(i64, 1), e7_ecs_entity_count());
+    query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&marker_ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+    // Zero-projection queries also skip despawned entities.
+    query = e7_ecs_query_begin(0, 0, 0, -1);
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+}
+
+test "deferred component removal and despawn are visible only after flush" {
+    e7_ecs_reset();
+    defer e7_ecs_reset();
+
+    try testing.expectEqual(0, e7_ecs_register_component(20, 0));
+    try testing.expectEqual(0, e7_ecs_register_component(21, 1));
+    const cmd = e7_ecs_commands();
+    var row = e7_ecs_commands_row_begin(cmd);
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_add(row, 20, 0));
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_add(row, 21, 0));
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_finish(row));
+    row = e7_ecs_commands_row_begin(cmd);
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_add(row, 20, 0));
+    try testing.expectEqual(status_ok, e7_ecs_commands_row_finish(row));
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 2), e7_ecs_entity_count());
+
+    try testing.expectEqual(status_ok, e7_ecs_commands_remove_component(cmd, 0, 21));
+    try testing.expect(e7_ecs_component_get(0, 21) != 0); // still live before flush
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 21));
+    try testing.expectEqual(@as(i64, 1), e7_ecs_entity_alive(0));
+
+    var marker_ids = [_]i64{20};
+    var muts = [_]i64{0};
+    var query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&marker_ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 1), e7_ecs_query_next(query));
+    try testing.expectEqual(@as(i64, 2), e7_ecs_query_next(query));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+
+    // Despawn wins over a queued add for the same entity; other entities stay.
+    try testing.expectEqual(status_ok, e7_ecs_commands_add_component(cmd, 1, 21, 0));
+    try testing.expectEqual(status_ok, e7_ecs_commands_despawn(cmd, 1));
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_entity_alive(1));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(1, 21));
+    query = e7_ecs_query_begin(1, @intCast(@intFromPtr(&marker_ids)), @intCast(@intFromPtr(&muts)), -1);
+    try testing.expectEqual(@as(i64, 1), e7_ecs_query_next(query));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(query));
+
+    // Adding a component back to a live entity reuses its slot.
+    try testing.expectEqual(status_ok, e7_ecs_commands_remove_component(cmd, 0, 21));
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 0), e7_ecs_component_get(0, 21));
+    var replacement: i64 = 9;
+    try testing.expectEqual(status_ok, e7_ecs_commands_add_component(cmd, 0, 21, @intCast(@intFromPtr(&replacement))));
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    const ptr = e7_ecs_component_get(0, 21);
+    try testing.expect(ptr != 0);
+    const replacement_values: [*]const i64 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    try testing.expectEqual(@as(i64, 9), replacement_values[0]);
 }

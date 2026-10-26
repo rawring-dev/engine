@@ -4029,6 +4029,33 @@ const Checker = struct {
     /// `insert_resource(value)`, `add_row(Table, { ...components })`, and
     /// `add_plugin(Plugin)`.  The first `add_row` argument is a table *type*,
     /// so the ordinary expression checker must not try to evaluate it.
+    /// Resolve one turbofish type argument to a registered `@Components` type.
+    fn componentFromTypeArg(self: *Checker, type_args: []*ast.Type, method: []const u8) !?ComponentInfo {
+        if (type_args.len != 1) {
+            try self.report("`Commands.{s}` expects exactly one component type argument, e.g. `{s}::<Held>(...)`", .{ method, method });
+            return null;
+        }
+        const ty = try self.resolveType(type_args[0]);
+        const resolved = self.store.resolve(ty);
+        if (resolved.* != .named) {
+            const name = try self.store.typeName(resolved);
+            try self.report("`Commands.{s}` expects a @Components type argument, found `{s}`", .{ method, name });
+            return null;
+        }
+        const info = self.findComponentInfo(resolved.named.name) orelse {
+            try self.report("`Commands.{s}` type `{s}` is not a @Components type", .{ method, resolved.named.name });
+            return null;
+        };
+        return info;
+    }
+
+    fn checkEntityArgument(self: *Checker, call: ast.Call, index: usize) Error!void {
+        if (call.args.len <= index) return;
+        const entity_ty = try self.store.make(.{ .int = .i64 });
+        const actual = try self.checkMoveExpr(call.args[index], null);
+        try self.expectAssignable(entity_ty, actual, "entity id");
+    }
+
     fn checkCommandsMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
         if (call.callee.* != .field) return null;
         const field = call.callee.field;
@@ -4108,6 +4135,53 @@ const Checker = struct {
                     try self.report("`add_plugin` expects a plugin name", .{});
                 }
             }
+            return self.store.make(.unit);
+        }
+
+        if (std.mem.eql(u8, name, "remove_component")) {
+            _ = try self.componentFromTypeArg(call.type_args, name);
+            if (call.args.len != 1) {
+                try self.report("`Commands.remove_component` expects 1 argument (the entity id), found {d}", .{call.args.len});
+            }
+            for (call.args) |arg| _ = try self.checkExpr(arg, null);
+            try self.checkEntityArgument(call, 0);
+            return self.store.make(.unit);
+        }
+
+        if (std.mem.eql(u8, name, "add_component")) {
+            const component = try self.componentFromTypeArg(call.type_args, name);
+            if (call.args.len != 2) {
+                try self.report("`Commands.add_component` expects (entity, component value), found {d} argument(s)", .{call.args.len});
+            }
+            try self.checkEntityArgument(call, 0);
+            if (call.args.len >= 2) {
+                const value_ty = try self.checkMoveExpr(call.args[1], null);
+                const resolved = self.store.resolve(value_ty);
+                if (resolved.* == .named) {
+                    if (component) |info| {
+                        if (!std.mem.eql(u8, lastPathSegment(info.name), lastPathSegment(resolved.named.name))) {
+                            try self.report("`Commands.add_component` value `{s}` does not match component `{s}`", .{ resolved.named.name, info.name });
+                        }
+                    } else if (self.findComponentInfo(resolved.named.name) == null) {
+                        try self.report("`Commands.add_component` value `{s}` is not a @Components type", .{resolved.named.name});
+                    }
+                } else if (resolved.* != .unknown) {
+                    const found = try self.store.typeName(resolved);
+                    try self.report("`Commands.add_component` expects a component value, found `{s}`", .{found});
+                }
+            }
+            return self.store.make(.unit);
+        }
+
+        if (std.mem.eql(u8, name, "despawn")) {
+            if (call.type_args.len != 0) {
+                try self.report("`Commands.despawn` does not take type arguments", .{});
+            }
+            if (call.args.len != 1) {
+                try self.report("`Commands.despawn` expects 1 argument (the entity id), found {d}", .{call.args.len});
+            }
+            for (call.args) |arg| _ = try self.checkExpr(arg, null);
+            try self.checkEntityArgument(call, 0);
             return self.store.make(.unit);
         }
 
@@ -4220,7 +4294,8 @@ const Checker = struct {
         const is_len = std.mem.eql(u8, name, "len");
         const is_slice = std.mem.eql(u8, name, "slice");
         const is_char_at = std.mem.eql(u8, name, "char_at");
-        if (!is_len and !is_slice and !is_char_at) return null;
+        const is_entity = std.mem.eql(u8, name, "entity");
+        if (!is_len and !is_slice and !is_char_at and !is_entity) return null;
 
         const target_ty = try self.checkExpr(field.target, null);
         const resolved = self.unwrapReferences(target_ty);
@@ -4246,6 +4321,11 @@ const Checker = struct {
                 if (!is_len) return null;
                 if (call.args.len != 0) try self.report("`len()` takes no arguments", .{});
                 return int_ty;
+            },
+            .query => {
+                if (!is_entity) return null;
+                if (call.args.len != 0) try self.report("`entity()` takes no arguments", .{});
+                return try self.store.make(.{ .int = .i64 });
             },
             else => return null,
         }

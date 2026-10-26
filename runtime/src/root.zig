@@ -1812,3 +1812,119 @@ test "JIT demo advances broadphase, jump, and pickup state" {
     try std.testing.expect(pickup_ptr != 0);
     try std.testing.expectEqual(@as(i64, 3), aggregate.e7_load_i64(pickup_ptr));
 }
+
+test "JIT removes, re-adds, and despawns dynamic ECS markers" {
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\@Components
+        \\Counter <- struct
+        \\    b: i32
+        \\@Components
+        \\Held <- struct
+        \\@resource
+        \\Report <- struct
+        \\    value: i32
+        \\Components <- table
+        \\    entity_id: usize,
+        \\    ...
+        \\Remove <- trigger
+        \\Attach <- trigger
+        \\Capture <- trigger
+        \\Despawn <- trigger
+        \\@trigger(Remove)
+        \\remove_sys <- sys (commands: &mut Commands, pairs: select &mut Held, &mut Counter from Components):
+        \\    for (held, counter) in pairs:
+        \\        counter.b = counter.b + 1
+        \\        commands.remove_component::<Held>(pairs.entity())
+        \\@trigger(Attach)
+        \\attach_sys <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.add_component::<Held>(counters.entity(), Held {})
+        \\@trigger(Capture)
+        \\capture_sys <- sys (report: res &mut Report, counters: select &Counter from Components):
+        \\    total := 0
+        \\    for counter in counters:
+        \\        total = total + counter.b
+        \\    report.value = total
+        \\@trigger(Despawn)
+        \\despawn_sys <- sys (commands: &mut Commands, counters: select &mut Counter from Components):
+        \\    for counter in counters:
+        \\        commands.despawn(counters.entity())
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.insert_resource(Report { value: 0 })
+        \\    counter := Counter { b: 0 }
+        \\    held := Held
+        \\    commands.add_row(Components, { counter, held })
+        \\    disown commands
+        \\    await Remove()
+        \\    await Attach()
+        \\    await Remove()
+        \\    await Capture()
+        \\    await Despawn()
+        \\    ret 0
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const counter_component = compiled.analysis.component("Counter").?;
+    const held_component = compiled.analysis.component("Held").?;
+    const report_resource = compiled.analysis.resource("Report").?;
+
+    for (compiled.analysis.resources) |resource| {
+        try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_resource(resource.id, @intCast(resource.slots)));
+    }
+    for (compiled.analysis.components) |component| {
+        try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_component(component.id, @intCast(component.slots)));
+    }
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "ecs-removal");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    // Two remove passes incremented the counter before the final despawn.
+    const report_ptr = ecs.e7_ecs_resource(report_resource.id);
+    try std.testing.expect(report_ptr != 0);
+    const report_values: [*]const i64 = @ptrFromInt(@as(usize, @intCast(report_ptr)));
+    try std.testing.expectEqual(@as(i64, 2), report_values[0]);
+
+    // The only entity was despawned: dead, no component presence, and neither
+    // projection nor zero-projection queries report it any more.
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_count());
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_entity_alive(0));
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_component_get(0, counter_component.id));
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_component_get(0, held_component.id));
+
+    var ids = [_]i64{ counter_component.id, held_component.id };
+    var muts = [_]i64{ 0, 0 };
+    var query = ecs.e7_ecs_query_begin(1, @intCast(@intFromPtr(&ids)), @intCast(@intFromPtr(&muts)), -1);
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
+    query = ecs.e7_ecs_query_begin(0, 0, 0, held_component.id);
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
+
+    // Re-adding components to a live entity keeps working after despawn of
+    // another id; spawn a fresh row and verify presence is independent.
+    const cmd = ecs.e7_ecs_commands();
+    const row = ecs.e7_ecs_commands_row_begin(cmd);
+    var value: i64 = 5;
+    try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_commands_row_add(row, counter_component.id, @intCast(@intFromPtr(&value))));
+    try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_commands_row_add(row, held_component.id, 0));
+    try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_commands_row_finish(row));
+    try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_commands_flush(cmd));
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_alive(1));
+    try std.testing.expect(ecs.e7_ecs_component_get(1, counter_component.id) != 0);
+    query = ecs.e7_ecs_query_begin(1, @intCast(@intFromPtr(&ids)), @intCast(@intFromPtr(&muts)), -1);
+    try std.testing.expectEqual(@as(i64, 2), ecs.e7_ecs_query_next(query));
+    try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
+}
