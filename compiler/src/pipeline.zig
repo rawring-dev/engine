@@ -148,9 +148,11 @@ fn parseProjectFile(allocator: std.mem.Allocator, source: []const u8) ProjectErr
     };
 }
 
-/// Load `root_path` and recursively inline sibling `<name>.e7` files for every
-/// external `mod <name>` reference, so semantic analysis sees prefixed modules
-/// (`ui::Ui`) exactly as if they had been declared inline.
+/// Load `root_path` and recursively inline module files for every external
+/// `mod <name>` reference.  A module resolves to either `<dir>/<name>.e7` or a
+/// nested `<dir>/<name>/main.e7`; child modules are resolved relative to the
+/// file that declared them.  Semantic analysis sees prefixed modules
+/// (`ui::Ui`, `core::window::Window`) exactly as if inline.
 pub fn loadProject(allocator: std.mem.Allocator, root_path: []const u8) ProjectError!Project {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
@@ -202,6 +204,29 @@ pub fn loadProject(allocator: std.mem.Allocator, root_path: []const u8) ProjectE
     };
 }
 
+fn loadModuleFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    directory: []const u8,
+    name: []const u8,
+) ProjectError!struct { path: []u8, source: []u8 } {
+    const flat_name = try std.fmt.allocPrint(allocator, "{s}.e7", .{name});
+    defer allocator.free(flat_name);
+    var path = try std.fs.path.join(allocator, &.{ directory, flat_name });
+    if (readProjectFile(allocator, io, path)) |source| {
+        return .{ .path = path, .source = source };
+    } else |flat_error| {
+        allocator.free(path);
+        if (flat_error != error.ProjectIo) return flat_error;
+    }
+    path = try std.fs.path.join(allocator, &.{ directory, name, "main.e7" });
+    const source = readProjectFile(allocator, io, path) catch |nested_error| {
+        allocator.free(path);
+        return nested_error;
+    };
+    return .{ .path = path, .source = source };
+}
+
 fn resolveExternalModules(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -217,12 +242,11 @@ fn resolveExternalModules(
         switch (item.kind) {
             .mod => |module| {
                 if (module.items != null) continue;
-                const filename = try std.fmt.allocPrint(allocator, "{s}.e7", .{module.name});
-                defer allocator.free(filename);
-                const path = try std.fs.path.join(allocator, &.{ directory, filename });
+                const loaded = try loadModuleFile(allocator, io, directory, module.name);
+                const path = loaded.path;
+                const source = loaded.source;
                 var path_owned = true;
                 errdefer if (path_owned) allocator.free(path);
-                const source = try readProjectFile(allocator, io, path);
                 var source_owned = true;
                 errdefer if (source_owned) allocator.free(source);
                 try files.append(allocator, .{ .path = path, .source = source });
@@ -231,7 +255,8 @@ fn resolveExternalModules(
                 source_owned = false;
                 var child = try parseProjectFile(allocator, source);
                 errdefer child.deinit();
-                try resolveExternalModules(allocator, io, &child, directory, files, module_asts, depth + 1);
+                const child_directory = std.fs.path.dirname(path) orelse directory;
+                try resolveExternalModules(allocator, io, &child, child_directory, files, module_asts, depth + 1);
                 try module_asts.append(allocator, child);
                 const module_decl: *ast.ModDecl = &item.kind.mod;
                 module_decl.items = child.module.items;
