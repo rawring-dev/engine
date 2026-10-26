@@ -44,3 +44,16 @@ pub Commands <- struct
     handle: u64
 
 
+
+@Components
+pub RigidBody <- struct
+    velocity: [f32; 3]
+    inv_mass: f32
+
+@Components
+pub BoxCollider <- struct
+    half_extents: [f32; 3]
+
+@Components
+pub SphereCollider <- struct
+    radius: f32

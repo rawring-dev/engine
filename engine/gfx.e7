@@ -14,6 +14,20 @@ pub Gpu <- struct
     cube_fragment_shader: u64
 
 
+pub GfxPlugin <- plugin
+    gfx_plugin_init <- sys (commands: &mut Commands):
+        commands.insert_resource(Gpu {
+            scene: 0,
+            surface: 0,
+            renderer: 0,
+            swapchain_format: 0,
+            width: 960,
+            height: 540,
+            cube_pipeline: 0,
+            cube_vertex_shader: 0,
+            cube_fragment_shader: 0,
+        })
+
 pub ShaderModule <- struct
     handle: u64
     stage: ShaderStage

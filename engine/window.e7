@@ -8,6 +8,15 @@ pub Window <- struct
     quit_requested: bool
 
 
+pub WindowPlugin <- plugin
+    window_plugin_init <- sys (commands: &mut Commands):
+        commands.insert_resource(Window {
+            handle: 0,
+            width: 960,
+            height: 540,
+            quit_requested: false,
+        })
+
 @trigger(FrameInit)
 pub poll_window <- sys (window: res &mut Window):
     window.quit_requested = e7_engine_window_pump(window.handle) != 0

@@ -1278,6 +1278,14 @@ const Parser = struct {
             }
             try segments.append(self.allocator, .{ .name = root.lexeme, .args = args });
             if (self.match(.colon_colon) == null) break;
+            // Turbofish: `json_decode::<Point>(text)` attaches type arguments to
+            // the preceding segment instead of naming another path segment.
+            if (self.at(.lt)) {
+                const turbofish = try self.parseTypeArgs();
+                const last = &segments.items[segments.items.len - 1];
+                if (last.args.len == 0) last.args = turbofish;
+                break;
+            }
             root = try self.expect(.identifier, "expected path segment after `::`");
         }
         return self.pathOf(try segments.toOwnedSlice(self.allocator));
@@ -3196,4 +3204,27 @@ test "parses empty trigger bodies and rejects stray field assignment" {
         \\    { a, b c }
     );
     try std.testing.expect(row_diagnostic.message.len > 0);
+}
+
+test "parses derive attributes and turbofish decode calls" {
+    var tree = try expectAst(
+        \\@derive(Serialize, Deserialize)
+        \\Point <- struct
+        \\    x: f32
+        \\    name: str
+        \\decode <- () -> Point = json_decode::<Point>("{}")
+    );
+    defer tree.deinit();
+
+    const item = tree.module.items[0];
+    try std.testing.expectEqual(@as(usize, 1), item.attributes.len);
+    try std.testing.expectEqualStrings("derive", item.attributes[0].path.segments[0].name);
+    try std.testing.expectEqual(@as(usize, 2), item.attributes[0].args.len);
+    try std.testing.expectEqualStrings("Serialize", item.attributes[0].args[0].path.segments[0].name);
+    try std.testing.expectEqualStrings("Deserialize", item.attributes[0].args[1].path.segments[0].name);
+
+    const call = tree.module.items[1].kind.function.body.expr.call;
+    try std.testing.expectEqualStrings("json_decode", call.callee.path.segments[0].name);
+    try std.testing.expectEqual(@as(usize, 1), call.callee.path.segments[0].args.len);
+    try std.testing.expectEqualStrings("Point", call.callee.path.segments[0].args[0].path.segments[0].name);
 }

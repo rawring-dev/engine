@@ -1054,14 +1054,21 @@ test "compiles the engine main/ui project from disk" {
     try std.testing.expect(result.functionNamed("ui::Ui::init") != null);
     try std.testing.expect(result.functionNamed("ui::Ui::init__body") != null);
 
-    // ECS metadata comes from both files.
-    try std.testing.expect(result.analysis.plugins.len == 1);
-    try std.testing.expectEqualStrings("ui::Ui", result.analysis.plugins[0].name);
-    try std.testing.expectEqualStrings("ui::Ui::init", result.analysis.plugins[0].init.?);
+    // ECS metadata is collected across the module tree; the UI plugin is one
+    // of several engine plugins.
+    try std.testing.expect(result.analysis.plugins.len >= 1);
+    var found_ui = false;
+    for (result.analysis.plugins) |plugin| {
+        if (std.mem.eql(u8, plugin.name, "ui::Ui")) {
+            found_ui = true;
+            try std.testing.expectEqualStrings("ui::Ui::init", plugin.init.?);
+        }
+    }
+    try std.testing.expect(found_ui);
     try std.testing.expect(result.analysis.resources.len >= 5);
     try std.testing.expect(result.analysis.components.len >= 6);
     try std.testing.expect(result.analysis.component_table != null);
-    try std.testing.expectEqual(@as(usize, 6), result.analysis.component_table.?.columns.len);
+    try std.testing.expect(result.analysis.component_table.?.columns.len >= 6);
     // `ui_interact`/`ui_render` are gated by the Ui plugin.
     try std.testing.expect(result.analysis.system_gates.len >= 2);
 
@@ -1253,4 +1260,50 @@ test "lowers float arithmetic, comparisons, casts, and math intrinsics" {
         },
         else => {},
     };
+}
+
+test "lowers derived JSON encode/decode to schema-driven runtime calls" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@derive(Serialize, Deserialize)
+        \\Point <- struct
+        \\    x: f32
+        \\    y: f32
+        \\    name: str
+        \\encode_point <- () -> str:
+        \\    p := Point { x: 1.5, y: -2.0, name: "origin" }
+        \\    json_encode(p)
+        \\decode_point <- () -> Point:
+        \\    json_decode::<Point>("{\"x\": 1.5, \"y\": -2.0, \"name\": \"origin\"}")
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const point = result.analysis.derive("Point").?;
+    try std.testing.expect(point.serialize and point.deserialize);
+    try std.testing.expectEqualStrings("{x=f;y=f;name=s}", point.schema.?);
+
+    const expectations = [_]struct { function: []const u8, intrinsic: bytecode.RuntimeFunction }{
+        .{ .function = "encode_point", .intrinsic = .json_encode },
+        .{ .function = "decode_point", .intrinsic = .json_decode },
+    };
+    for (expectations) |expectation| {
+        const function = result.functionNamed(expectation.function).?;
+        var found_call = false;
+        var found_schema = false;
+        for (function.code) |op| switch (op) {
+            .runtime_call => |call| {
+                if (call.function == expectation.intrinsic) found_call = true;
+            },
+            .string_lit => |literal| {
+                if (std.mem.eql(u8, literal, "{x=f;y=f;name=s}")) found_schema = true;
+            },
+            else => {},
+        };
+        try std.testing.expect(found_call);
+        try std.testing.expect(found_schema);
+    }
 }

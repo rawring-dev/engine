@@ -1179,6 +1179,10 @@ const Builder = struct {
                     try self.pop();
                 }
             }
+            // Apply Commands queued by plugin init (resource insertion, rows).
+            try self.emit(.{ .load_local = cmd_slot });
+            try self.runtimeCall(.ecs_commands_flush, 1);
+            try self.pop();
             try self.push(0);
             return true;
         }
@@ -2087,7 +2091,7 @@ const Builder = struct {
             },
             .binary => |binary| try self.lowerBinary(binary),
             .cast => |cast| try self.lowerCast(cast, expr),
-            .call => |call| try self.lowerCall(call),
+            .call => |call| try self.lowerCall(call, expr),
             .try_expr => |inner| {
                 try self.lowerExpr(inner);
                 const slot = try self.allocLocal("<try>");
@@ -2657,7 +2661,43 @@ const Builder = struct {
         return true;
     }
 
-    fn lowerCall(self: *Builder, call: ast.Call) Error!void {
+    fn jsonSchemaForType(self: *Builder, ty: *types.Type) ?[]const u8 {
+        const named = self.namedBase(ty) orelse return null;
+        return self.analysis.jsonSchema(named.name);
+    }
+
+    /// `json_encode(value)` / `json_decode::<T>(text)`: compiler-generated
+    /// schema string + a runtime call.  The runtime walks the aggregate layout
+    /// described by the schema.
+    fn lowerJsonCall(self: *Builder, call: ast.Call, expr: *ast.Expr) Error!bool {
+        if (call.callee.* != .path or call.callee.path.segments.len != 1) return false;
+        const name = call.callee.path.segments[0].name;
+        const is_encode = std.mem.eql(u8, name, "json_encode");
+        const is_decode = std.mem.eql(u8, name, "json_decode");
+        if (!is_encode and !is_decode) return false;
+        // User functions/bindings shadow the builtin.
+        if (self.name_map.get(name) != null) return false;
+        if (is_encode) {
+            if (call.args.len != 1) return error.UnsupportedFeature;
+            const value_expr = call.args[0];
+            const value_ty = self.exprType(value_expr) orelse return error.UnsupportedFeature;
+            const schema = self.jsonSchemaForType(value_ty) orelse return error.UnsupportedFeature;
+            try self.emit(.{ .string_lit = schema });
+            try self.lowerExpr(value_expr);
+            try self.runtimeCall(.json_encode, 2);
+            return true;
+        }
+        if (call.args.len != 1) return error.UnsupportedFeature;
+        const result_ty = self.exprType(expr) orelse return error.UnsupportedFeature;
+        const schema = self.jsonSchemaForType(result_ty) orelse return error.UnsupportedFeature;
+        try self.emit(.{ .string_lit = schema });
+        try self.lowerExpr(call.args[0]);
+        try self.runtimeCall(.json_decode, 2);
+        return true;
+    }
+
+    fn lowerCall(self: *Builder, call: ast.Call, expr: *ast.Expr) Error!void {
+        if (try self.lowerJsonCall(call, expr)) return;
         if (try self.lowerCommandsMethodCall(call)) return;
         if (try self.lowerIntrinsicCall(call)) return;
         if (call.callee.* == .field) {

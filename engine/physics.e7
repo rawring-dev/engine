@@ -1,0 +1,134 @@
+# Physics library: vector helpers, AABB/sphere colliders, raycasts, and a
+# simple integrate system. Physics behavior is a plugin over the ECS world.
+
+use ecs::*;
+use events::*;
+use time::*;
+
+pub Vec3 <- struct
+    x: f32
+    y: f32
+    z: f32
+
+pub Ray <- struct
+    origin: Vec3
+    direction: Vec3
+
+pub Aabb <- struct
+    min: Vec3
+    max: Vec3
+
+pub RayHit <- struct
+    hit: bool
+    distance: f32
+    point: Vec3
+
+@resource
+pub PhysicsWorld <- struct
+    gravity_y: f32
+    max_step: f32
+
+pub PhysicsPlugin <- plugin
+    physics_plugin_init <- sys (commands: &mut Commands):
+        commands.insert_resource(PhysicsWorld {
+            gravity_y: -9.81,
+            max_step: 0.05,
+        })
+
+pub box_collider <- (center: Vec3, half: Vec3) -> Aabb:
+    ret Aabb {
+        min: Vec3 { x: center.x - half.x, y: center.y - half.y, z: center.z - half.z },
+        max: Vec3 { x: center.x + half.x, y: center.y + half.y, z: center.z + half.z },
+    }
+
+pub ray_aabb <- (ray: Ray, box: Aabb) -> RayHit:
+    # Slab test without division-by-zero hazards.
+    inv_x := 1.0 / ray.direction.x
+    inv_y := 1.0 / ray.direction.y
+    inv_z := 1.0 / ray.direction.z
+    t1 := (box.min.x - ray.origin.x) * inv_x
+    t2 := (box.max.x - ray.origin.x) * inv_x
+    t3 := (box.min.y - ray.origin.y) * inv_y
+    t4 := (box.max.y - ray.origin.y) * inv_y
+    t5 := (box.min.z - ray.origin.z) * inv_z
+    t6 := (box.max.z - ray.origin.z) * inv_z
+    xmin := t1
+    if t2 < xmin:
+        xmin = t2
+    xmax := t1
+    if t2 > xmax:
+        xmax = t2
+    ymin := t3
+    if t4 < ymin:
+        ymin = t4
+    ymax := t3
+    if t4 > ymax:
+        ymax = t4
+    zmin := t5
+    if t6 < zmin:
+        zmin = t6
+    zmax := t5
+    if t6 > zmax:
+        zmax = t6
+    tmin := xmin
+    if ymin > tmin:
+        tmin = ymin
+    if zmin > tmin:
+        tmin = zmin
+    tmax := xmax
+    if ymax < tmax:
+        tmax = ymax
+    if zmax < tmax:
+        tmax = zmax
+    hit := tmax >= tmin and tmax >= 0.0
+    t := tmin
+    if t < 0.0:
+        t = tmax
+    ret RayHit {
+        hit: hit,
+        distance: t,
+        point: Vec3 {
+            x: ray.origin.x + ray.direction.x * t,
+            y: ray.origin.y + ray.direction.y * t,
+            z: ray.origin.z + ray.direction.z * t,
+        },
+    }
+
+pub ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit:
+    ox := ray.origin.x - center.x
+    oy := ray.origin.y - center.y
+    oz := ray.origin.z - center.z
+    b := ox * ray.direction.x + oy * ray.direction.y + oz * ray.direction.z
+    c := ox * ox + oy * oy + oz * oz - radius * radius
+    disc := b * b - c
+    if disc < 0.0:
+        ret RayHit { hit: false, distance: 0.0, point: ray.origin }
+    root := e7_f32_sqrt(disc)
+    t := 0.0 - b - root
+    if t < 0.0:
+        t = 0.0 - b + root
+    ret RayHit {
+        hit: t >= 0.0,
+        distance: t,
+        point: Vec3 {
+            x: ray.origin.x + ray.direction.x * t,
+            y: ray.origin.y + ray.direction.y * t,
+            z: ray.origin.z + ray.direction.z * t,
+        },
+    }
+
+@trigger(Update)
+pub physics_step <- sys (
+    bodies: select &mut Transform, &mut RigidBody from Components,
+    world: res &PhysicsWorld,
+):
+    dt := 0.016
+    for (transform, body) in bodies:
+        body.velocity[1] = body.velocity[1] + world.gravity_y * dt
+        transform.translation[0] = transform.translation[0] + body.velocity[0] * dt
+        transform.translation[1] = transform.translation[1] + body.velocity[1] * dt
+        transform.translation[2] = transform.translation[2] + body.velocity[2] * dt
+        # Simple ground plane at y=0 for the demo cube.
+        if transform.translation[1] < 0.0:
+            transform.translation[1] = 0.0
+            body.velocity[1] = 0.0

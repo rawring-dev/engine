@@ -16,6 +16,7 @@ pub const aggregate = @import("aggregate.zig");
 pub const ecs = @import("ecs.zig");
 pub const engine = @import("engine.zig");
 pub const float = @import("float.zig");
+pub const json = @import("json.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
 pub const window = @import("ffi/window.zig");
@@ -61,6 +62,7 @@ test {
     _ = ecs;
     _ = engine;
     _ = float;
+    _ = json;
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -1139,7 +1141,12 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
         }
         return error.TestUnexpectedResult;
     };
-    const camera_ptr = ecs.e7_ecs_component_get(0, camera_component.id);
+    var camera_ptr: i64 = 0;
+    var entity: i64 = 0;
+    const entity_count = ecs.e7_ecs_entity_count();
+    while (entity < entity_count and camera_ptr == 0) : (entity += 1) {
+        camera_ptr = ecs.e7_ecs_component_get(entity, camera_component.id);
+    }
     try std.testing.expect(camera_ptr != 0);
     const loadFloat = struct {
         fn get(base: i64, index: usize) f64 {
@@ -1348,4 +1355,73 @@ test "JIT computes float arithmetic, math intrinsics, and conversions" {
     try std.testing.expectEqual(@as(i64, 1235), roundtrip());
     const comparisons = try jit.get(Fn, "comparisons");
     try std.testing.expectEqual(@as(i64, 6), comparisons());
+}
+
+test "JIT round-trips JSON for derived structs" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\@derive(Serialize, Deserialize)
+        \\Point <- struct
+        \\    x: f32
+        \\    y: f32
+        \\    name: str
+        \\@derive(Serialize, Deserialize)
+        \\Line <- struct
+        \\    start: Point
+        \\    end: Point
+        \\    tags: [str]
+        \\    points: [Point]
+        \\    count: i64
+        \\    visible: bool
+        \\encode_point <- () -> str:
+        \\    p := Point { x: 1.5, y: -2.0, name: "origin" }
+        \\    json_encode(p)
+        \\decode_point <- () -> i64:
+        \\    p := json_decode::<Point>("{\"x\": 1.5, \"y\": -2.0, \"name\": \"origin\"}")
+        \\    e7_f32_to_milli(p.x) + e7_f32_to_milli(p.y) + (p.name.len() as i64)
+        \\roundtrip_line <- () -> i64:
+        \\    a := Point { x: 1.5, y: -2.0, name: "origin" }
+        \\    b := Point { x: 0.0, y: 2.5, name: "dest" }
+        \\    tags := ["a", "bb"]
+        \\    points := [Point { x: 3.5, y: 0.0, name: "p0" }, Point { x: 0.5, y: 0.0, name: "p1" }]
+        \\    line := Line { start: a, end: b, tags: tags, points: points, count: 7, visible: true }
+        \\    text := json_encode(line)
+        \\    copy := json_decode::<Line>(text)
+        \\    e7_f32_to_milli(copy.start.x) + e7_f32_to_milli(copy.end.y) + (copy.end.name.len() as i64) + (copy.tags.len() as i64) + (copy.tags[1].len() as i64) + (copy.points.len() as i64) + e7_f32_to_milli(copy.points[1].x) + copy.count + (copy.visible as i64)
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const point = compiled.analysis.derive("Point").?;
+    try std.testing.expect(point.serialize and point.deserialize);
+    try std.testing.expectEqualStrings("{x=f;y=f;name=s}", point.schema.?);
+    const line = compiled.analysis.derive("Line").?;
+    try std.testing.expectEqualStrings("{start={x=f;y=f;name=s};end={x=f;y=f;name=s};tags=[s];points=[{x=f;y=f;name=s}];count=i;visible=b}", line.schema.?);
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "json-derive");
+
+    const Str = *const fn () callconv(.c) i64;
+    const encode_point = try jit.get(Str, "encode_point");
+    const encoded = encode_point();
+    try std.testing.expect(encoded != 0);
+    const encoded_len = aggregate.e7_str_len(encoded);
+    try std.testing.expect(encoded_len > 0);
+    const encoded_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(encoded + 8)));
+    const encoded_text = encoded_ptr[0..@intCast(encoded_len)];
+    try std.testing.expect(std.mem.startsWith(u8, encoded_text, "{\"x\":"));
+    try std.testing.expect(std.mem.indexOf(u8, encoded_text, "\"name\":\"origin\"") != null);
+
+    const I64 = *const fn () callconv(.c) i64;
+    const decode_point = try jit.get(I64, "decode_point");
+    try std.testing.expectEqual(@as(i64, -494), decode_point()); // 1500 - 2000 + 6
+
+    const roundtrip_line = try jit.get(I64, "roundtrip_line");
+    // 1500 + 2500 + len("dest")4 + tags.len()2 + len("bb")2 + points.len()2
+    // + points[1].x(0.5)500 + count 7 + visible 1
+    try std.testing.expectEqual(@as(i64, 4518), roundtrip_line());
 }

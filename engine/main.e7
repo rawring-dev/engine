@@ -9,6 +9,7 @@ mod input
 mod camera
 mod scene
 mod bootstrap
+mod physics
 mod ui
 
 use events::*;
@@ -20,46 +21,63 @@ use input::*;
 use camera::*;
 use scene::*;
 use bootstrap::*;
+use physics::*;
+
+# Demo-specific content: the scene entity rows, cube collider, and light.
+pub DemoPlugin <- plugin
+    demo_plugin_init <- sys (commands: &mut Commands):
+        camera := Camera {
+            position: [0.0, 1.8, 5.5]
+            yaw: 0.0
+            pitch: -0.14
+            fov_y: 1.0471975512
+            near: 0.1
+            far: 100.0
+        }
+        controller := CameraController {
+            move_speed: 4.0,
+            look_speed: 0.0025,
+        }
+        camera_track := Transform {
+            translation: [0.0, 1.5, 6.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+        commands.add_row(Components, { camera, controller, camera_track })
+
+        cube_transform := Transform {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+        cube_mesh := CubeMesh
+        cube_body := RigidBody {
+            velocity: [0.0, 0.0, 0.0],
+            inv_mass: 1.0,
+        }
+        cube_collider := BoxCollider {
+            half_extents: [1.0, 1.0, 1.0],
+        }
+        commands.add_row(Components, { cube_transform, cube_mesh, cube_body, cube_collider })
+
+        light := PointLight {
+            position: [2.0, 3.0, 4.0],
+            colour: [1.0, 0.9, 0.8],
+            intensity: 12.0,
+        }
+        commands.add_row(Components, { light })
 
 pub main <- async () -> i32:
     commands := await query &mut Commands
 
+    commands.add_plugin(window::WindowPlugin)
+    commands.add_plugin(input::InputPlugin)
+    commands.add_plugin(time::TimePlugin)
+    commands.add_plugin(gfx::GfxPlugin)
+    commands.add_plugin(camera::CameraPlugin)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(DemoPlugin)
     commands.add_plugin(ui::Ui)
-
-    commands.insert_resource(Window {
-        handle: 0,
-        width: 960,
-        height: 540,
-        quit_requested: false,
-    })
-    commands.insert_resource(Input {
-        move_forward: false,
-        move_backward: false,
-        move_left: false,
-        move_right: false,
-        move_up: false,
-        move_down: false,
-        sprint: false,
-        look_left: false,
-        look_right: false,
-        look_up: false,
-        look_down: false,
-        look_dx: 0.0,
-        look_dy: 0.0,
-    })
-    commands.insert_resource(Time { delta: 0.0, elapsed: 0.0, now_ms: 0, start_ms: 0 })
-    commands.insert_resource(Gpu {
-        scene: 0,
-        surface: 0,
-        renderer: 0,
-        swapchain_format: 0,
-        width: 960,
-        height: 540,
-        cube_pipeline: 0,
-        cube_vertex_shader: 0,
-        cube_fragment_shader: 0,
-    })
-
     disown commands
 
     window := await query &Window

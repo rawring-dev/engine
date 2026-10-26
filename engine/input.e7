@@ -17,6 +17,24 @@ pub Input <- struct
     look_dy: f32
 
 
+pub InputPlugin <- plugin
+    input_plugin_init <- sys (commands: &mut Commands):
+        commands.insert_resource(Input {
+            move_forward: false,
+            move_backward: false,
+            move_left: false,
+            move_right: false,
+            move_up: false,
+            move_down: false,
+            sprint: false,
+            look_left: false,
+            look_right: false,
+            look_up: false,
+            look_down: false,
+            look_dx: 0.0,
+            look_dy: 0.0,
+        })
+
 @trigger(FrameInit)
 pub gather_input <- sys (input: res &mut Input):
     # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.

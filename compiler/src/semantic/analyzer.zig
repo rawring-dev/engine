@@ -92,6 +92,14 @@ pub const ComponentTableInfo = struct {
     columns: []const ComponentInfo = &.{},
 };
 
+/// One `@derive(...)` declaration plus the compiler-generated JSON schema.
+pub const DeriveInfo = struct {
+    name: []const u8,
+    serialize: bool,
+    deserialize: bool,
+    schema: ?[]const u8 = null,
+};
+
 pub const Analysis = struct {
     arena: std.heap.ArenaAllocator,
     store: types.TypeStore,
@@ -105,6 +113,8 @@ pub const Analysis = struct {
     builtin_impls: []TraitImplInfo = &.{},
     /// Every method declared in an `impl` block, keyed by owner type and name.
     impl_methods: []ImplMethod = &.{},
+    /// `@derive(...)` metadata and JSON schemas keyed by qualified type name.
+    derives: []DeriveInfo = &.{},
     /// ECS metadata for codegen/hosts: deterministic ids and slot counts.
     resources: []ResourceInfo = &.{},
     components: []ComponentInfo = &.{},
@@ -147,6 +157,24 @@ pub const Analysis = struct {
             if (std.mem.eql(u8, gate.target, qualified_system)) return gate.plugin_id;
         }
         return null;
+    }
+
+    /// Resolve `@derive` info by qualified name, falling back to the final
+    /// path segment so `json_encode` diagnostics/schema lookups work across
+    /// modules.
+    pub fn derive(self: *const Analysis, name: []const u8) ?DeriveInfo {
+        for (self.derives) |info| {
+            if (std.mem.eql(u8, info.name, name)) return info;
+        }
+        const last = lastPathSegment(name);
+        for (self.derives) |info| {
+            if (std.mem.eql(u8, lastPathSegment(info.name), last)) return info;
+        }
+        return null;
+    }
+
+    pub fn jsonSchema(self: *const Analysis, name: []const u8) ?[]const u8 {
+        return if (self.derive(name)) |info| info.schema else null;
     }
 
     pub fn deinit(self: *Analysis) void {
@@ -209,6 +237,7 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
     try checker.run(module);
     const triggers = try checker.triggerInfos();
     const components = try checker.components.toOwnedSlice(checker.allocator);
+    const derives = try checker.derives.toOwnedSlice(checker.allocator);
     // Re-point the auto-collected table at the final component registry slice;
     // it was collected while the backing list still owned its buffer.
     var component_table = checker.component_table;
@@ -222,6 +251,7 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
         .trait_impls = try checker.trait_impls.toOwnedSlice(checker.allocator),
         .builtin_impls = try checker.builtin_impls.toOwnedSlice(checker.allocator),
         .impl_methods = try checker.impl_methods.toOwnedSlice(checker.allocator),
+        .derives = derives,
         .resources = try checker.resources.toOwnedSlice(checker.allocator),
         .components = components,
         .plugins = try checker.plugins.toOwnedSlice(checker.allocator),
@@ -249,6 +279,11 @@ const TypeDef = struct {
     systems: std.ArrayList(*Callable) = .empty,
     methods: std.StringHashMapUnmanaged(*Callable) = .empty,
     synthetic_fields: ?std.StringHashMapUnmanaged(*types.Type) = null,
+    /// `@derive(Serialize)` / `@derive(Deserialize)` flags.
+    derive_serialize: bool = false,
+    derive_deserialize: bool = false,
+    /// Compiler-generated JSON schema; null until validation succeeds.
+    json_schema: ?[]const u8 = null,
 };
 
 const CallableKind = enum { function, method, sys };
@@ -369,6 +404,8 @@ const Checker = struct {
     plugin_ids: std.StringHashMapUnmanaged(i64) = .empty,
     resource_index: std.StringHashMapUnmanaged(usize) = .empty,
     component_table_name: ?[]const u8 = null,
+    /// Derive metadata plus schemas, filled by the post-check validation pass.
+    derives: std.ArrayList(DeriveInfo) = .empty,
 
     // ------------------------------------------------------------------
     // Driver
@@ -385,6 +422,7 @@ const Checker = struct {
         self.checkModuleItems(module.items, "") catch |err| switch (err) {
             error.OutOfMemory => return err,
         };
+        try self.validateDerives();
         self.leaveScope();
     }
 
@@ -474,8 +512,13 @@ const Checker = struct {
                     var init_name: ?[]const u8 = null;
                     for (plugin.items) |member| {
                         if (member.kind != .sys) continue;
-                        if (!std.mem.eql(u8, member.kind.sys.name, "init")) continue;
-                        init_name = try self.qualifiedName(child, "init");
+                        const member_name = member.kind.sys.name;
+                        // Plugins may name their entry point `init` (the UI
+                        // sample) or use a unique `<name>_plugin_init` so
+                        // module glob imports do not collide.
+                        if (!std.mem.eql(u8, member_name, "init") and
+                            !std.mem.endsWith(u8, member_name, "_plugin_init")) continue;
+                        init_name = try self.qualifiedName(child, member_name);
                         break;
                     }
                     const id: i64 = @intCast(self.plugins.items.len);
@@ -578,6 +621,7 @@ const Checker = struct {
             .fields = fieldsOfItem(item),
             .variants = variantsOfItem(item),
         };
+        try self.applyDeriveAttributes(def, item);
         try self.qualified_types.put(self.allocator, qualified, def);
         try self.item_types.put(self.allocator, @intFromPtr(item), def);
         if (self.type_defs.get(name) == null) try self.type_defs.put(self.allocator, name, def);
@@ -1167,6 +1211,227 @@ const Checker = struct {
             },
             .use => {},
         }
+    }
+
+    // ------------------------------------------------------------------
+    // @derive(Serialize, Deserialize) + JSON schemas
+    // ------------------------------------------------------------------
+
+    fn applyDeriveAttributes(self: *Checker, def: *TypeDef, item: *ast.Item) !void {
+        for (item.attributes) |attribute| {
+            if (attribute.path.segments.len == 0) continue;
+            const attribute_name = attribute.path.segments[attribute.path.segments.len - 1].name;
+            if (!std.mem.eql(u8, attribute_name, "derive")) continue;
+            for (attribute.args) |argument| {
+                self.setItemSpan(item);
+                if (def.kind != .struct_) {
+                    try self.report("@derive(...) is only supported on structs, found `{s}`", .{def.qualified_name});
+                    return;
+                }
+                const name = switch (argument.*) {
+                    .path => |path| if (path.segments.len > 0)
+                        path.segments[path.segments.len - 1].name
+                    else
+                        "",
+                    else => "",
+                };
+                if (std.mem.eql(u8, name, "Serialize")) {
+                    def.derive_serialize = true;
+                } else if (std.mem.eql(u8, name, "Deserialize")) {
+                    def.derive_deserialize = true;
+                } else if (name.len == 0) {
+                    try self.report("@derive expects trait path arguments, e.g. `@derive(Serialize, Deserialize)`", .{});
+                } else {
+                    try self.report("unknown derive trait `{s}` (expected `Serialize` or `Deserialize`)", .{name});
+                }
+            }
+        }
+    }
+
+    /// Validate every `@derive` type after the main check pass, so nested
+    /// derive flags are all known regardless of declaration order.  Builds the
+    /// schema string codegen embeds for the runtime JSON helpers.
+    fn validateDerives(self: *Checker) !void {
+        var visited = std.AutoHashMapUnmanaged(*TypeDef, void).empty;
+        defer visited.deinit(self.allocator);
+        var it = self.qualified_types.iterator();
+        while (it.next()) |entry| {
+            const def = entry.value_ptr.*;
+            if (def.kind != .struct_) continue;
+            if (!def.derive_serialize and !def.derive_deserialize) continue;
+            _ = try self.buildJsonSchema(def, def.derive_serialize, def.derive_deserialize, &visited, def.qualified_name);
+            if (def.json_schema) |schema| {
+                try self.derives.append(self.allocator, .{
+                    .name = def.qualified_name,
+                    .serialize = def.derive_serialize,
+                    .deserialize = def.derive_deserialize,
+                    .schema = schema,
+                });
+            }
+        }
+    }
+
+    fn buildJsonSchema(
+        self: *Checker,
+        def: *TypeDef,
+        need_serialize: bool,
+        need_deserialize: bool,
+        visited: *std.AutoHashMapUnmanaged(*TypeDef, void),
+        context: []const u8,
+    ) Error!?[]const u8 {
+        _ = context;
+        if (def.json_schema) |schema| return schema;
+        if (def.kind != .struct_) {
+            try self.report("@derive(...) is only supported on structs, found `{s}`", .{def.qualified_name});
+            return null;
+        }
+        if (def.generics.len != 0) {
+            try self.report("@derive(...) on generic struct `{s}` is not supported yet", .{def.qualified_name});
+            return null;
+        }
+        if (visited.contains(def)) {
+            try self.report("recursive @derive(...) involving `{s}` is not supported", .{def.qualified_name});
+            return null;
+        }
+        try visited.put(self.allocator, def, {});
+        defer _ = visited.remove(def);
+
+        const old_module = self.current_module;
+        self.current_module = def.module_path;
+        defer self.current_module = old_module;
+
+        var fields_text = std.ArrayList(u8).empty;
+        defer fields_text.deinit(self.allocator);
+        var failed = false;
+        for (def.fields, 0..) |field, index| {
+            if (index > 0) try fields_text.append(self.allocator, ';');
+            if (failed) continue;
+            try fields_text.appendSlice(self.allocator, field.name);
+            try fields_text.append(self.allocator, '=');
+            const field_ty = self.resolveType(field.ty) catch {
+                failed = true;
+                continue;
+            };
+            const field_context = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ def.qualified_name, field.name });
+            if (try self.jsonSchemaForType(field_ty, need_serialize, need_deserialize, visited, field_context)) |fragment| {
+                try fields_text.appendSlice(self.allocator, fragment);
+            } else {
+                failed = true;
+            }
+        }
+        if (failed) return null;
+
+        var schema = std.ArrayList(u8).empty;
+        defer schema.deinit(self.allocator);
+        try schema.append(self.allocator, '{');
+        try schema.appendSlice(self.allocator, fields_text.items);
+        try schema.append(self.allocator, '}');
+        def.json_schema = try schema.toOwnedSlice(self.allocator);
+        return def.json_schema;
+    }
+
+    fn jsonSchemaForType(
+        self: *Checker,
+        ty: *types.Type,
+        need_serialize: bool,
+        need_deserialize: bool,
+        visited: *std.AutoHashMapUnmanaged(*TypeDef, void),
+        context: []const u8,
+    ) Error!?[]const u8 {
+        const resolved = self.store.resolve(ty);
+        switch (resolved.*) {
+            .bool => return @as(?[]const u8, try self.allocator.dupe(u8, "b")),
+            .int => return @as(?[]const u8, try self.allocator.dupe(u8, "i")),
+            .float => return @as(?[]const u8, try self.allocator.dupe(u8, "f")),
+            .string => return @as(?[]const u8, try self.allocator.dupe(u8, "s")),
+            .array => |array| {
+                if (array.length != null or array.columns != null) {
+                    try self.report("`{s}`: fixed-size arrays are not supported by @derive(Serialize, Deserialize) yet (use a `[T]` vector)", .{context});
+                    return null;
+                }
+                const element = (try self.jsonSchemaForType(array.element, need_serialize, need_deserialize, visited, context)) orelse return null;
+                return @as(?[]const u8, try std.fmt.allocPrint(self.allocator, "[{s}]", .{element}));
+            },
+            .named => |named| {
+                const nested = self.lookupTypeDef(named.name) orelse {
+                    try self.report("`{s}`: unknown type `{s}`", .{ context, named.name });
+                    return null;
+                };
+                if (nested.kind != .struct_) {
+                    try self.report("`{s}`: only structs, primitives, str, and vectors are JSON derived (found `{s}`)", .{ context, nested.qualified_name });
+                    return null;
+                }
+                if (need_serialize and !nested.derive_serialize) {
+                    try self.report("`{s}`: nested struct `{s}` must also derive Serialize", .{ context, nested.qualified_name });
+                    return null;
+                }
+                if (need_deserialize and !nested.derive_deserialize) {
+                    try self.report("`{s}`: nested struct `{s}` must also derive Deserialize", .{ context, nested.qualified_name });
+                    return null;
+                }
+                const nested_context = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ context, lastPathSegment(nested.qualified_name) });
+                return self.buildJsonSchema(nested, need_serialize, need_deserialize, visited, nested_context);
+            },
+            else => {
+                const name = try self.store.typeName(resolved);
+                try self.report("`{s}`: type `{s}` is not supported by @derive(Serialize, Deserialize) yet", .{ context, name });
+                return null;
+            },
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // JSON builtins (`json_encode` / `json_decode::<T>`)
+    // ------------------------------------------------------------------
+
+    fn checkJsonBuiltinCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .path or call.callee.path.segments.len != 1) return null;
+        const segment = call.callee.path.segments[0];
+        const name = segment.name;
+        const is_encode = std.mem.eql(u8, name, "json_encode");
+        const is_decode = std.mem.eql(u8, name, "json_decode");
+        if (!is_encode and !is_decode) return null;
+        if (self.lookup(name) != null or self.lookupFunction(name) != null) return null;
+
+        if (is_encode) {
+            if (segment.args.len != 0) {
+                try self.report("json_encode does not take type arguments", .{});
+            }
+            if (call.args.len != 1) {
+                try self.report("json_encode expects 1 argument, found {d}", .{call.args.len});
+            }
+            if (call.args.len == 0) return self.store.make(.string);
+            const argument_ty = try self.checkExpr(call.args[0], null);
+            const base = self.unwrapReferences(argument_ty);
+            if (self.namedDef(base)) |def| {
+                if (def.kind == .struct_ and def.derive_serialize) return self.store.make(.string);
+                try self.report("json_encode requires `{s}` to declare @derive(Serialize)", .{def.qualified_name});
+            } else {
+                try self.report("json_encode requires a struct value with @derive(Serialize)", .{});
+            }
+            return self.store.make(.string);
+        }
+
+        if (segment.args.len != 1) {
+            try self.report("json_decode requires exactly one type argument, e.g. `json_decode::<T>(text)`", .{});
+        }
+        var target_ty: *types.Type = try self.store.make(.unknown);
+        if (segment.args.len > 0) target_ty = try self.resolveType(segment.args[0]);
+        if (self.namedDef(self.unwrapReferences(target_ty))) |def| {
+            if (!def.derive_deserialize) {
+                try self.report("json_decode requires `{s}` to declare @derive(Deserialize)", .{def.qualified_name});
+            }
+        } else if (segment.args.len > 0) {
+            try self.report("json_decode requires a struct type with @derive(Deserialize)", .{});
+        }
+        if (call.args.len != 1) {
+            try self.report("json_decode expects 1 argument, found {d}", .{call.args.len});
+        }
+        if (call.args.len > 0) {
+            const argument_ty = try self.checkMoveExpr(call.args[0], null);
+            try self.expectAssignable(try self.store.make(.string), argument_ty, name);
+        }
+        return target_ty;
     }
 
     // ------------------------------------------------------------------
@@ -3831,6 +4096,7 @@ const Checker = struct {
     fn checkCall(self: *Checker, call: ast.Call) !*types.Type {
         if (try self.checkCommandsMethodCall(call)) |result| return result;
         if (try self.checkIntrinsicCall(call)) |result| return result;
+        if (try self.checkJsonBuiltinCall(call)) |result| return result;
         if (try self.checkBuiltinMethodCall(call)) |result| return result;
         if (call.callee.* == .path and call.callee.path.segments.len == 1) {
             const name = call.callee.path.segments[0].name;

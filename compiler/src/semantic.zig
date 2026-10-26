@@ -1654,3 +1654,72 @@ test "checks float arithmetic, comparisons, casts, and math intrinsics" {
         \\f <- (x: i64) -> f64 = e7_f32_sin(x)
     , "expects a float argument");
 }
+
+test "checks @derive(Serialize, Deserialize) and JSON builtins" {
+    try expectClean(
+        \\@derive(Serialize, Deserialize)
+        \\Point <- struct
+        \\    x: f32
+        \\    y: f64
+        \\    count: i64
+        \\    ok: bool
+        \\    name: str
+        \\@derive(Serialize, Deserialize)
+        \\Line <- struct
+        \\    start: Point
+        \\    end: Point
+        \\    tags: [str]
+        \\encode_point <- () -> str:
+        \\    p := Point { x: 1.5, y: 2.0, count: 1, ok: true, name: "origin" }
+        \\    json_encode(p)
+        \\decode_point <- () -> Point:
+        \\    json_decode::<Point>("{}")
+        \\roundtrip_line <- () -> i64:
+        \\    p := Point { x: 1.5, y: 2.0, count: 1, ok: true, name: "origin" }
+        \\    q := Point { x: 0.0, y: 1.0, count: 2, ok: false, name: "end" }
+        \\    line := Line { start: p, end: q, tags: ["a"] }
+        \\    text := json_encode(line)
+        \\    copy := json_decode::<Line>(text)
+        \\    copy.tags.len() as i64
+    );
+    try expectDiagnostic(
+        \\@derive(Clone)
+        \\P <- struct
+        \\    x: i32
+    , "unknown derive trait");
+    try expectDiagnostic(
+        \\@derive(Serialize)
+        \\E <- enum
+        \\    A
+    , "only supported on structs");
+    try expectDiagnostic(
+        \\P <- struct
+        \\    x: i32
+        \\encode <- () -> str = json_encode(P { x: 1 })
+    , "json_encode requires `P` to declare @derive(Serialize)");
+    try expectDiagnostic(
+        \\@derive(Serialize, Deserialize)
+        \\P <- struct
+        \\    x: i32
+        \\decode <- () -> P = json_decode("{}")
+    , "json_decode requires exactly one type argument");
+    try expectDiagnostic(
+        \\@derive(Serialize)
+        \\P <- struct
+        \\    x: i32
+        \\decode <- () -> P = json_decode::<P>("{}")
+    , "json_decode requires `P` to declare @derive(Deserialize)");
+    try expectDiagnostic(
+        \\@derive(Serialize, Deserialize)
+        \\P <- struct
+        \\    x: i32
+        \\    fixed: [f32; 3]
+    , "fixed-size arrays are not supported");
+    try expectDiagnostic(
+        \\Inner <- struct
+        \\    x: i32
+        \\@derive(Serialize, Deserialize)
+        \\Outer <- struct
+        \\    inner: Inner
+    , "must also derive Serialize");
+}

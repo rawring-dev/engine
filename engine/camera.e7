@@ -2,6 +2,8 @@ use ecs::*;
 use events::*;
 use input::*;
 
+pub CameraPlugin <- plugin
+
 @trigger(Update)
 pub move_camera <- sys (
     input: res &Input,
