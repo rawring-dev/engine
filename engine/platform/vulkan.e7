@@ -218,3 +218,117 @@ vulkan_device_create <- (
 vulkan_device_destroy <- (device: i64) -> nil:
     destroy := bind_vk("vkDestroyDevice")
     e7_ffi_call2(destroy, device, 0)
+
+# Create a swapchain for the window surface.  The first reported surface format
+# is used (or BGRA8/SRGB when the surface reports VK_FORMAT_UNDEFINED), FIFO
+# presentation is requested, and the swapchain images are returned as an array
+# of VkImage handles.  `window_state` supplies the pixel extent when the surface
+# reports the special 0xFFFFFFFF currentExtent.
+vulkan_swapchain_create <- (
+    device: i64,
+    physical: i64,
+    surface: i64,
+    window_state: u64,
+    out_swapchain: u64,
+    out_format: u64,
+    out_width: u64,
+    out_height: u64,
+    out_images: u64,
+    out_image_count: u64,
+) -> i64:
+    capabilities := e7_alloc_bytes(64)
+    get_caps := bind_vk("vkGetPhysicalDeviceSurfaceCapabilitiesKHR")
+    caps_result := e7_ffi_call3(get_caps, physical, surface, capabilities)
+    if caps_result != 0:
+        e7_free_ptr(capabilities)
+        ret 0
+    min_images := e7_load_u32(capabilities)
+    max_images := e7_load_u32(capabilities + 4)
+    image_count := min_images + 1
+    if max_images > 0:
+        if image_count > max_images:
+            image_count = max_images
+    if image_count < 1:
+        image_count = 1
+
+    format_count := e7_alloc_bytes(4)
+    get_formats := bind_vk("vkGetPhysicalDeviceSurfaceFormatsKHR")
+    e7_ffi_call4(get_formats, physical, surface, format_count, 0)
+    formats_len := e7_load_u32(format_count)
+    if formats_len <= 0:
+        e7_free_ptr(capabilities)
+        e7_free_ptr(format_count)
+        ret 0
+    formats := e7_alloc_bytes(formats_len * 8)
+    e7_ffi_call4(get_formats, physical, surface, format_count, formats)
+    image_format := e7_load_u32(formats)
+    color_space := e7_load_u32(formats + 4)
+    if image_format == 0:
+        image_format = 44
+        color_space = 0
+
+    width := e7_load_u32(capabilities + 8)
+    height := e7_load_u32(capabilities + 12)
+    window_width := e7_alloc_bytes(4)
+    window_height := e7_alloc_bytes(4)
+    if width == 4294967295:
+        window_size(window_state, window_width, window_height)
+        width = e7_load_u32(window_width)
+        height = e7_load_u32(window_height)
+    if width == 0:
+        width = 64
+    if height == 0:
+        height = 48
+
+    pre_transform := e7_load_u32(capabilities + 40)
+    if pre_transform == 0:
+        pre_transform = 1
+    info := e7_alloc_bytes(104)
+    e7_store_u32(info, 1000001000)
+    e7_store_u64(info + 24, surface)
+    e7_store_u32(info + 32, image_count)
+    e7_store_u32(info + 36, image_format)
+    e7_store_u32(info + 40, color_space)
+    e7_store_u32(info + 44, width)
+    e7_store_u32(info + 48, height)
+    e7_store_u32(info + 52, 1)
+    e7_store_u32(info + 56, 16)
+    e7_store_u32(info + 60, 0)
+    e7_store_u32(info + 64, 0)
+    e7_store_u32(info + 80, pre_transform)
+    e7_store_u32(info + 84, 1)
+    e7_store_u32(info + 88, 2)
+    e7_store_u32(info + 92, 1)
+    e7_store_u64(info + 96, 0)
+    create := bind_vk("vkCreateSwapchainKHR")
+    create_result := e7_ffi_call4(create, device, info, 0, out_swapchain)
+    e7_free_ptr(capabilities)
+    e7_free_ptr(format_count)
+    e7_free_ptr(formats)
+    e7_free_ptr(window_width)
+    e7_free_ptr(window_height)
+    e7_free_ptr(info)
+    if create_result != 0:
+        ret 0
+
+    swapchain := e7_load_u64(out_swapchain)
+    image_count_out := e7_alloc_bytes(4)
+    get_images := bind_vk("vkGetSwapchainImagesKHR")
+    e7_ffi_call4(get_images, device, swapchain, image_count_out, 0)
+    images_len := e7_load_u32(image_count_out)
+    if images_len <= 0:
+        e7_free_ptr(image_count_out)
+        ret 0
+    images := e7_alloc_bytes(images_len * 8)
+    e7_ffi_call4(get_images, device, swapchain, image_count_out, images)
+    e7_store_u32(out_format, image_format)
+    e7_store_u32(out_width, width)
+    e7_store_u32(out_height, height)
+    e7_store_u64(out_images, images)
+    e7_store_u32(out_image_count, images_len)
+    e7_free_ptr(image_count_out)
+    ret 1
+
+vulkan_swapchain_destroy <- (device: i64, swapchain: i64) -> nil:
+    destroy := bind_vk("vkDestroySwapchainKHR")
+    e7_ffi_call3(destroy, device, swapchain, 0)

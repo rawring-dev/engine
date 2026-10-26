@@ -44,8 +44,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   Queue-family selection currently uses family 0; the
   `vkGetPhysicalDeviceQueueFamilyProperties` e7 query path crashes in lavapipe
   and must be replaced with a correct query before general-GPU use.
-- Remaining: swapchain, present/capture, queue-family query, e7 intrinsic
-  wrappers, renderer, image/text, and deletion of the Zig layer.
+- **2c (done):** `engine/platform/vulkan.e7` creates a `VkSwapchainKHR` with
+  surface capabilities/formats, image usage, FIFO present mode, and returns the
+  swapchain images.  Verified with lavapipe (extent > 0, image count > 0) and
+  destroyed cleanly.
+- Remaining: present/capture and command submission, queue-family query, e7
+  intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 

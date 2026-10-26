@@ -1119,7 +1119,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
-test "e7 SDL+Vulkan platform module creates a logical Vulkan device" {
+test "e7 SDL+Vulkan platform module creates a device and swapchain" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
 
     const io = std.testing.io;
@@ -1169,7 +1169,39 @@ test "e7 SDL+Vulkan platform module creates a logical Vulkan device" {
         \\        surface = e7_load_u64(surface_out)
         \\        result = vulkan_device_create(instance, surface, device_out, queue_out, family_out, physical_out)
         \\        if result != 0:
-        \\            vulkan_device_destroy(e7_load_u64(device_out))
+        \\            device := e7_load_u64(device_out)
+        \\            physical := e7_load_u64(physical_out)
+        \\            swapchain_out := e7_alloc_bytes(8)
+        \\            format_out := e7_alloc_bytes(4)
+        \\            width_out := e7_alloc_bytes(4)
+        \\            height_out := e7_alloc_bytes(4)
+        \\            images_out := e7_alloc_bytes(8)
+        \\            image_count_out := e7_alloc_bytes(4)
+        \\            swapchain_created := vulkan_swapchain_create(device, physical, surface, win, swapchain_out, format_out, width_out, height_out, images_out, image_count_out)
+        \\            images := e7_load_u64(images_out)
+        \\            if swapchain_created != 0:
+        \\                swapchain := e7_load_u64(swapchain_out)
+        \\                width := e7_load_u32(width_out)
+        \\                image_count := e7_load_u32(image_count_out)
+        \\                vulkan_swapchain_destroy(device, swapchain)
+        \\                if width <= 0:
+        \\                    result = -6
+        \\                else:
+        \\                    if image_count <= 0:
+        \\                        result = -7
+        \\                    else:
+        \\                        result = 1
+        \\            else:
+        \\                result = -5
+        \\            if images != 0:
+        \\                e7_free_ptr(images)
+        \\            e7_free_ptr(swapchain_out)
+        \\            e7_free_ptr(format_out)
+        \\            e7_free_ptr(width_out)
+        \\            e7_free_ptr(height_out)
+        \\            e7_free_ptr(images_out)
+        \\            e7_free_ptr(image_count_out)
+        \\            vulkan_device_destroy(device)
         \\        if surface != 0:
         \\            vulkan_surface_destroy(instance, surface)
         \\    vulkan_instance_destroy(instance)
