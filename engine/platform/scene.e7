@@ -153,11 +153,14 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
         e7_store_f32(ubo_mapped + 188, 1.0)
     vertex_buffer_out := e7_alloc_bytes(8)
     vertex_memory_out := e7_alloc_bytes(8)
-    vertex_mapped_out := e7_alloc_bytes(8)
-    if vulkan_vertex_buffer(device, physical, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+    index_buffer_out := e7_alloc_bytes(8)
+    index_memory_out := e7_alloc_bytes(8)
+    if vulkan_cube_buffers(device, physical, vertex_buffer_out, vertex_memory_out, index_buffer_out, index_memory_out) == 0:
         ret 0
     e7_store_u64(scene + 176, e7_load_u64(vertex_buffer_out))
     e7_store_u64(scene + 184, e7_load_u64(vertex_memory_out))
+    e7_store_u64(scene + 192, e7_load_u64(index_buffer_out))
+    e7_store_u64(scene + 200, e7_load_u64(index_memory_out))
     mesh_vert := e7_engine_read_shader("engine/platform/shaders/mesh.vert.spv")
     mesh_frag := e7_engine_read_shader("engine/platform/shaders/mesh.frag.spv")
     mesh_vert_handle := e7_handle(mesh_vert)
@@ -181,7 +184,8 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_free_ptr(ubo_size_out)
     e7_free_ptr(vertex_buffer_out)
     e7_free_ptr(vertex_memory_out)
-    e7_free_ptr(vertex_mapped_out)
+    e7_free_ptr(index_buffer_out)
+    e7_free_ptr(index_memory_out)
     e7_free_ptr(mesh_pipeline_out)
     e7_free_ptr(mesh_layout_out)
 
@@ -226,6 +230,8 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         e7_load_u32(scene + 88),
         e7_load_u32(scene + 92),
         e7_load_u64(scene + 176),
+        e7_load_u64(scene + 192),
+        36,
         e7_load_u64(scene + 128),
         e7_load_u64(scene + 168),
         out_pixels,
@@ -240,6 +246,7 @@ scene_destroy <- (scene: u64) -> nil:
     vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 160), e7_load_u64(scene + 168))
     vulkan_uniform_resources_destroy(device, e7_load_u64(scene + 112), e7_load_u64(scene + 120), e7_load_u64(scene + 136), e7_load_u64(scene + 144))
     vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 176), e7_load_u64(scene + 184))
+    vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 192), e7_load_u64(scene + 200))
     vulkan_render_targets_destroy(device, e7_load_u64(scene + 64), e7_load_u64(scene + 96), e7_load_u64(scene + 80), e7_load_u32(scene + 52))
     vulkan_swapchain_destroy(device, e7_load_u64(scene + 56))
     vulkan_device_destroy(device)

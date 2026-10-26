@@ -113,8 +113,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   the descriptor set and vertex buffer, draws, and captures.  Verified with
   lavapipe: **136/136** runtime tests.  Fence waits now use a 1-second timeout
   and return an error instead of hanging.
-- Remaining: depth buffer, cube meshes, camera/light updates, full engine
-  renderer/scene API, image/text, and deletion of the Zig layer.
+- **6a (done):** added a cube vertex buffer (8 vertices), a 16-bit index buffer
+  (36 indices), `vkCmdBindIndexBuffer`/`vkCmdDrawIndexed`, and switched the e7
+  scene to render the indexed cube through the UBO pipeline.  The scene test
+  verifies the captured center is a colored cube pixel, not the cleared
+  background.  Runtime: **136/136** with lavapipe.
+- Remaining: depth buffer, camera/light updates, full engine renderer/scene API,
+  image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
