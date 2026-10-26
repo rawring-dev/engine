@@ -30,6 +30,7 @@ pub const http = @import("ffi/http.zig");
 pub const quic = @import("ffi/quic.zig");
 pub const webrtc = @import("ffi/webrtc.zig");
 pub const stdio = @import("ffi/stdio.zig");
+pub const dl = @import("ffi/dl.zig");
 
 test "runtime imports both sibling projects" {
     try std.testing.expect(@hasDecl(scheduler, "lbfgs"));

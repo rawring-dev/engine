@@ -88,6 +88,7 @@ entry:
 | `src/engine.zig` | e7 engine host ABI: window, scene, camera/light, input, frame limiter |
 | `src/ffi/fs.zig` | executable-directory sandbox |
 | `src/ffi/stdio.zig` | stdin/stdout/stderr byte and line I/O |
+| `src/ffi/dl.zig` | `dlopen`/`LoadLibrary`, symbol lookup, call trampolines, data access |
 | `src/ffi/net.zig` | host resolution, TCP listener/stream, UDP socket |
 | `src/ffi/http.zig` | libcurl easy interface |
 | `src/ffi/quic.zig` | ngtcp2 client/server with OpenSSL TLS 1.3 |
@@ -106,6 +107,84 @@ and reports end-of-stream through the `out_eof` flag. Reads block until data or
 EOF arrives; there is no timeout parameter. `e7_stdio_is_tty` reports whether a
 stream is a terminal, which is useful for deciding whether to emit ANSI escapes
 or interactive prompts.
+
+## Dynamic C libraries
+
+There are two ways for JITed code to reach an arbitrary shared object.
+
+### Typed IR + ORC library generators (recommended)
+
+`Jit.addLibrary(path)` installs LLVM's dynamic-library search generator for one
+`.so`, `.dylib`, or `.dll`. Undefined C symbols in subsequently added IR are
+resolved from that library at materialization time:
+
+```zig
+try jit.addLibrary("libm.so.6");
+try jit.addIr(
+    \\declare double @cos(double)
+    \\define double @my_cos(double %x) {
+    \\  %r = call double @cos(double %x)
+    \\  ret double %r
+    \\}
+, "math");
+```
+
+`Jit.addProcessSymbols()` additionally reflects symbols already loaded into the
+process (the LLVM equivalent of `dlsym(RTLD_DEFAULT, ...)`). This path supports
+any C signature that can be written in LLVM IR, including structs by value,
+varargs, mixed integer/float arguments, and vector types; the generated IR is
+responsible for matching the platform C ABI.
+
+### Runtime loader intrinsics
+
+For runtime-discovered libraries and symbols:
+
+| Intrinsic | Purpose |
+| --- | --- |
+| `e7_dl_open(path, len, flags)` | Load a library; empty path = current process |
+| `e7_dl_open_self(flags)` | Load/reflect the current process |
+| `e7_dl_symbol(handle, name, len)` | Resolve a function or data symbol to an address |
+| `e7_dl_has_symbol` | Non-destructive existence check |
+| `e7_dl_path` | Return the path recorded for the handle |
+| `e7_dl_close` | Unload a library (process handles are not unloaded) |
+
+Open flags are bits: `1` lazy, `2` global, `4` now. Zero or no lazy/now bit is
+treated as lazy. Windows ignores POSIX visibility flags.
+
+Once an address is known, generated IR can turn it into a typed function
+pointer and call it:
+
+```llvm
+declare i64 @e7_dl_open(ptr, i64, i32)
+declare i64 @e7_dl_symbol(i64, ptr, i64)
+declare double @e7_ffi_call_f64_1(i64, double)
+declare i32 @e7_dl_close(i64)
+```
+
+The trampolines `e7_ffi_call0` through `e7_ffi_call6` cover all-integer /
+pointer signatures, and `e7_ffi_call_f64_0` through `_4` cover all-`double`
+signatures. They return a 64-bit integer or `double` respectively; a `void`
+result may be ignored. Mixed integer/float signatures, aggregate returns,
+varargs, and 128-bit values must use typed IR declarations instead, because the
+generic trampoline cannot know the ABI classification.
+
+A JIT function can be passed to a C callback by converting its address with
+`ptrtoint` and forwarding it through an integer trampoline:
+
+```llvm
+%callback = ptrtoint ptr @compare_ints to i64
+%ignored = call i64 @e7_ffi_call4(i64 %qsort, i64 %base, i64 %count,
+                                  i64 %element_size, i64 %callback)
+```
+
+Data symbols are just addresses. `e7_ffi_read(address, buffer, len)` and
+`e7_ffi_write(address, data, len)` copy bytes to/from them, or IR can
+`inttoptr` and load/store directly.
+
+Loading a shared object executes native code with the full privileges of the
+process; there is no library sandbox. Unloading a library invalidates every
+address resolved from it, so keep the handle alive while any JITed code may
+still call those pointers.
 
 ## Filesystem sandbox
 
@@ -337,6 +416,8 @@ distribution names the shared objects differently.
 
 - filesystem sandbox read/write/list/stat/rename and escape rejection;
 - STDIO file reads/writes, CRLF line splitting, and invalid-stream rejection;
+- dynamic loading of a system math library, `cos`/`strlen` calls, missing
+  symbol/library errors, data-symbol reads, and process-handle resolution;
 - TCP loopback echo, UDP request/response, hostname resolution;
 - HTTP GET/POST against an in-process server;
 - SDL hidden-window creation and event delivery;
