@@ -389,17 +389,28 @@ atan_unit <- (x: f32) -> f32:
 
 pub atan2_approx <- (y: f32, x: f32) -> f32:
     pi := 3.1415926535
-    if x > 0.000001:
-        ret atan_unit(y / x)
-    if x < 0.0 - 0.000001:
-        if y >= 0.0:
-            ret atan_unit(y / x) + pi
-        ret atan_unit(y / x) - pi
-    if y > 0.0:
-        ret pi * 0.5
-    if y < 0.0:
-        ret 0.0 - pi * 0.5
-    ret 0.0
+    half_pi := pi * 0.5
+    abs_y := e7_f32_abs(y)
+    abs_x := e7_f32_abs(x)
+    if abs_y > abs_x:
+        if abs_y < 0.000001:
+            ret 0.0
+        ratio := x / abs_y
+        if y > 0.0:
+            ret half_pi - atan_unit(ratio)
+        ret 0.0 - half_pi - atan_unit(ratio)
+    if abs_x < 0.000001:
+        if y > 0.0:
+            ret half_pi
+        if y < 0.0:
+            ret 0.0 - half_pi
+        ret 0.0
+    ratio := y / abs_x
+    if x > 0.0:
+        ret atan_unit(ratio)
+    if y >= 0.0:
+        ret pi + atan_unit(ratio)
+    ret 0.0 - pi + atan_unit(ratio)
 
 pub asin_approx <- (x: f32) -> f32:
     clamped := e7_f32_clamp(x, -1.0, 1.0)

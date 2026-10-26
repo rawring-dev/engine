@@ -2516,7 +2516,7 @@ fn e7Abs(comptime T: type, value: T) T {
     return if (value < 0) -value else value;
 }
 
-test "JIT demo box stack settles after contact iterations" {
+test "JIT demo box stack stays upright and settles" {
     const candidates = [_][]const u8{ "engine/main.e7", "../engine/main.e7", "../../engine/main.e7" };
     var root_path: []const u8 = "";
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -2566,6 +2566,9 @@ test "JIT demo box stack settles after contact iterations" {
     var max_angular: f64 = 0;
     var min_y: f64 = 1000;
     var max_y: f64 = -1000;
+    var y4: f64 = 0;
+    var y5: f64 = 0;
+    var y6: f64 = 0;
     var entity: i64 = 0;
     var found: i64 = 0;
     while (entity < ecs.e7_ecs_entity_count()) : (entity += 1) {
@@ -2591,12 +2594,20 @@ test "JIT demo box stack settles after contact iterations" {
         if (angular > max_angular) max_angular = angular;
         if (y < min_y) min_y = y;
         if (y > max_y) max_y = y;
+        if (body_id == 4) y4 = y;
+        if (body_id == 5) y5 = y;
+        if (body_id == 6) y6 = y;
     }
     try std.testing.expectEqual(@as(i64, 3), found);
-    try std.testing.expect(max_speed < 2.0);
-    try std.testing.expect(max_angular < 2.0);
-    try std.testing.expect(min_y > 0.3);
-    try std.testing.expect(max_y < 5.0);
+    // The undisturbed starting stack must remain upright: y ~= 0.5/1.5/2.5
+    // with near-zero residual velocities after 240 fixed steps.
+    try std.testing.expect(@abs(y4 - 0.5) < 0.08);
+    try std.testing.expect(@abs(y5 - 1.5) < 0.12);
+    try std.testing.expect(@abs(y6 - 2.5) < 0.15);
+    try std.testing.expect(max_speed < 0.1);
+    try std.testing.expect(max_angular < 0.1);
+    try std.testing.expect(min_y > 0.4);
+    try std.testing.expect(max_y > 2.4);
 }
 
 test "JIT rotates body inverse inertia by quaternion" {
@@ -2815,4 +2826,178 @@ test "JIT body pairs exchange equal and opposite impulses" {
     try std.testing.expect(bvx > 50);
     try std.testing.expect(avx + bvx > 1800 and avx + bvx < 2200);
     try std.testing.expect(awz != 0 or bwz != 0);
+}
+
+test "JIT sleeping body wakes on contact" {
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(time_source);
+    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(input_source);
+    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(camera_source);
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(physics_source);
+
+    const root_source =
+        \\mod events
+        \\mod ecs
+        \\mod time
+        \\mod input
+        \\mod camera
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\mod physics
+        \\use ecs::*;
+        \\use events::*;
+        \\use time::*;
+        \\use input::*;
+        \\use camera::*;
+        \\use physics_broadphase::*;
+        \\use physics_narrowphase::*;
+        \\use physics::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    ax: i64
+        \\    ay: i64
+        \\    avx: i64
+        \\pub Capture <- trigger
+        \\pub WakeScene <- plugin
+        \\    wake_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { ax: 0, ay: 0, avx: 0 })
+        \\        commands.insert_resource(Input {
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        sleepers := map[i64, [f32]] {}
+        \\        sleepers[10] = [1.0, 1.0]
+        \\        commands.insert_resource(PhysicsWorld {
+        \\            gravity_y: -9.81,
+        \\            max_step: 0.05,
+        \\            grounded: false,
+        \\            jump_latched: false,
+        \\            player_x: 0.0,
+        \\            player_y: 0.0,
+        \\            player_z: 0.0,
+        \\            camera_yaw: 0.0,
+        \\            camera_pitch: 0.0,
+        \\            move_speed: 4.0,
+        \\            quaternions: map[i64, [f32]] {},
+        \\            plane_normal: [0.0, 1.0, 0.0],
+        \\            plane_offset: 0.0,
+        \\            friction: 0.9,
+        \\            friction_static: 1.15,
+        \\            pending_impulses: map[i64, [f32]] {},
+        \\            sleep_state: sleepers,
+        \\        })
+        \\        sleeping_transform := Transform { translation: [0.0, 2.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        sleeping_id := BodyId { id: 10 }
+        \\        sleeping_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        sleeping_body := RigidBody { velocity: [0.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0], inv_mass: 1.0, gravity_scale: 1.0, rotation_locked: false, is_static: false }
+        \\        sleeping_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        sleeping_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 10, held_by: 0 }
+        \\        commands.add_row(Components, { sleeping_transform, sleeping_id, sleeping_bounds, sleeping_body, sleeping_collider, sleeping_flags })
+        \\        mover_transform := Transform { translation: [1.2, 2.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        mover_id := BodyId { id: 11 }
+        \\        mover_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        mover_body := RigidBody { velocity: [-2.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0], inv_mass: 1.0, gravity_scale: 0.0, rotation_locked: false, is_static: false }
+        \\        mover_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        mover_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 11, held_by: 0 }
+        \\        commands.add_row(Components, { mover_transform, mover_id, mover_bounds, mover_body, mover_collider, mover_flags })
+        \\@trigger(Capture)
+        \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
+        \\    for (transform, body, id) in boxes:
+        \\        if id.id == 10:
+        \\            probe.ax = e7_f32_to_milli(transform.translation[0])
+        \\            probe.ay = e7_f32_to_milli(transform.translation[1])
+        \\            probe.avx = e7_f32_to_milli(body.velocity[0])
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(WakeScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Capture()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "time", .source = time_source },
+            .{ .name = "input", .source = input_source },
+            .{ .name = "camera", .source = camera_source },
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "physics", .source = physics_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("wake scene diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "sleep-wake");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const ax = aggregate.e7_load_i64(probe_ptr);
+    const ay = aggregate.e7_load_i64(probe_ptr + 8);
+    const avx = aggregate.e7_load_i64(probe_ptr + 16);
+    // Sleeping body kept its height instead of falling under gravity.
+    try std.testing.expect(ay > 1500);
+    // Contact woke it and transferred horizontal impulse/position.
+    try std.testing.expect(ax != 0 or avx != 0);
 }

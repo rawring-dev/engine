@@ -71,6 +71,10 @@ pub PhysicsWorld <- struct
     # Deferred equal-and-opposite impulses for the earlier body in a pair
     # (flattened dvx,dvy,dvz,dwx,dwy,dwz).  Applied in the next body pass.
     pending_impulses: map[i64, [f32]]
+    # Per-body sleep state: [timer_seconds, sleeping_flag].  A supported body
+    # with low linear/angular speed freezes after 0.35 s and wakes on contact or
+    # player interaction.
+    sleep_state: map[i64, [f32]]
 
 @resource
 pub RaycastState <- struct
@@ -104,6 +108,7 @@ pub PhysicsPlugin <- plugin
             friction: 0.9,
             friction_static: 1.15,
             pending_impulses: map[i64, [f32]] {},
+            sleep_state: map[i64, [f32]] {},
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -253,6 +258,7 @@ pub physics_step <- sys (
     stored_ang: [f32] := []
     stored_inv_mass: [f32] := []
     stored_locked: [i64] := []
+    stored_sleeping: [i64] := []
     body_count := 0
 
     for (transform, body, body_bounds, flags) in bodies:
@@ -263,8 +269,16 @@ pub physics_step <- sys (
             q = quat_from_euler(transform.rotation[0], transform.rotation[1], transform.rotation[2])
             world.quaternions[id] = [q.x, q.y, q.z, q.w]
         on_ground := false
+        sleep_entry := world.sleep_state[id]
+        sleep_timer := 0.0
+        sleeping := false
+        if sleep_entry.len() >= 2:
+            sleep_timer = sleep_entry[0]
+            if sleep_entry[1] > 0.5:
+                sleeping = true
+        supported := false
 
-        if not body.is_static:
+        if not body.is_static and not sleeping:
             if body.rotation_locked:
                 body.angular_velocity[0] = 0.0
                 body.angular_velocity[1] = 0.0
@@ -363,6 +377,7 @@ pub physics_step <- sys (
                             body.angular_velocity[2] = 0.0
                         index = index + 3
                     on_ground = true
+                    supported = true
             elif flags.shape == 2:
                 ground_manifold := capsule_plane_manifold(
                     Vec3 { x: center.x, y: center.y, z: center.z },
@@ -405,6 +420,7 @@ pub physics_step <- sys (
                         body.angular_velocity[1] = 0.0
                         body.angular_velocity[2] = 0.0
                     on_ground = true
+                    supported = true
             else:
                 ground_push := sphere_plane_penetration(
                     Vec3 { x: center.x, y: center.y, z: center.z },
@@ -449,6 +465,7 @@ pub physics_step <- sys (
                         body.angular_velocity[1] = 0.0
                         body.angular_velocity[2] = 0.0
                     on_ground = true
+                    supported = true
             if on_ground:
                 world.grounded = true
                 # Small rolling/air resistance only; sliding friction is now
@@ -533,6 +550,8 @@ pub physics_step <- sys (
         while candidate < candidate_count:
             other_id := candidates[candidate as usize]
             candidate = candidate + 1
+            if sleeping:
+                cont
             other_index := find_bound_index_local(ids, other_id)
             if other_index < 0:
                 cont
@@ -662,6 +681,11 @@ pub physics_step <- sys (
                     }
 
             if contact.hit and contact.penetration > 0.0:
+                if contact.normal.y > 0.5:
+                    supported = true
+                if stored_sleeping[other_index as usize] != 0:
+                    world.sleep_state[other_id] = [0.0, 0.0]
+                    stored_sleeping[other_index as usize] = 0
                 # Contact points: box-box uses clipped corner candidates, other
                 # shape pairs use the manifold's closest point.
                 points: [f32] := []
@@ -786,6 +810,56 @@ pub physics_step <- sys (
                 pending[5] = pending[5] + pending_dwz
                 world.pending_impulses[other_id] = pending
 
+        if supported and not body.rotation_locked:
+            # Inelastic resting contacts: remove unwanted upward bounce and
+            # bleed angular jitter once the body is essentially at rest.
+            # Contact is inelastic: no residual normal velocity while
+            # supported.  This removes the discrete-contact bouncing cycle.
+            body.velocity[1] = 0.0
+            horizontal_speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[2])
+            if horizontal_speed < 0.75:
+                body.velocity[0] = body.velocity[0] * 0.5
+                body.velocity[2] = body.velocity[2] * 0.5
+                body.angular_velocity[0] = body.angular_velocity[0] * 0.35
+                body.angular_velocity[1] = body.angular_velocity[1] * 0.35
+                body.angular_velocity[2] = body.angular_velocity[2] * 0.35
+                if e7_f32_abs(body.angular_velocity[0]) < 0.02:
+                    body.angular_velocity[0] = 0.0
+                if e7_f32_abs(body.angular_velocity[1]) < 0.02:
+                    body.angular_velocity[1] = 0.0
+                if e7_f32_abs(body.angular_velocity[2]) < 0.02:
+                    body.angular_velocity[2] = 0.0
+
+        if not body.is_static and not sleeping and not flags.is_player:
+            linear_speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[1]) + e7_f32_abs(body.velocity[2])
+            angular_speed := e7_f32_abs(body.angular_velocity[0]) + e7_f32_abs(body.angular_velocity[1]) + e7_f32_abs(body.angular_velocity[2])
+            if supported and linear_speed < 0.2 and angular_speed < 0.4:
+                sleep_timer = sleep_timer + dt
+                # Resting face contacts: bleed residual spin quickly instead of
+                # letting corner impulses pump angular velocity.
+                body.angular_velocity[0] = body.angular_velocity[0] * 0.5
+                body.angular_velocity[1] = body.angular_velocity[1] * 0.5
+                body.angular_velocity[2] = body.angular_velocity[2] * 0.5
+                body.velocity[0] = body.velocity[0] * 0.8
+                body.velocity[2] = body.velocity[2] * 0.8
+                if sleep_timer >= 0.35:
+                    sleeping = true
+                    sleep_timer = 0.0
+                    body.velocity[0] = 0.0
+                    body.velocity[1] = 0.0
+                    body.velocity[2] = 0.0
+                    body.angular_velocity[0] = 0.0
+                    body.angular_velocity[1] = 0.0
+                    body.angular_velocity[2] = 0.0
+            else:
+                sleep_timer = 0.0
+            sleep_flag := 0.0
+            if sleeping:
+                sleep_flag = 1.0
+            world.sleep_state[id] = [sleep_timer, sleep_flag]
+        elif sleeping:
+            world.sleep_state[id] = [0.0, 1.0]
+
         # Store final broadphase/collision data (after push-out).
         final_aabb := shape_aabb(
             flags.shape,
@@ -823,6 +897,10 @@ pub physics_step <- sys (
         if body.rotation_locked:
             locked_value = 1
         stored_locked = e7_vec_push(stored_locked, locked_value)
+        sleeping_value := 0
+        if sleeping:
+            sleeping_value = 1
+        stored_sleeping = e7_vec_push(stored_sleeping, sleeping_value)
         body_count = body_count + 1
         broadphase_insert(
             &mut cells,
@@ -874,6 +952,7 @@ pub physics_step <- sys (
     for (transform, body, flags) in hold_bodies:
         pending := pending_map[flags.target_id]
         if pending.len() >= 6:
+            world.sleep_state[flags.target_id] = [0.0, 0.0]
             body.velocity[0] = body.velocity[0] + pending[0]
             body.velocity[1] = body.velocity[1] + pending[1]
             body.velocity[2] = body.velocity[2] + pending[2]
@@ -885,6 +964,7 @@ pub physics_step <- sys (
             cont
         if flags.target_id == pickup_state.held_id:
             flags.held_by = 1
+            world.sleep_state[flags.target_id] = [0.0, 0.0]
             transform.translation[0] = world.player_x + forward_x * 1.8
             transform.translation[1] = world.player_y + 1.4
             transform.translation[2] = world.player_z + forward_z * 1.8

@@ -125,7 +125,7 @@ pub DemoPlugin <- plugin
         ball_id := BodyId { id: 3 }
         ball_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
         ball_body := RigidBody {
-            velocity: [0.8, 0.0, 0.5],
+            velocity: [0.0, 0.0, 0.0],
             # Start at rest rotationally; friction/contacts add spin later.
             angular_velocity: [0.0, 0.0, 0.0],
             orientation: [0.0, 0.0, 0.0],
