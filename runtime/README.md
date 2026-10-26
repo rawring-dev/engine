@@ -124,9 +124,15 @@ process as data you cannot afford to expose.
 `src/ffi/renderer.zig` implements a small forward renderer on top of
 `vulkan.Surface`: a SPIR-V vertex/fragment graphics pipeline, a fixed
 position/normal/colour vertex format, an indexed unit cube, a host-visible
-uniform buffer (model/view/projection columns, camera position, point-light
-position/colour/intensity, ambient), a depth-tested colour+depth offscreen
-target, dynamic viewport/scissor, and RGBA8 readback. The `Surface` owns the
+uniform buffer with one aligned slot per object (model/view/projection columns,
+camera position, point-light position/colour/intensity, ambient), a depth-tested
+colour+depth offscreen target, dynamic viewport/scissor, and RGBA8 readback.
+Up to `renderer.max_objects` (64) boxes can be drawn per frame; each `drawBox`
+writes its own model matrix into a dynamic uniform-buffer slot, so all objects
+share the frame's camera/light while having independent position/scale/Y
+rotation. `drawMesh` (legacy single cube), `captureFrame` (single cube) and
+`captureRecordedFrame` (replays the last frame's objects for headless capture)
+remain available. The `Surface` owns the
 render pass and depth image so its clear/present/capture paths and the scene
 renderer share one target; `beginScene`/`endScenePresent` and
 `beginSceneCapture`/`endSceneCapture` are the recording hooks.
@@ -151,6 +157,13 @@ The scene ABI is:
 | `e7_scene_set_camera(handle, eye_x, eye_y, eye_z, yaw, pitch) -> i32` | f32 values as IEEE-754 bit patterns in `i64` (`@bitCast` of the low 32 bits) |
 | `e7_scene_draw(handle, delta_s, cube_angle, light_x, light_y, light_z) -> i32` | same i64 float convention; renders and presents |
 | `e7_scene_capture(handle, out_ptr, out_len, out_w, out_h) -> i32` | malloc-owned RGBA8 pixels for headless checks; release with `e7_free` |
+
+The e7 engine host uses a higher-level per-object ABI in
+`runtime/src/engine.zig`: `e7_engine_scene_draw_box(handle, x, y, z, sx, sy, sz,
+angle_milli_radians)` (position/scale in milli-units, Y rotation in
+milli-radians) between `e7_engine_scene_begin_frame` and
+`e7_engine_scene_end_frame`.  It returns `0` on success and `-1` when no frame
+is active or the 64-object limit is exceeded.
 
 The `i64`-bitcast convention exists because all JIT ABI values are `i64`. For
 example `1.0f` is `0x3F800000` = `1065353216`; helpers truncate to 32 bits, so
