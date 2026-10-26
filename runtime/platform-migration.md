@@ -50,8 +50,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   surface capabilities/formats, image usage, FIFO present mode, and returns the
   swapchain images.  Verified with lavapipe (extent > 0, image count > 0) and
   destroyed cleanly.
-- Remaining: present/capture and command submission, queue-family query, e7
-  intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
+- **2d (done):** `vulkan_present_clear` acquires a swapchain image, records a
+  UNDEFINED→TRANSFER_DST→PRESENT_SRC barrier chain, clears the image to red,
+  submits it with image-available/render-finished semaphores and a fence, then
+  calls `vkQueuePresentKHR`.  Verified with lavapipe.  The submit path exposed
+  an argument-order bug: `vkQueueSubmit(queue, submitCount, pSubmits, fence)`
+  needs the count before the pointer.
+- Remaining: readback capture, e7 intrinsic wrappers, renderer, image/text, and
+  deletion of the Zig layer.
 
 ## Migration stages
 

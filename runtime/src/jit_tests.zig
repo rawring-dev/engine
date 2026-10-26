@@ -1119,7 +1119,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
-test "e7 SDL+Vulkan platform module creates a device and swapchain" {
+test "e7 SDL+Vulkan platform module presents a cleared frame" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
 
     const io = std.testing.io;
@@ -1172,6 +1172,8 @@ test "e7 SDL+Vulkan platform module creates a device and swapchain" {
         \\            device := e7_load_u64(device_out)
         \\            queue := e7_load_u64(queue_out)
         \\            physical := e7_load_u64(physical_out)
+        \\            family := e7_load_u32(family_out)
+        \\            submit_ok := vulkan_submit_empty(device, queue, family)
         \\            swapchain_out := e7_alloc_bytes(8)
         \\            format_out := e7_alloc_bytes(4)
         \\            width_out := e7_alloc_bytes(4)
@@ -1184,6 +1186,9 @@ test "e7 SDL+Vulkan platform module creates a device and swapchain" {
         \\                swapchain := e7_load_u64(swapchain_out)
         \\                width := e7_load_u32(width_out)
         \\                image_count := e7_load_u32(image_count_out)
+        \\                index_out := e7_alloc_bytes(4)
+        \\                presented := vulkan_present_clear(device, queue, family, swapchain, index_out)
+        \\                e7_free_ptr(index_out)
         \\                vulkan_swapchain_destroy(device, swapchain)
         \\                if width <= 0:
         \\                    result = -6
@@ -1191,11 +1196,16 @@ test "e7 SDL+Vulkan platform module creates a device and swapchain" {
         \\                    if image_count <= 0:
         \\                        result = -7
         \\                    else:
-        \\                        result = 1
+        \\                        if presented == 0:
+        \\                            result = -8
+        \\                        else:
+        \\                            result = 1
         \\            else:
         \\                result = -5
         \\            if images != 0:
         \\                e7_free_ptr(images)
+        \\            if submit_ok == 0:
+        \\                result = -9
         \\            e7_free_ptr(swapchain_out)
         \\            e7_free_ptr(format_out)
         \\            e7_free_ptr(width_out)
