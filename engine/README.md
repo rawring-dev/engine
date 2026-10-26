@@ -67,8 +67,10 @@ engine/
   close/Escape events; `gather_input` reads raw keys and mouse deltas through
   `e7_engine_key_down` / `e7_engine_mouse_dx` / `e7_engine_mouse_dy`; and
   `move_camera` only updates look orientation; player movement/jump is handled by
-  `physics.e7` from the player capsule, and PostUpdate follows the player with
-  the first-person Camera eye. `render_scene` reads the Camera row, then submits
+  `physics.e7` from the player capsule; the fixed step integrates quaternion
+  orientation/inverse inertia and uses OBB SAT/oriented-capsule manifolds, then
+  follows the player with the first-person Camera eye. Pickup picks the nearest
+  body (deterministic body-id tie-break). `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
   one `draw_shape_tex` per `Renderable` + `Transform` + `BodyBounds` +
   `Material` row (object count is dynamic; there is no fixed per-frame limit),
@@ -77,7 +79,7 @@ engine/
   mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `Material { texture, tint }`
   provides the per-object GPU texture and RGB tint (texture * tint * vertex
   colour); the ball and stacked cubes receive the sample PNG through their
-  Material.  The player capsule is deliberately not renderable in the
+  Material. Object count is dynamic (no fixed 64-object cap).  The player capsule is deliberately not renderable in the
   first-person demo.  `CubeMesh` carries a per-cube spin phase.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:

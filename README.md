@@ -487,18 +487,23 @@ PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
 `physics.e7` library with `RigidBody`, box/sphere/capsule/plane colliders,
 AABB/sphere raycasts, gravity integration, pickup/hold, and a camera raycast
 resource. `physics_broadphase.e7` maintains a spatial grid with aggregated
-region/ray candidate queries; `physics_narrowphase.e7` provides true
-capsule/plane, capsule/AABB, sphere/plane and box/plane overlap, penetration,
-and ray tests. Angular velocity/orientation and rotation locking are integrated
-in the fixed step; pickup, hold, and camera follow share that step. The demo
-starts with a static plane, a rotation-locked capsule player, a dynamic ball,
-and three stacked cubes.
+region/ray candidate queries; `physics_narrowphase.e7` provides oriented
+capsule/OBB/SAT manifolds, quaternion orientation, inverse-inertia angular
+impulses, and true capsule/plane, capsule/AABB, sphere/plane and box/plane
+tests. The fixed step integrates quaternions and applies angular contact
+impulses; pickup selects the nearest body with a deterministic tie-break.
+Pickup, hold, and camera follow share that step. The demo starts with a static
+plane, a rotation-locked capsule player, a dynamic ball, and three stacked
+cubes.
 
-Rendering selects per-object geometry through `e7_engine_scene_draw_shape`
-(box/sphere/capsule/plane) with RGB tint; sphere/capsule/plane are real
-procedural meshes rather than box proxies. ECS now supports component add/
-remove/despawn, so gameplay markers such as `Held` are added and removed
-dynamically instead of remaining permanent append-only rows.
+Rendering selects per-object geometry through
+`e7_engine_scene_draw_shape_tex` (box/sphere/capsule/plane) with RGB tint and
+GPU texture; sphere/capsule/plane are real procedural meshes rather than box
+proxies. OBJ meshes upload through `e7_engine_scene_mesh_upload` and draw with
+`e7_engine_scene_draw_custom`; per-frame object count is dynamic rather than
+capped at 64. ECS supports component add/remove/despawn, so gameplay markers
+such as `Held` are added and removed dynamically instead of remaining permanent
+append-only rows.
 
 Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
@@ -552,7 +557,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 335 tests: scheduler 8, compiler 204, runtime 100,
+`zig build test` runs 339 tests: scheduler 8, compiler 204, runtime 104,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

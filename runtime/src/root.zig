@@ -1943,3 +1943,365 @@ test "JIT removes, re-adds, and despawns dynamic ECS markers" {
     try std.testing.expectEqual(@as(i64, 2), ecs.e7_ecs_query_next(query));
     try std.testing.expectEqual(@as(i64, 0), ecs.e7_ecs_query_next(query));
 }
+
+test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+
+    const root_source =
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\Vec3 <- struct
+        \\    x: f32
+        \\    y: f32
+        \\    z: f32
+        \\Ray <- struct
+        \\    origin: Vec3
+        \\    direction: Vec3
+        \\Aabb <- struct
+        \\    min: Vec3
+        \\    max: Vec3
+        \\RayHit <- struct
+        \\    hit: bool
+        \\    distance: f32
+        \\    point: Vec3
+        \\ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit = RayHit { hit: false, distance: 0.0, point: center }
+        \\main <- () -> i32:
+        \\    normalized := quat_normalize(Quat { x: 2.0, y: 0.0, z: 0.0, w: 0.0 })
+        \\    norm_length := e7_f32_sqrt(normalized.x * normalized.x + normalized.y * normalized.y + normalized.z * normalized.z + normalized.w * normalized.w)
+        \\    rotated_x := quat_rotate(quat_from_euler(0.0, 0.0, 1.5707963), Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        \\    multiplied := quat_mul(quat_from_euler(0.0, 0.0, 0.7853982), quat_from_euler(0.0, 0.0, 0.7853982))
+        \\    multiplied_x := quat_rotate(multiplied, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        \\    integrated := quat_integrate(quat_identity(), Vec3 { x: 0.0, y: 0.0, z: 1.0 }, 0.016)
+        \\    integrated_length := e7_f32_sqrt(integrated.x * integrated.x + integrated.y * integrated.y + integrated.z * integrated.z + integrated.w * integrated.w)
+        \\    integrated_x := quat_rotate(integrated, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        \\    overlapping := obb_obb_manifold(
+        \\        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
+        \\        Obb { center: Vec3 { x: 1.5, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
+        \\    )
+        \\    separated := obb_obb_manifold(
+        \\        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
+        \\        Obb { center: Vec3 { x: 3.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
+        \\    )
+        \\    rotated_overlap := obb_obb_manifold(
+        \\        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
+        \\        Obb { center: Vec3 { x: 0.8, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_from_euler(0.0, 0.7853982, 0.0) },
+        \\    )
+        \\    sideways := quat_from_euler(0.0, 0.0, 1.5707963)
+        \\    sideways_axis := quat_rotate(sideways, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+        \\    capsule_plane := capsule_plane_manifold(
+        \\        Vec3 { x: 0.0, y: 0.3, z: 0.0 }, 0.4, 0.6,
+        \\        quat_from_euler(0.0, 0.0, 1.5707963),
+        \\        Vec3 { x: 0.0, y: 1.0, z: 0.0 }, 0.0)
+        \\    capsule_box := capsule_obb_manifold(
+        \\        Vec3 { x: 0.0, y: 1.0, z: 0.0 }, 0.4, 0.6, quat_identity(),
+        \\        Obb { center: Vec3 { x: 0.7, y: 1.0, z: 0.0 }, half_extents: Vec3 { x: 0.5, y: 1.0, z: 1.0 }, orientation: quat_identity() })
+        \\    capsule_capsule := capsule_capsule_manifold(
+        \\        Vec3 { x: 0.0, y: 1.0, z: 0.0 }, 0.2, 0.6, quat_identity(),
+        \\        Vec3 { x: 0.3, y: 1.0, z: 0.0 }, 0.2, 0.6, quat_identity())
+        \\    score := 0
+        \\    if norm_length > 0.999 and norm_length < 1.001:
+        \\        score = score + 1
+        \\    if rotated_x.y > 0.999 and e7_f32_abs(rotated_x.x) < 0.001:
+        \\        score = score + 2
+        \\    if multiplied_x.y > 0.999 and e7_f32_abs(multiplied_x.x) < 0.001:
+        \\        score = score + 4
+        \\    if integrated_length > 0.999 and integrated_length < 1.001:
+        \\        score = score + 8
+        \\    if integrated_x.x > 0.9998 and integrated_x.x < 0.9999 and integrated_x.y > 0.0159 and integrated_x.y < 0.0161:
+        \\        score = score + 16
+        \\    if overlapping.hit:
+        \\        score = score + 32
+        \\    if overlapping.normal.x < -0.99:
+        \\        score = score + 64
+        \\    if overlapping.penetration > 0.499 and overlapping.penetration < 0.501:
+        \\        score = score + 128
+        \\    if not separated.hit:
+        \\        score = score + 256
+        \\    if rotated_overlap.hit and rotated_overlap.penetration > 0.1:
+        \\        score = score + 512
+        \\    if e7_f32_abs(sideways_axis.x) > 0.999 and e7_f32_abs(sideways_axis.y) < 0.001:
+        \\        score = score + 1024
+        \\    if capsule_plane.hit and capsule_plane.penetration > 0.099 and capsule_plane.penetration < 0.101:
+        \\        score = score + 2048
+        \\    if capsule_box.hit and capsule_box.penetration > 0.199 and capsule_box.penetration < 0.201 and capsule_box.normal.x < -0.99:
+        \\        score = score + 4096
+        \\    if capsule_capsule.hit and capsule_capsule.penetration > 0.099 and capsule_capsule.penetration < 0.101 and capsule_capsule.normal.x < -0.99:
+        \\        score = score + 8192
+        \\    ret score
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-quat-obb-capsule");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    try std.testing.expectEqual(@as(i64, 16383), main());
+}
+
+test "JIT nearest pickup uses distance then body id tie-break" {
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(time_source);
+    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(input_source);
+    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(camera_source);
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(physics_source);
+
+    const root_source =
+        \\mod events
+        \\mod ecs
+        \\mod time
+        \\mod input
+        \\mod camera
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\mod physics
+        \\use ecs::*;
+        \\use events::*;
+        \\use time::*;
+        \\use input::*;
+        \\use camera::*;
+        \\use physics_broadphase::*;
+        \\use physics_narrowphase::*;
+        \\use physics::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    first: i64
+        \\    second: i64
+        \\pub CaseA <- trigger
+        \\pub CaptureA <- trigger
+        \\pub CaseB <- trigger
+        \\pub CaptureB <- trigger
+        \\pub PickupScene <- plugin
+        \\    pickup_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { first: 0, second: 0 })
+        \\        commands.insert_resource(Input {
+        \\            move_forward: false,
+        \\            move_backward: false,
+        \\            move_left: false,
+        \\            move_right: false,
+        \\            move_up: false,
+        \\            move_down: false,
+        \\            sprint: false,
+        \\            look_left: false,
+        \\            look_right: false,
+        \\            look_up: false,
+        \\            look_down: false,
+        \\            look_dx: 0.0,
+        \\            look_dy: 0.0,
+        \\            jump_pressed: false,
+        \\            jump_down: false,
+        \\            jump_was_down: false,
+        \\            interact: false,
+        \\            interact_pressed: false,
+        \\            interact_was_down: false,
+        \\        })
+        \\        camera := Camera { position: [0.0, 2.0, 0.0], yaw: 0.0, pitch: 0.0, fov_y: 1.0, near: 0.1, far: 100.0 }
+        \\        controller := CameraController { move_speed: 4.0, look_speed: 0.0025 }
+        \\        camera_track := Transform { translation: [0.0, 2.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        commands.add_row(Components, { camera, controller, camera_track })
+        \\        first_transform := Transform { translation: [1.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        first_id := BodyId { id: 11 }
+        \\        first_bounds := BodyBounds { half_extents: [0.2, 0.2, 0.2] }
+        \\        first_body := RigidBody {
+        \\            velocity: [0.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 0.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        first_flags := BodyFlags {
+        \\            shape: 1,
+        \\            radius: 0.2,
+        \\            half_height: 0.0,
+        \\            is_player: false,
+        \\            is_pickup: true,
+        \\            target_id: 11,
+        \\            held_by: 0,
+        \\        }
+        \\        first_pickup := Pickup { body_id: 11 }
+        \\        first_held := Held { by: 0 }
+        \\        commands.add_row(Components, { first_transform, first_id, first_bounds, first_body, first_flags, first_pickup, first_held })
+        \\        second_transform := Transform { translation: [2.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        second_id := BodyId { id: 10 }
+        \\        second_bounds := BodyBounds { half_extents: [0.2, 0.2, 0.2] }
+        \\        second_body := RigidBody {
+        \\            velocity: [0.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 0.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        second_flags := BodyFlags {
+        \\            shape: 1,
+        \\            radius: 0.2,
+        \\            half_height: 0.0,
+        \\            is_player: false,
+        \\            is_pickup: true,
+        \\            target_id: 10,
+        \\            held_by: 0,
+        \\        }
+        \\        second_pickup := Pickup { body_id: 10 }
+        \\        second_held := Held { by: 0 }
+        \\        commands.add_row(Components, { second_transform, second_id, second_bounds, second_body, second_flags, second_pickup, second_held })
+        \\        player_transform := Transform { translation: [0.0, 1.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        player_id := BodyId { id: 2 }
+        \\        player_bounds := BodyBounds { half_extents: [0.2, 0.8, 0.2] }
+        \\        player_body := RigidBody {
+        \\            velocity: [0.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 0.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 1.0,
+        \\            rotation_locked: true,
+        \\            is_static: false,
+        \\        }
+        \\        player_flags := BodyFlags {
+        \\            shape: 2,
+        \\            radius: 0.2,
+        \\            half_height: 0.8,
+        \\            is_player: true,
+        \\            is_pickup: false,
+        \\            target_id: 2,
+        \\            held_by: 0,
+        \\        }
+        \\        player := Player { body_id: 2 }
+        \\        commands.add_row(Components, { player_transform, player_id, player_bounds, player_body, player_flags, player })
+        \\@trigger(CaseA)
+        \\pub case_a <- sys (
+        \\    input: res &mut Input,
+        \\    state: res &mut PickupState,
+        \\    players: select &mut Transform, &Player from Components,
+        \\    pickups: select &mut Transform, &Pickup from Components,
+        \\):
+        \\    input.interact_pressed = true
+        \\    state.held_id = 0
+        \\    for (transform, player) in players:
+        \\        transform.translation[0] = 0.0
+        \\        transform.translation[1] = 1.0
+        \\        transform.translation[2] = 0.0
+        \\    for (transform, pickup) in pickups:
+        \\        if pickup.body_id == 11:
+        \\            transform.translation[0] = 1.0
+        \\            transform.translation[1] = 1.0
+        \\            transform.translation[2] = 0.0
+        \\        if pickup.body_id == 10:
+        \\            transform.translation[0] = 2.0
+        \\            transform.translation[1] = 1.0
+        \\            transform.translation[2] = 0.0
+        \\@trigger(CaptureA)
+        \\pub capture_a <- sys (state: res &PickupState, probe: res &mut Probe):
+        \\    probe.first = state.held_id
+        \\@trigger(CaseB)
+        \\pub case_b <- sys (
+        \\    input: res &mut Input,
+        \\    state: res &mut PickupState,
+        \\    players: select &mut Transform, &Player from Components,
+        \\    pickups: select &mut Transform, &Pickup from Components,
+        \\):
+        \\    input.interact_pressed = true
+        \\    state.held_id = 0
+        \\    for (transform, player) in players:
+        \\        transform.translation[0] = 0.0
+        \\        transform.translation[1] = 1.0
+        \\        transform.translation[2] = 0.0
+        \\    for (transform, pickup) in pickups:
+        \\        if pickup.body_id == 11:
+        \\            transform.translation[0] = 1.0
+        \\            transform.translation[1] = 1.0
+        \\            transform.translation[2] = 0.0
+        \\        if pickup.body_id == 10:
+        \\            transform.translation[0] = -1.0
+        \\            transform.translation[1] = 1.0
+        \\            transform.translation[2] = 0.0
+        \\@trigger(CaptureB)
+        \\pub capture_b <- sys (state: res &PickupState, probe: res &mut Probe):
+        \\    probe.second = state.held_id
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(PickupScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await CaseA()
+        \\    await Update()
+        \\    await CaptureA()
+        \\    await CaseB()
+        \\    await Update()
+        \\    await CaptureB()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "time", .source = time_source },
+            .{ .name = "input", .source = input_source },
+            .{ .name = "camera", .source = camera_source },
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "physics", .source = physics_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("pickup scene diagnostic {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "nearest-pickup");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(probe_id));
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 11), aggregate.e7_load_i64(probe_ptr));
+    try std.testing.expectEqual(@as(i64, 10), aggregate.e7_load_i64(probe_ptr + 8));
+}
