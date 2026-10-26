@@ -1,18 +1,3 @@
-# engine7 sample game/engine scaffold.
-#
-# The runtime exposes SDL3 and Vulkan through a small native ABI. Everything
-# above that ABI lives here: resources, components, systems, the frame loop,
-# and the GPU wrappers. The engine uses one ECS world; each frame runs the
-# FrameInit, PreUpdate, Update, PostUpdate, and Render trigger phases.
-#
-# Controls: WASD move on the horizontal plane, Q/E down/up, Shift sprint,
-# mouse look; Escape or the window close button exits. `run-engine --frames N`
-# exits deterministically after N frames (headless by default).
-
-# ---------------------------------------------------------------------------
-# Resources: long-lived singletons owned by the world
-# ---------------------------------------------------------------------------
-
 mod ui
 
 @resource
@@ -48,42 +33,25 @@ Time <- struct
 
 @resource
 Gpu <- struct
-    # Engine window/scene handles (see e7_engine_* intrinsics).
     scene: u64
-    # Native handles returned by the runtime's Vulkan ABI.
     surface: u64
     renderer: u64
     swapchain_format: i32
     width: i32
     height: i32
 
-    # Shader/pipeline deployment state. A pipeline is created from a pair of
-    # SPIR-V modules produced from Slang sources at build time.
     cube_pipeline: u64
     cube_vertex_shader: u64
     cube_fragment_shader: u64
 
-# Runtime command buffer used to mutate the world outside systems (resource
-# insertion, table row insertion, plugin registration).
 Commands <- struct
-    # Opaque runtime handle filled by `await query &mut Commands`.
     handle: u64
 
-# ---------------------------------------------------------------------------
-# Component traits and components
-# ---------------------------------------------------------------------------
-
-# Component types are plain structs tagged with @Components. Entity identity is
-# carried in the `entity_id` column; the Components table below is the ECS
-# storage/query source used by `select ... from Components`.
 
 @Components
 Camera <- struct
-    # World-space eye position in metres.
     position: [f32; 3]
-    # Radians around +Y (0 looks down -Z).
     yaw: f32
-    # Radians; positive looks up.
     pitch: f32
     fov_y: f32
     near: f32
@@ -114,18 +82,10 @@ PointLight <- struct
 
 @Components
 CubeMesh <- struct
-    # TODO: make this actually a thing
 
-# The ECS component table. Each row is an entity; component columns are
-# optional per entity (empty slots mean “component absent”). Systems query it
-# with `select &mut Component from Components`.
 Components <- table
     entity_id: usize,
     ... # automatically collects all types with @Components
-
-# ---------------------------------------------------------------------------
-# GPU wrappers: resources over the runtime's SDL/Vulkan ABI
-# ---------------------------------------------------------------------------
 
 ShaderModule <- struct
     handle: u64
@@ -154,8 +114,6 @@ ComputePipeline <- struct
     shader: ShaderModule
     workgroup_size: [u32; 3]
 
-# A deploy is the e7-side description of a shader pair. `gpu_deploy_shader`
-# reads SPIR-V produced from `shaders/*.slang` and builds a raster pipeline.
 ShaderDeploy <- struct
     name: str
     vertex_spirv: [u8]
@@ -175,8 +133,6 @@ CullMode <- enum
 # Overloaded deployment entry points. The runtime ABI exposes the Vulkan calls;
 # these declarations are the e7-facing resource wrappers. The body is filled
 # once the compiler can lower `res &mut` sys parameter bodies.
-#
-# All of the gpu_* functions should be methods of the Gpu type
 gpu_deploy_raster_pipeline <- async (
     gpu: &mut Gpu,
     deploy: ShaderDeploy,
@@ -223,19 +179,11 @@ gpu_draw_mesh <- async (
 Init <- trigger
 DeInit <- trigger
 
-# ---------------------------------------------------------------------------
-# Frame triggers
-# ---------------------------------------------------------------------------
-
 FrameInit <- trigger
 PreUpdate <- trigger
 Update <- trigger
 PostUpdate <- trigger
 Render <- trigger
-
-# ---------------------------------------------------------------------------
-# Systems
-# ---------------------------------------------------------------------------
 
 @trigger(Init)
 init_window <- sys (
@@ -243,17 +191,18 @@ init_window <- sys (
     gpu: res &mut Gpu,
     time: res &mut Time,
 
-    # Commands is what lets you insert to tables, etc.
     commands: &mut Commands,
 ):
-    # Compiler-known engine intrinsics: create a (hidden when --headless)
-    # SDL/Vulkan window and a scene using the runtime's embedded SPIR-V.
     window.width = 960
     window.height = 540
     window.handle = e7_engine_window_create("engine7", window.width, window.height)
     window.quit_requested = false
 
-    gpu.scene = e7_engine_scene_create(window.handle)
+    # Shader loading is e7 policy: read the SPIR-V assets and hand them to the
+    # low-level Vulkan scene constructor.
+    vert_spirv := e7_engine_read_shader("engine/shaders/cube.vert.spv")
+    frag_spirv := e7_engine_read_shader("engine/shaders/cube.frag.spv")
+    gpu.scene = e7_engine_scene_create(window.handle, vert_spirv, frag_spirv)
     gpu.width = window.width
     gpu.height = window.height
     time.start_ms = e7_engine_time_now_ms()
@@ -296,16 +245,11 @@ init_window <- sys (
 
 @trigger(FrameInit)
 poll_window <- sys (window: res &mut Window):
-    # Pump SDL events through the runtime. Window close sets quit_requested;
-    # the main loop treats that as the frame-exit signal. The frame limiter
-    # (`e7_engine_should_close`) is polled from Render after drawing.
     window.quit_requested = e7_engine_window_pump(window.handle) != 0
 
 @trigger(FrameInit)
 gather_input <- sys (input: res &mut Input):
-    # The runtime exposes only raw key state and accumulated mouse motion; all
-    # camera/input policy lives here. Logical key codes: 0 W, 1 S, 2 A, 3 D,
-    # 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.
+    # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.
     input.move_forward = e7_engine_key_down(0) != 0
     input.move_backward = e7_engine_key_down(1) != 0
     input.move_left = e7_engine_key_down(2) != 0
@@ -317,18 +261,22 @@ gather_input <- sys (input: res &mut Input):
     input.look_right = e7_engine_key_down(8) != 0
     input.look_up = e7_engine_key_down(9) != 0
     input.look_down = e7_engine_key_down(10) != 0
-    # Guard against focus/VM mouse jumps; the delta itself is consumed here.
+
     input.look_dx = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dx()), -600.0, 600.0)
     input.look_dy = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dy()), -600.0, 600.0)
 
+@trigger(PreUpdate)
+tick_time <- sys (time: res &mut Time):
+    now := e7_engine_time_now_ms()
+    time.now_ms = now
+    time.elapsed = e7_f32_from_i64(now - time.start_ms) / 1000.0
+    time.delta = 0.016
+
 @trigger(Update)
 move_camera <- sys (
-    input: &Input,
-    time: &Time,
+    input: res &Input,
     controllers: select &mut Camera, &mut CameraController from Components,
 ):
-    # First-person camera policy (the runtime only supplies raw input):
-    # mouse/arrow look, pitch clamp, then WASD/QE movement on a fixed 16ms step.
     delta := 0.016
     pitch_limit := 1.5533430343
     for (camera, controller) in controllers:
@@ -345,7 +293,6 @@ move_camera <- sys (
             camera.pitch = camera.pitch - keyboard_look
         camera.pitch = e7_f32_clamp(camera.pitch, -pitch_limit, pitch_limit)
 
-        # Camera-relative basis: yaw 0 looks down -Z, +yaw turns toward +X.
         sin_yaw := e7_f32_sin(camera.yaw)
         cos_yaw := e7_f32_cos(camera.yaw)
         forward_x := sin_yaw
@@ -386,19 +333,18 @@ move_camera <- sys (
 @trigger(Update)
 spin_cube <- sys (
     transforms: select &mut Transform from Components where has CubeMesh,
-    time: &Time,
+    time: res &Time,
 ):
-    # `where has CubeMesh` is applied by the runtime query. Rotation updates
-    # need f32 arithmetic on `transform.rotation` (TODO).
     for transform in transforms:
-        transform.rotation
+        transform.rotation[1] = time.elapsed * 0.9
 
 @trigger(Update)
-update_light <- sys (lights: select &mut PointLight from Components, time: &Time):
-    # Iterating PointLight rows is wired; animated light placement needs f32
-    # arithmetic (TODO).
+update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
+    angle := time.elapsed * 0.7 + 0.8
     for light in lights:
-        light.position
+        light.position[0] = 2.8 * e7_f32_cos(angle)
+        light.position[1] = 3.0
+        light.position[2] = 2.8 * e7_f32_sin(angle)
 
 @trigger(PostUpdate)
 reset_input <- sys (input: res &mut Input):
@@ -420,13 +366,16 @@ reset_input <- sys (input: res &mut Input):
 render_scene <- sys (
     gpu: res &mut Gpu,
     window: res &mut Window,
-    time: &Time,
+    time: res &Time,
     cubes: select &CubeMesh, &Transform from Components,
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
 ):
-    # Push the e7-owned camera into the renderer (milli-unit/milli-degree ABI),
-    # then draw the spinning cube and point light.
+    cube_angle := 0.0
+    light_x := 0.0
+    light_y := 0.0
+    light_z := 0.0
+
     for camera in cameras:
         yaw_degrees := camera.yaw * 57.2957795
         pitch_degrees := camera.pitch * 57.2957795
@@ -439,31 +388,28 @@ render_scene <- sys (
             e7_f32_to_milli(pitch_degrees),
         )
 
-    # Units: scene helper delta in ms; cube angle in milli-radians.
-    now := e7_engine_time_now_ms()
-    elapsed_ms := now - time.start_ms
-    e7_engine_scene_draw(gpu.scene, 16, elapsed_ms, 2600, 3000, 2600)
-
-    # Query iteration is available here too; the native renderer currently owns
-    # the GPU scene, so cube/light rows are read but not consumed yet.
     for (cube, cube_transform) in cubes:
-        cube
-        cube_transform
+        cube_angle = cube_transform.rotation[1]
     for light_row in lights:
-        light_row.position
+        light_x = light_row.position[0]
+        light_y = light_row.position[1]
+        light_z = light_row.position[2]
 
-    # Poll the frame limiter only after drawing so the captured/last frame is
-    # the one the user sees. A window close request also exits.
+    e7_engine_scene_draw(
+        gpu.scene,
+        16,
+        e7_f32_to_milli(cube_angle),
+        e7_f32_to_milli(light_x),
+        e7_f32_to_milli(light_y),
+        e7_f32_to_milli(light_z),
+    )
+
     window.quit_requested = e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
 
 @trigger(DeInit)
 shutdown <- sys (window: res &mut Window, gpu: res &mut Gpu):
     e7_engine_scene_destroy(gpu.scene)
     e7_engine_window_destroy(window.handle)
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
 
 main <- async () -> i32:
     commands := await query &mut Commands

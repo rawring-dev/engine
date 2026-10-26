@@ -472,11 +472,11 @@ the columnar ECS world, JITs the e7 `main`, and runs the `Init`, `FrameInit`,
 `PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit` triggers. SDL
 window/input and Vulkan scene access are compiler-known intrinsics
 (`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
-[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Camera/input policy now lives in e7: `gather_input` reads raw key/mouse
-intrinsics, `move_camera` updates the Camera component in a query loop with e7
-float arithmetic and trig, and `render_scene` passes the resulting camera to
-`e7_engine_scene_set_camera`. `runtime/src/engine.zig` is limited to
-SDL/Vulkan window/scene/time/input/frame-limit and capture facilities.
+[`runtime/src/ecs.zig`](runtime/src/ecs.zig). Engine policy now lives in e7: shader asset selection/loading
+(`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
+cube spin, light animation, ECS queries, and render submission all live in
+`engine/main.e7`. `runtime/src/engine.zig` is limited to SDL/Vulkan
+window/scene/time/raw input/asset-read/frame-limit and capture facilities.
 [`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
 depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
 

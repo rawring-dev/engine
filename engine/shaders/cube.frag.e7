@@ -1,8 +1,3 @@
-# Fragment shader for the engine7 scene renderer: Lambert diffuse point light
-# with distance attenuation plus a constant ambient term.  This is e7s source;
-# engine/shaders/build.sh transpiles it to Slang and compiles the result to
-# cube.frag.spv.
-
 SceneUniform <- struct
     model: [f32; 4, 4]
     view: [f32; 4, 4]

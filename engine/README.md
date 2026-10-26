@@ -70,9 +70,15 @@ them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
 
 `runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
 window lifecycle/event pumping, scene create/destroy/resize/set_camera/draw,
-time, raw key/mouse queries, and the host frame limiter/capture. Engine policy —
-input mapping, camera look/movement, frame phases, ECS queries, plugins and
-Commands — lives in `main.e7`.
+time, raw key/mouse queries, a raw asset read, and the host frame
+limiter/capture. Engine policy — shader asset selection/loading, input
+mapping, camera look/movement, time updates, cube spin, light animation, frame
+phases, ECS queries, plugins and Commands — lives in `main.e7`.
+
+In particular, `init_window` reads the compiled Slang SPIR-V through
+`e7_engine_read_shader` and passes the bytes to the low-level
+`e7_engine_scene_create`; the runtime no longer embeds or chooses shaders for
+the e7 engine.
 
 ## Compiler boundary
 

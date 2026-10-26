@@ -33,7 +33,6 @@ const renderer = @import("ffi/renderer.zig");
 const time_mod = @import("ffi/time.zig");
 const io_mod = @import("ffi/io.zig");
 const aggregate = @import("aggregate.zig");
-const shader_assets = @import("shader_assets");
 const sdl = @import("ffi/sdl.zig");
 const c = sdl.c;
 
@@ -102,6 +101,26 @@ const State = struct {
 };
 
 var state: State = .{};
+
+// Shader/asset loading is driven by e7 through `e7_engine_read_shader`; the
+// runtime only provides the raw file read and wraps the bytes in an e7 string.
+var asset_threaded: ?std.Io.Threaded = null;
+var asset_mutex: io_mod.Mutex = .{};
+
+fn readAsset(path: []const u8) ![]u8 {
+    asset_mutex.lock();
+    defer asset_mutex.unlock();
+    if (asset_threaded == null) {
+        asset_threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+    }
+    return std.Io.Dir.readFileAlloc(
+        std.Io.Dir.cwd(),
+        asset_threaded.?.io(),
+        path,
+        std.heap.c_allocator,
+        .limited(64 * 1024 * 1024),
+    );
+}
 
 fn clearCaptureLocked() void {
     if (state.capture) |*capture| capture.deinit();
@@ -444,18 +463,37 @@ pub export fn e7_engine_time_now_ms() callconv(.c) i64 {
     return @intCast(time_mod.nowNs() / std.time.ns_per_ms);
 }
 
-pub export fn e7_engine_scene_create(window_handle: i64) callconv(.c) i64 {
+/// Load a shader/asset file and return it as an e7 `str` aggregate.  The e7
+/// engine owns the decision of which files to load and passes the resulting
+/// SPIR-V strings to `e7_engine_scene_create`.
+pub export fn e7_engine_read_shader(path: i64) callconv(.c) i64 {
+    const text = stringSlice(path);
+    const data = readAsset(text) catch return 0;
+    defer std.heap.c_allocator.free(data);
+    return aggregate.e7_str_new(@intCast(@intFromPtr(data.ptr)), @intCast(data.len));
+}
+
+pub export fn e7_engine_scene_create(
+    window_handle: i64,
+    vert_spv: i64,
+    frag_spv: i64,
+) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
     const window = window_mod.registry.get(@intCast(window_handle)) orelse {
         state.last_failure = "scene create: invalid window handle";
         return 0;
     };
+    const vert_len = aggregate.e7_str_len(vert_spv);
+    const frag_len = aggregate.e7_str_len(frag_spv);
+    if (vert_len <= 0 or frag_len <= 0) return 0;
+    const vert_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(vert_spv + 8)));
+    const frag_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(frag_spv + 8)));
     var scene = renderer.Scene.init(
         std.heap.c_allocator,
         window,
-        shader_assets.cube_vert_spv,
-        shader_assets.cube_frag_spv,
+        vert_ptr[0..@intCast(vert_len)],
+        frag_ptr[0..@intCast(frag_len)],
     ) catch {
         state.last_failure = "Vulkan scene creation failed (no Vulkan device?)";
         return 0;
@@ -540,13 +578,14 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [14]Symbol {
+pub fn symbols() [15]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
         .{ .name = "e7_engine_window_should_close", .address = @intFromPtr(&e7_engine_window_should_close) },
         .{ .name = "e7_engine_window_destroy", .address = @intFromPtr(&e7_engine_window_destroy) },
         .{ .name = "e7_engine_time_now_ms", .address = @intFromPtr(&e7_engine_time_now_ms) },
+        .{ .name = "e7_engine_read_shader", .address = @intFromPtr(&e7_engine_read_shader) },
         .{ .name = "e7_engine_scene_create", .address = @intFromPtr(&e7_engine_scene_create) },
         .{ .name = "e7_engine_scene_destroy", .address = @intFromPtr(&e7_engine_scene_destroy) },
         .{ .name = "e7_engine_scene_resize", .address = @intFromPtr(&e7_engine_scene_resize) },
@@ -570,7 +609,13 @@ test "engine frame limiter captures a headless frame" {
     const title = aggregate.e7_str_new(@intCast(@intFromPtr(title_text.ptr)), title_text.len);
     const window = e7_engine_window_create(title, 320, 200);
     try std.testing.expect(window != 0);
-    const scene = e7_engine_scene_create(window);
+    const vert_path = "engine/shaders/cube.vert.spv";
+    const frag_path = "engine/shaders/cube.frag.spv";
+    const vert_str = aggregate.e7_str_new(@intCast(@intFromPtr(vert_path.ptr)), vert_path.len);
+    const frag_str = aggregate.e7_str_new(@intCast(@intFromPtr(frag_path.ptr)), frag_path.len);
+    const vert = e7_engine_read_shader(vert_str);
+    const frag = e7_engine_read_shader(frag_str);
+    const scene = e7_engine_scene_create(window, vert, frag);
     try std.testing.expect(scene != 0);
 
     // The runtime only reports raw input; synthetic state stands in for SDL.

@@ -70,8 +70,14 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
+        // e7 loads the SPIR-V bytes (asset/read_shader) and passes the strings.
+        .name = "e7_engine_read_shader",
+        .params = &.{.str_},
+        .result = .str_,
+    },
+    .{
         .name = "e7_engine_scene_create",
-        .params = &.{.u64_},
+        .params = &.{ .u64_, .str_, .str_ },
         .result = .u64_,
     },
     .{

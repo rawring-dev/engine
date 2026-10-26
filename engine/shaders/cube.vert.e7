@@ -1,16 +1,3 @@
-# Vertex shader for the engine7 scene renderer: spinning cube with a point
-# light.  This is e7s source; engine/shaders/build.sh transpiles it to Slang
-# and compiles the result to cube.vert.spv.
-#
-# Uniform layout (std140-compatible, 256 bytes, matching renderer.Uniforms):
-#   model, view, proj (each [f32; 4, 4]), then camera_pos, light_pos,
-#   light_color, params (each [f32; 4]).
-#
-# e7s matrices are stored column-major: a [f32; 4, 4] field becomes
-# `column_major float4x4`, and `*` on a matrix operand becomes `mul(...)`.
-# The host uploads a column-major Mat4, so no explicit column vectors are
-# needed in the shader.
-
 SceneUniform <- struct
     model: [f32; 4, 4]
     view: [f32; 4, 4]
