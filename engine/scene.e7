@@ -25,7 +25,8 @@ pub update_light <- sys (lights: select &mut PointLight from Components, time: r
 pub render_scene <- sys (
     gpu: res &mut Gpu,
     window: res &mut Window,
-    renderables: select &Transform, &Renderable, &BodyBounds from Components,
+    renderables: select &Transform, &Renderable, &BodyBounds, &Material from Components,
+    meshes: select &Transform, &MeshRenderer, &Material from Components,
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
 ):
@@ -57,7 +58,7 @@ pub render_scene <- sys (
     # Frame submission is e7 policy: configure camera/light, begin the frame,
     # draw one procedural shape per renderable, then end/present it.
     e7_engine_scene_begin_frame(gpu.scene)
-    for (transform, renderable, bounds) in renderables:
+    for (transform, renderable, bounds, material) in renderables:
         # Physics bodies keep their visual size in BodyBounds; the procedural
         # meshes are unit-sized, so the scale is half-extent based.
         sx := bounds.half_extents[0]
@@ -85,7 +86,7 @@ pub render_scene <- sys (
             sx = radius
             sy = cylinder_half
             sz = radius
-        e7_engine_scene_draw_shape(
+        e7_engine_scene_draw_shape_tex(
             gpu.scene,
             renderable.kind,
             e7_f32_to_milli(transform.translation[0]),
@@ -95,9 +96,30 @@ pub render_scene <- sys (
             e7_f32_to_milli(sy),
             e7_f32_to_milli(sz),
             e7_f32_to_milli(transform.rotation[1]),
-            e7_f32_to_milli(renderable.colour[0]),
-            e7_f32_to_milli(renderable.colour[1]),
-            e7_f32_to_milli(renderable.colour[2]),
+            e7_f32_to_milli(material.tint[0]),
+            e7_f32_to_milli(material.tint[1]),
+            e7_f32_to_milli(material.tint[2]),
+            material.texture,
+        )
+    # Custom OBJ meshes uploaded by AssetsPlugin.  `mesh` is assigned at
+    # FrameInit; rows with mesh 0 are skipped until the upload completes.
+    for (mesh_transform, mesh_renderer, mesh_material) in meshes:
+        if mesh_renderer.mesh == 0:
+            cont
+        e7_engine_scene_draw_custom(
+            gpu.scene,
+            mesh_renderer.mesh,
+            e7_f32_to_milli(mesh_transform.translation[0]),
+            e7_f32_to_milli(mesh_transform.translation[1]),
+            e7_f32_to_milli(mesh_transform.translation[2]),
+            e7_f32_to_milli(mesh_transform.scale[0]),
+            e7_f32_to_milli(mesh_transform.scale[1]),
+            e7_f32_to_milli(mesh_transform.scale[2]),
+            e7_f32_to_milli(mesh_transform.rotation[1]),
+            e7_f32_to_milli(mesh_material.tint[0]),
+            e7_f32_to_milli(mesh_material.tint[1]),
+            e7_f32_to_milli(mesh_material.tint[2]),
+            mesh_material.texture,
         )
     e7_engine_scene_end_frame(gpu.scene)
 

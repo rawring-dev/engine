@@ -3950,6 +3950,16 @@ const Checker = struct {
                 .length = null,
                 .columns = null,
             } }),
+            .f32_vec_ => self.store.make(.{ .array = .{
+                .element = try self.store.floatVar(),
+                .length = null,
+                .columns = null,
+            } }),
+            .i32_vec_ => self.store.make(.{ .array = .{
+                .element = try self.store.make(.{ .int = .i32 }),
+                .length = null,
+                .columns = null,
+            } }),
             // Only `e7_vec_push` uses `.any_`; it is resolved from its first
             // argument before reaching the generic result mapping.
             .any_ => self.store.make(.unknown),

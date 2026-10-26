@@ -15,12 +15,14 @@ VSInput <- struct
     @location(0) position: [f32; 3]
     @location(1) normal: [f32; 3]
     @location(2) color: [f32; 3]
+    @location(3) uv: [f32; 2]
 
 VSOutput <- struct
     @builtin(position) position: [f32; 4]
     @location(0) world_pos: [f32; 3]
     @location(1) normal: [f32; 3]
     @location(2) color: [f32; 3]
+    @location(3) uv: [f32; 2]
 
 @vertex
 main <- (input: VSInput) -> VSOutput:
@@ -38,4 +40,5 @@ main <- (input: VSInput) -> VSOutput:
         world_pos: world.xyz,
         normal: normal,
         color: input.color,
+        uv: input.uv,
     }

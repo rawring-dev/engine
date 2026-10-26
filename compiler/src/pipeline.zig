@@ -1499,8 +1499,14 @@ test "compiles the engine OBJ and asset libraries from sources" {
     defer std.testing.allocator.free(obj_source);
     const assets_source = readRepoText("engine/assets.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(assets_source);
+    const ecs_source = readRepoText("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const gfx_source = readRepoText("engine/gfx.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(gfx_source);
 
     const root_source =
+        \\mod ecs
+        \\mod gfx
         \\mod obj
         \\mod assets
         \\main <- async () -> i32:
@@ -1513,6 +1519,8 @@ test "compiles the engine OBJ and asset libraries from sources" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "gfx", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
             .{ .name = "assets", .source = assets_source },
         },

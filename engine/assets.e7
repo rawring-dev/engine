@@ -2,6 +2,10 @@
 # parsed OBJ meshes.  The runtime only decodes files; all loading policy and
 # resource ownership lives here.
 
+use ecs::*;
+use events::*;
+use gfx::*;
+
 @resource
 pub Image <- struct
     handle: u64
@@ -14,6 +18,10 @@ pub Image <- struct
 pub Assets <- struct
     cube_image: Image
     cube_mesh: obj::ObjMesh
+    # GPU handles created from the CPU-side assets by `upload_assets` once the
+    # window/scene exists.  0 means "not uploaded yet".
+    cube_texture: u64
+    cube_mesh_id: u64
 
 # Load an image into an e7 `Image`.  Missing/undecodable files produce a
 # zeroed Image (handle 0) instead of failing the plugin.
@@ -45,4 +53,36 @@ pub AssetsPlugin <- plugin
         commands.insert_resource(Assets {
             cube_image: load_image("engine/assets/testdata/cube.png"),
             cube_mesh: obj::load_obj("engine/assets/cube.obj"),
+            cube_texture: 0,
+            cube_mesh_id: 0,
         })
+
+# FrameInit runs after the Init trigger created the window/scene, and before
+# Render, so this is the right place to turn CPU assets into GPU resources:
+# the sample image becomes a material texture and cube.obj becomes a mesh.
+# Pickable bodies (the ball and stacked cubes) get the sample texture through
+# their Material component; rows with a MeshRenderer get the uploaded OBJ mesh.
+@trigger(FrameInit)
+pub upload_assets <- sys (
+    gpu: res &mut Gpu,
+    assets: res &mut Assets,
+    textured: select &mut Material, &Pickup from Components,
+    meshes: select &mut MeshRenderer from Components,
+):
+    if gpu.scene == 0:
+        ret
+    if assets.cube_texture == 0 and assets.cube_image.handle != 0:
+        assets.cube_texture = e7_engine_scene_texture_create(gpu.scene, assets.cube_image.handle)
+    if assets.cube_mesh_id == 0 and assets.cube_mesh.indices.len() > 0:
+        assets.cube_mesh_id = e7_engine_scene_mesh_upload(
+            gpu.scene,
+            assets.cube_mesh.vertices,
+            assets.cube_mesh.indices,
+            0,
+        )
+    if assets.cube_texture != 0:
+        for (material, pickup) in textured:
+            material.texture = assets.cube_texture
+    if assets.cube_mesh_id != 0:
+        for renderer in meshes:
+            renderer.mesh = assets.cube_mesh_id

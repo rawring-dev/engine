@@ -25,6 +25,10 @@ pub const ValueType = enum {
     str_,
     /// Runtime vector of string values (`[str]` aggregate handle).
     str_vec_,
+    /// e7 `[f32]` vector (aggregate handle); mesh upload vertex data.
+    f32_vec_,
+    /// e7 `[i32]` vector (aggregate handle); mesh upload indices.
+    i32_vec_,
     /// Placeholder for generic intrinsics whose type is derived from another
     /// argument (`e7_vec_push`).
     any_,
@@ -52,6 +56,11 @@ pub const scene_box_units = "position/scale milli-units, angle milli-radians";
 /// Per-object shape draw: kind (0 box, 1 sphere, 2 capsule, 3 plane),
 /// position/scale milli-units, Y rotation milli-radians, RGB tint milli.
 pub const scene_shape_units = "kind, position/scale milli-units, angle milli-radians, rgb tint milli";
+/// Material/textured draw: as scene_shape_units plus a texture id.
+pub const scene_textured_units = "kind, position/scale milli-units, angle milli-radians, rgb tint milli, texture id";
+/// Custom mesh draw: mesh id, position/scale milli-units, angle milli-radians,
+/// rgb tint milli, texture id.
+pub const scene_custom_units = "mesh id, position/scale milli-units, angle milli-radians, rgb tint milli, texture id";
 
 pub const functions = [_]Function{
     .{
@@ -143,6 +152,43 @@ pub const functions = [_]Function{
         },
         .result = .i64_,
         .units = scene_shape_units,
+    },
+    .{
+        .name = "e7_engine_scene_draw_shape_tex",
+        .params = &.{
+            .u64_, .i32_, .i64_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_, .i64_, .u64_,
+        },
+        .result = .i64_,
+        .units = scene_textured_units,
+    },
+    .{
+        .name = "e7_engine_scene_draw_custom",
+        .params = &.{
+            .u64_, .u64_, .i64_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_, .i64_, .u64_,
+        },
+        .result = .i64_,
+        .units = scene_custom_units,
+    },
+    .{
+        // scene handle, image handle (from e7_image_load) -> texture id.
+        .name = "e7_engine_scene_texture_create",
+        .params = &.{ .u64_, .u64_ },
+        .result = .u64_,
+        .units = "image handle -> texture id",
+    },
+    .{
+        .name = "e7_engine_scene_texture_destroy",
+        .params = &.{ .u64_, .u64_ },
+        .result = .i64_,
+    },
+    .{
+        // scene handle, [f32] interleaved vertices, [i32] indices, layout.
+        .name = "e7_engine_scene_mesh_upload",
+        .params = &.{ .u64_, .f32_vec_, .i32_vec_, .i32_ },
+        .result = .u64_,
+        .units = "layout 0 = pos3/normal3/uv2 floats, 1 = pos3/normal3/colour3/uv2",
     },
     .{
         .name = "e7_engine_scene_end_frame",
@@ -245,4 +291,16 @@ test "compiler-known intrinsics map to bytecode runtime calls with matching arit
     const draw_shape = lookup("e7_engine_scene_draw_shape").?;
     try std.testing.expectEqual(@as(usize, 12), draw_shape.params.len);
     try std.testing.expectEqual(ValueType.i64_, draw_shape.result);
+    const draw_shape_tex = lookup("e7_engine_scene_draw_shape_tex").?;
+    try std.testing.expectEqual(@as(usize, 13), draw_shape_tex.params.len);
+    try std.testing.expectEqual(ValueType.i32_, draw_shape_tex.params[1]);
+    try std.testing.expectEqual(ValueType.u64_, draw_shape_tex.params[12]);
+    const draw_custom = lookup("e7_engine_scene_draw_custom").?;
+    try std.testing.expectEqual(@as(usize, 13), draw_custom.params.len);
+    try std.testing.expectEqual(ValueType.u64_, draw_custom.params[1]);
+    const mesh_upload = lookup("e7_engine_scene_mesh_upload").?;
+    try std.testing.expectEqual(@as(usize, 4), mesh_upload.params.len);
+    try std.testing.expectEqual(ValueType.f32_vec_, mesh_upload.params[1]);
+    try std.testing.expectEqual(ValueType.i32_vec_, mesh_upload.params[2]);
+    try std.testing.expectEqual(ValueType.u64_, mesh_upload.result);
 }

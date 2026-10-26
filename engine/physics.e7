@@ -8,11 +8,15 @@
 #
 # All gameplay physics happens in one Update system so the order is
 # deterministic even though trigger phases run systems concurrently:
-#   broadphase rebuild + gravity/integrate + true-shape ground contact
-#   -> body-body narrowphase (AABB/capsule/sphere/plane, each pair once)
-#   -> player movement/jump -> pickup acquire/release/hold
+#   broadphase rebuild (conservative rotated AABBs) + gravity/integrate
+#   -> quaternion integration + oriented ground manifolds
+#   -> body-body narrowphase (OBB SAT / oriented capsule / sphere manifolds,
+#      each pair once) with contact impulses and angular velocity
+#   -> player movement/jump -> nearest-pickup acquire/release/hold
 #   -> camera look + player-follow -> (PostUpdate: Held marker sync, debug ray).
-# The step is fixed at 16 ms.  Pickup and camera follow therefore observe the
+# The step is fixed at 16 ms.  Quaternion authoritative orientation lives in
+# PhysicsWorld.quaternions (map body id -> [x,y,z,w]); Transform.rotation is the
+# Euler mirror used by rendering/tools.  Pickup and camera follow observe the
 # same step's transforms instead of lagging a phase behind.
 
 use ecs::*;
@@ -52,6 +56,14 @@ pub PhysicsWorld <- struct
     camera_yaw: f32
     camera_pitch: f32
     move_speed: f32
+    # Quaternion per body id (x, y, z, w).  Initialised lazily from the Euler
+    # Transform.rotation; authoritative for oriented collisions and integrated
+    # with normalisation at the fixed step.  Diagonal inverse inertia is derived
+    # per shape from BodyBounds/mass when impulses are applied.
+    quaternions: map[i64, [f32]]
+    # Ground plane used by narrowphase (demo plane is y-up at 0).
+    plane_normal: [f32; 3]
+    plane_offset: f32
 
 @resource
 pub RaycastState <- struct
@@ -79,6 +91,9 @@ pub PhysicsPlugin <- plugin
             camera_yaw: 0.0,
             camera_pitch: 0.0,
             move_speed: 4.0,
+            quaternions: map[i64, [f32]] {},
+            plane_normal: [0.0, 1.0, 0.0],
+            plane_offset: 0.0,
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -203,128 +218,149 @@ pub physics_step <- sys (
     spatial: res &mut SpatialMap,
     bodies: select &mut Transform, &mut RigidBody, &BodyBounds, &BodyFlags from Components,
     interaction_bodies: select &mut Transform, &mut RigidBody, &mut BodyFlags from Components,
-    planes: select &PlaneCollider from Components,
+    hold_bodies: select &mut Transform, &mut RigidBody, &mut BodyFlags from Components,
     cameras: select &mut Camera, &CameraController from Components,
     pickup_state: res &mut PickupState,
 ):
     dt := 0.016
     cell_size := spatial.cell_size
-
-    # Plane used for ground contact (demo has a single y-up plane).
-    plane_x := 0.0
-    plane_y := 1.0
-    plane_z := 0.0
-    ground := 0.0
-    for plane in planes:
-        plane_x = plane.normal[0]
-        plane_y = plane.normal[1]
-        plane_z = plane.normal[2]
-        ground = plane.offset
-
+    plane_x := world.plane_normal[0]
+    plane_y := world.plane_normal[1]
+    plane_z := world.plane_normal[2]
+    ground := world.plane_offset
     world.grounded = false
 
-    # ---------------------------------------------------------------- bodies
     cells := map[i64, [i64]] {}
     ids: [i64] := []
     stored_bounds: [f32] := []
     stored_shapes: [i64] := []
     stored_radius: [f32] := []
     stored_half_height: [f32] := []
+    stored_half: [f32] := []
+    stored_quats: [f32] := []
     body_count := 0
 
     for (transform, body, body_bounds, flags) in bodies:
+        id := flags.target_id
+        qv := world.quaternions[id]
+        q := quat_from_vec(qv)
+        if qv.len() == 0:
+            q = quat_from_euler(transform.rotation[0], transform.rotation[1], transform.rotation[2])
+            world.quaternions[id] = [q.x, q.y, q.z, q.w]
         on_ground := false
 
         if not body.is_static:
-            # Angular integration: orientation mirrors Transform.rotation for
-            # unlocked bodies; locked bodies keep both at rest.
             if body.rotation_locked:
                 body.angular_velocity[0] = 0.0
                 body.angular_velocity[1] = 0.0
                 body.angular_velocity[2] = 0.0
-                body.orientation[0] = transform.rotation[0]
-                body.orientation[1] = transform.rotation[1]
-                body.orientation[2] = transform.rotation[2]
+                q = quat_from_euler(transform.rotation[0], transform.rotation[1], transform.rotation[2])
+                world.quaternions[id] = [q.x, q.y, q.z, q.w]
             else:
-                transform.rotation[0] = transform.rotation[0] + body.angular_velocity[0] * dt
-                transform.rotation[1] = transform.rotation[1] + body.angular_velocity[1] * dt
-                transform.rotation[2] = transform.rotation[2] + body.angular_velocity[2] * dt
-                body.orientation[0] = transform.rotation[0]
-                body.orientation[1] = transform.rotation[1]
-                body.orientation[2] = transform.rotation[2]
-                body.angular_velocity[0] = body.angular_velocity[0] * 0.99
-                body.angular_velocity[1] = body.angular_velocity[1] * 0.99
-                body.angular_velocity[2] = body.angular_velocity[2] * 0.99
+                q = quat_integrate(
+                    Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                    Vec3 { x: body.angular_velocity[0], y: body.angular_velocity[1], z: body.angular_velocity[2] },
+                    dt,
+                )
+                world.quaternions[id] = [q.x, q.y, q.z, q.w]
+                euler := quat_to_euler(Quat { x: q.x, y: q.y, z: q.z, w: q.w })
+                transform.rotation[0] = euler.x
+                transform.rotation[1] = euler.y
+                transform.rotation[2] = euler.z
+                body.angular_velocity[0] = body.angular_velocity[0] * 0.995
+                body.angular_velocity[1] = body.angular_velocity[1] * 0.995
+                body.angular_velocity[2] = body.angular_velocity[2] * 0.995
 
             body.velocity[1] = body.velocity[1] + world.gravity_y * body.gravity_scale * dt
             transform.translation[0] = transform.translation[0] + body.velocity[0] * dt
             transform.translation[1] = transform.translation[1] + body.velocity[1] * dt
             transform.translation[2] = transform.translation[2] + body.velocity[2] * dt
 
-            # Ground contact uses the true collider shape.
-            ground_push := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+            half := Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] }
+            center := Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] }
+            normal := Vec3 { x: plane_x, y: plane_y, z: plane_z }
+
+            ground_manifold := Manifold {
+                hit: false,
+                normal: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+                penetration: 0.0,
+                contact: Vec3 { x: center.x, y: center.y, z: center.z },
+            }
             if flags.shape == 2:
-                ground_push = capsule_plane_penetration(
-                    Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                ground_manifold = capsule_plane_manifold(
+                    Vec3 { x: center.x, y: center.y, z: center.z },
                     flags.radius,
                     flags.half_height,
-                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                    Vec3 { x: normal.x, y: normal.y, z: normal.z },
                     ground,
                 )
             elif flags.shape == 1:
-                ground_push = sphere_plane_penetration(
-                    Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                ground_push := sphere_plane_penetration(
+                    Vec3 { x: center.x, y: center.y, z: center.z },
                     flags.radius,
-                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    Vec3 { x: normal.x, y: normal.y, z: normal.z },
                     ground,
                 )
+                if ground_push.x != 0.0 or ground_push.y != 0.0 or ground_push.z != 0.0:
+                    push_distance := e7_f32_sqrt(ground_push.x * ground_push.x + ground_push.y * ground_push.y + ground_push.z * ground_push.z)
+                    ground_manifold = Manifold {
+                        hit: true,
+                        normal: Vec3 { x: normal.x, y: normal.y, z: normal.z },
+                        penetration: push_distance,
+                        contact: Vec3 {
+                            x: center.x - normal.x * flags.radius,
+                            y: center.y - normal.y * flags.radius,
+                            z: center.z - normal.z * flags.radius,
+                        },
+                    }
             elif flags.shape == 0:
-                ground_push = box_plane_penetration(
-                    Aabb {
-                        min: Vec3 {
-                            x: transform.translation[0] - body_bounds.half_extents[0],
-                            y: transform.translation[1] - body_bounds.half_extents[1],
-                            z: transform.translation[2] - body_bounds.half_extents[2],
-                        },
-                        max: Vec3 {
-                            x: transform.translation[0] + body_bounds.half_extents[0],
-                            y: transform.translation[1] + body_bounds.half_extents[1],
-                            z: transform.translation[2] + body_bounds.half_extents[2],
-                        },
+                ground_manifold = obb_plane_manifold(
+                    Obb {
+                        center: Vec3 { x: center.x, y: center.y, z: center.z },
+                        half_extents: Vec3 { x: half.x, y: half.y, z: half.z },
+                        orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w },
                     },
-                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    Vec3 { x: normal.x, y: normal.y, z: normal.z },
                     ground,
                 )
 
-            if ground_push.x != 0.0 or ground_push.y != 0.0 or ground_push.z != 0.0:
-                transform.translation[0] = transform.translation[0] + ground_push.x
-                transform.translation[1] = transform.translation[1] + ground_push.y
-                transform.translation[2] = transform.translation[2] + ground_push.z
-                normal_speed := body.velocity[0] * plane_x + body.velocity[1] * plane_y + body.velocity[2] * plane_z
-                if normal_speed < 0.0:
-                    body.velocity[0] = body.velocity[0] - plane_x * normal_speed
-                    body.velocity[1] = body.velocity[1] - plane_y * normal_speed
-                    body.velocity[2] = body.velocity[2] - plane_z * normal_speed
+            if ground_manifold.hit:
+                transform.translation[0] = transform.translation[0] + ground_manifold.normal.x * ground_manifold.penetration
+                transform.translation[1] = transform.translation[1] + ground_manifold.normal.y * ground_manifold.penetration
+                transform.translation[2] = transform.translation[2] + ground_manifold.normal.z * ground_manifold.penetration
                 on_ground = true
-                if not body.rotation_locked:
-                    body.velocity[0] = body.velocity[0] * 0.98
-                    body.velocity[2] = body.velocity[2] * 0.98
-                    # Rolling contact: horizontal motion imparts yaw spin so
-                    # the box/sphere proxies visibly rotate, then it damps.
-                    body.angular_velocity[1] = e7_f32_clamp(
-                        body.angular_velocity[1] + (body.velocity[0] - body.velocity[2]) * 1.2,
-                        -8.0,
-                        8.0,
-                    )
-                    body.angular_velocity[0] = body.angular_velocity[0] * 0.94
-                    body.angular_velocity[1] = body.angular_velocity[1] * 0.94
-                    body.angular_velocity[2] = body.angular_velocity[2] * 0.94
-
-            if on_ground:
                 world.grounded = true
+                normal_speed := body.velocity[0] * ground_manifold.normal.x + body.velocity[1] * ground_manifold.normal.y + body.velocity[2] * ground_manifold.normal.z
+                if normal_speed < 0.0:
+                    impulse := 0.0 - normal_speed
+                    body.velocity[0] = body.velocity[0] + ground_manifold.normal.x * impulse
+                    body.velocity[1] = body.velocity[1] + ground_manifold.normal.y * impulse
+                    body.velocity[2] = body.velocity[2] + ground_manifold.normal.z * impulse
+                    rx := ground_manifold.contact.x - transform.translation[0]
+                    ry := ground_manifold.contact.y - transform.translation[1]
+                    rz := ground_manifold.contact.z - transform.translation[2]
+                    torque_x := ry * ground_manifold.normal.z - rz * ground_manifold.normal.y
+                    torque_y := rz * ground_manifold.normal.x - rx * ground_manifold.normal.z
+                    torque_z := rx * ground_manifold.normal.y - ry * ground_manifold.normal.x
+                    inv_i := inverse_inertia_diagonal(
+                        flags.shape,
+                        Vec3 { x: half.x, y: half.y, z: half.z },
+                        flags.radius,
+                        flags.half_height,
+                        body.inv_mass,
+                    )
+                    if not body.rotation_locked:
+                        body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + inv_i.x * torque_x * impulse, -10.0, 10.0)
+                        body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + inv_i.y * torque_y * impulse, -10.0, 10.0)
+                        body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + inv_i.z * torque_z * impulse, -10.0, 10.0)
+                if not body.rotation_locked:
+                    body.velocity[0] = body.velocity[0] * 0.985
+                    body.velocity[2] = body.velocity[2] * 0.985
+                    body.angular_velocity[0] = body.angular_velocity[0] * 0.95
+                    body.angular_velocity[1] = body.angular_velocity[1] * 0.95
+                    body.angular_velocity[2] = body.angular_velocity[2] * 0.95
 
-            # Player movement is applied as velocity; collisions resolve the
-            # capsule before the next translation step.
             if flags.is_player:
                 yaw := world.camera_yaw
                 sin_yaw := e7_f32_sin(yaw)
@@ -358,7 +394,6 @@ pub physics_step <- sys (
                 else:
                     body.velocity[0] = 0.0
                     body.velocity[2] = 0.0
-
                 capsule_bottom := ground + flags.radius + flags.half_height
                 player_on_ground := transform.translation[1] <= capsule_bottom + 0.02
                 if not input.jump_down:
@@ -367,21 +402,29 @@ pub physics_step <- sys (
                     body.velocity[1] = 5.2
                     world.jump_latched = true
                     world.grounded = false
-                world.player_x = transform.translation[0]
-                world.player_y = transform.translation[1]
-                world.player_z = transform.translation[2]
 
-        # Store the broadphase entry *before* collisions so later bodies see
-        # this body; earlier bodies are already inserted.
-        min_x := transform.translation[0] - body_bounds.half_extents[0]
-        min_y := transform.translation[1] - body_bounds.half_extents[1]
-        min_z := transform.translation[2] - body_bounds.half_extents[2]
-        max_x := transform.translation[0] + body_bounds.half_extents[0]
-        max_y := transform.translation[1] + body_bounds.half_extents[1]
-        max_z := transform.translation[2] + body_bounds.half_extents[2]
+        # Conservative world AABB for broadphase (uses the quaternion).
+        world_aabb := shape_aabb(
+            flags.shape,
+            Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+            Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] },
+            flags.radius,
+            flags.half_height,
+            Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+        )
+        min_x := world_aabb.min.x
+        min_y := world_aabb.min.y
+        min_z := world_aabb.min.z
+        max_x := world_aabb.max.x
+        max_y := world_aabb.max.y
+        max_z := world_aabb.max.z
+        center_x := transform.translation[0]
+        center_y := transform.translation[1]
+        center_z := transform.translation[2]
+        half_x := body_bounds.half_extents[0]
+        half_y := body_bounds.half_extents[1]
+        half_z := body_bounds.half_extents[2]
 
-        # Body-body narrowphase against bodies already in the grid (each pair
-        # is handled once, when the later body is processed).
         candidates := query_cells(
             &cells,
             cell_size,
@@ -398,7 +441,6 @@ pub physics_step <- sys (
                 cont
             other_shape := stored_shapes[other_index as usize]
             if other_shape == 3:
-                # Static plane contact is handled by the ground pass.
                 cont
             other_base := other_index * 6
             other_min_x := stored_bounds[(other_base + 0) as usize]
@@ -407,136 +449,182 @@ pub physics_step <- sys (
             other_max_x := stored_bounds[(other_base + 3) as usize]
             other_max_y := stored_bounds[(other_base + 4) as usize]
             other_max_z := stored_bounds[(other_base + 5) as usize]
-            other_center_x := (other_min_x + other_max_x) * 0.5
-            other_center_y := (other_min_y + other_max_y) * 0.5
-            other_center_z := (other_min_z + other_max_z) * 0.5
-
-            push := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+            other_center := Vec3 {
+                x: (other_min_x + other_max_x) * 0.5,
+                y: (other_min_y + other_max_y) * 0.5,
+                z: (other_min_z + other_max_z) * 0.5,
+            }
+            other_half_base := other_index * 3
+            other_half := Vec3 {
+                x: stored_half[(other_half_base + 0) as usize],
+                y: stored_half[(other_half_base + 1) as usize],
+                z: stored_half[(other_half_base + 2) as usize],
+            }
+            other_quat_base := other_index * 4
+            other_q := Quat {
+                x: stored_quats[(other_quat_base + 0) as usize],
+                y: stored_quats[(other_quat_base + 1) as usize],
+                z: stored_quats[(other_quat_base + 2) as usize],
+                w: stored_quats[(other_quat_base + 3) as usize],
+            }
+            other_obb := Obb {
+                center: Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
+                half_extents: Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
+                orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
+            }
+            contact := Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center_x, y: center_y, z: center_z } }
             if flags.shape == 2:
                 if other_shape == 1:
-                    sphere_push := sphere_capsule_penetration(
-                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
-                        flags.radius,
-                        flags.half_height,
-                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                    contact = sphere_capsule_manifold(
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
                         stored_radius[other_index as usize],
-                    )
-                    push = Vec3 { x: 0.0 - sphere_push.x, y: 0.0 - sphere_push.y, z: 0.0 - sphere_push.z }
-                elif other_shape == 0:
-                    push = capsule_aabb_penetration(
-                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                        Vec3 { x: center_x, y: center_y, z: center_z },
                         flags.radius,
                         flags.half_height,
-                        Aabb {
-                            min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
-                            max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
-                        },
+                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                    )
+                    contact = Manifold {
+                        hit: contact.hit,
+                        normal: Vec3 { x: 0.0 - contact.normal.x, y: 0.0 - contact.normal.y, z: 0.0 - contact.normal.z },
+                        penetration: contact.penetration,
+                        contact: Vec3 { x: contact.contact.x, y: contact.contact.y, z: contact.contact.z },
+                    }
+                elif other_shape == 0:
+                    contact = capsule_obb_manifold(
+                        Vec3 { x: center_x, y: center_y, z: center_z },
+                        flags.radius,
+                        flags.half_height,
+                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
+                    )
+                else:
+                    contact = capsule_capsule_manifold(
+                        Vec3 { x: center_x, y: center_y, z: center_z },
+                        flags.radius,
+                        flags.half_height,
+                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
+                        stored_radius[other_index as usize],
+                        stored_half_height[other_index as usize],
+                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
                     )
             elif flags.shape == 1:
                 if other_shape == 2:
-                    push = sphere_capsule_penetration(
-                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                    contact = sphere_capsule_manifold(
+                        Vec3 { x: center_x, y: center_y, z: center_z },
+                        flags.radius,
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
                         stored_radius[other_index as usize],
                         stored_half_height[other_index as usize],
-                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
-                        flags.radius,
+                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
                     )
                 elif other_shape == 0:
-                    push = sphere_aabb_penetration(
-                        Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+                    contact = sphere_obb_manifold(
+                        Vec3 { x: center_x, y: center_y, z: center_z },
                         flags.radius,
-                        Aabb {
-                            min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
-                            max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
-                        },
+                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
+                    )
+                else:
+                    contact = sphere_sphere_manifold(
+                        Vec3 { x: center_x, y: center_y, z: center_z },
+                        flags.radius,
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
+                        stored_radius[other_index as usize],
                     )
             elif flags.shape == 0:
-                if other_shape == 1:
-                    sphere_push := sphere_aabb_penetration(
-                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
-                        stored_radius[other_index as usize],
-                        Aabb {
-                            min: Vec3 { x: min_x, y: min_y, z: min_z },
-                            max: Vec3 { x: max_x, y: max_y, z: max_z },
-                        },
+                if other_shape == 0:
+                    contact = obb_obb_manifold(
+                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
+                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
                     )
-                    push = Vec3 { x: 0.0 - sphere_push.x, y: 0.0 - sphere_push.y, z: 0.0 - sphere_push.z }
-                elif other_shape == 2:
-                    capsule_push := capsule_aabb_penetration(
-                        Vec3 { x: other_center_x, y: other_center_y, z: other_center_z },
+                elif other_shape == 1:
+                    sphere_push := sphere_obb_manifold(
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
+                        stored_radius[other_index as usize],
+                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
+                    )
+                    contact = Manifold {
+                        hit: sphere_push.hit,
+                        normal: Vec3 { x: 0.0 - sphere_push.normal.x, y: 0.0 - sphere_push.normal.y, z: 0.0 - sphere_push.normal.z },
+                        penetration: sphere_push.penetration,
+                        contact: Vec3 { x: sphere_push.contact.x, y: sphere_push.contact.y, z: sphere_push.contact.z },
+                    }
+                else:
+                    capsule_push := capsule_obb_manifold(
+                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
                         stored_radius[other_index as usize],
                         stored_half_height[other_index as usize],
-                        Aabb {
-                            min: Vec3 { x: min_x, y: min_y, z: min_z },
-                            max: Vec3 { x: max_x, y: max_y, z: max_z },
-                        },
+                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
+                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
                     )
-                    push = Vec3 { x: 0.0 - capsule_push.x, y: 0.0 - capsule_push.y, z: 0.0 - capsule_push.z }
+                    contact = Manifold {
+                        hit: capsule_push.hit,
+                        normal: Vec3 { x: 0.0 - capsule_push.normal.x, y: 0.0 - capsule_push.normal.y, z: 0.0 - capsule_push.normal.z },
+                        penetration: capsule_push.penetration,
+                        contact: Vec3 { x: capsule_push.contact.x, y: capsule_push.contact.y, z: capsule_push.contact.z },
+                    }
 
-            if push.x == 0.0 and push.y == 0.0 and push.z == 0.0:
-                # AABB fallback for box/box, sphere/sphere, capsule/capsule.
-                push = aabb_penetration(
-                    Aabb {
-                        min: Vec3 { x: min_x, y: min_y, z: min_z },
-                        max: Vec3 { x: max_x, y: max_y, z: max_z },
-                    },
-                    Aabb {
-                        min: Vec3 { x: other_min_x, y: other_min_y, z: other_min_z },
-                        max: Vec3 { x: other_max_x, y: other_max_y, z: other_max_z },
-                    },
-                )
+            if contact.hit and contact.penetration > 0.0:
+                transform.translation[0] = transform.translation[0] + contact.normal.x * contact.penetration
+                transform.translation[1] = transform.translation[1] + contact.normal.y * contact.penetration
+                transform.translation[2] = transform.translation[2] + contact.normal.z * contact.penetration
+                normal_speed := body.velocity[0] * contact.normal.x + body.velocity[1] * contact.normal.y + body.velocity[2] * contact.normal.z
+                if normal_speed < 0.0:
+                    impulse := 0.0 - normal_speed
+                    body.velocity[0] = body.velocity[0] + contact.normal.x * impulse
+                    body.velocity[1] = body.velocity[1] + contact.normal.y * impulse
+                    body.velocity[2] = body.velocity[2] + contact.normal.z * impulse
+                    rx := contact.contact.x - transform.translation[0]
+                    ry := contact.contact.y - transform.translation[1]
+                    rz := contact.contact.z - transform.translation[2]
+                    torque_x := ry * contact.normal.z - rz * contact.normal.y
+                    torque_y := rz * contact.normal.x - rx * contact.normal.z
+                    torque_z := rx * contact.normal.y - ry * contact.normal.x
+                    inv_i := inverse_inertia_diagonal(
+                        flags.shape,
+                        Vec3 { x: half_x, y: half_y, z: half_z },
+                        flags.radius,
+                        flags.half_height,
+                        body.inv_mass,
+                    )
+                    if not body.rotation_locked:
+                        body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + inv_i.x * torque_x * impulse, -10.0, 10.0)
+                        body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + inv_i.y * torque_y * impulse, -10.0, 10.0)
+                        body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + inv_i.z * torque_z * impulse, -10.0, 10.0)
 
-            if push.x != 0.0 or push.y != 0.0 or push.z != 0.0:
-                transform.translation[0] = transform.translation[0] + push.x
-                transform.translation[1] = transform.translation[1] + push.y
-                transform.translation[2] = transform.translation[2] + push.z
-                if push.x != 0.0:
-                    body.velocity[0] = 0.0
-                if push.y != 0.0:
-                    body.velocity[1] = 0.0
-                if push.z != 0.0:
-                    body.velocity[2] = 0.0
-                if not body.rotation_locked:
-                    body.angular_velocity[0] = e7_f32_clamp(
-                        body.angular_velocity[0] + push.z * 0.8,
-                        -8.0,
-                        8.0,
-                    )
-                    body.angular_velocity[1] = e7_f32_clamp(
-                        body.angular_velocity[1] + (push.x - push.z) * 1.6,
-                        -8.0,
-                        8.0,
-                    )
-                    body.angular_velocity[2] = e7_f32_clamp(
-                        body.angular_velocity[2] - push.x * 0.8,
-                        -8.0,
-                        8.0,
-                    )
-
-        # Recompute bounds after collision resolution and insert into the grid.
-        final_min_x := transform.translation[0] - body_bounds.half_extents[0]
-        final_min_y := transform.translation[1] - body_bounds.half_extents[1]
-        final_min_z := transform.translation[2] - body_bounds.half_extents[2]
-        final_max_x := transform.translation[0] + body_bounds.half_extents[0]
-        final_max_y := transform.translation[1] + body_bounds.half_extents[1]
-        final_max_z := transform.translation[2] + body_bounds.half_extents[2]
-        ids = e7_vec_push(ids, flags.target_id)
-        body_count = body_count + 1
-        stored_bounds = e7_vec_push(stored_bounds, final_min_x)
-        stored_bounds = e7_vec_push(stored_bounds, final_min_y)
-        stored_bounds = e7_vec_push(stored_bounds, final_min_z)
-        stored_bounds = e7_vec_push(stored_bounds, final_max_x)
-        stored_bounds = e7_vec_push(stored_bounds, final_max_y)
-        stored_bounds = e7_vec_push(stored_bounds, final_max_z)
+        # Store final broadphase/collision data (after push-out).
+        final_aabb := shape_aabb(
+            flags.shape,
+            Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+            Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] },
+            flags.radius,
+            flags.half_height,
+            Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+        )
+        ids = e7_vec_push(ids, id)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.x)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.y)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.z)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.x)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.y)
+        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.z)
         stored_shapes = e7_vec_push(stored_shapes, flags.shape)
         stored_radius = e7_vec_push(stored_radius, flags.radius)
         stored_half_height = e7_vec_push(stored_half_height, flags.half_height)
+        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[0])
+        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[1])
+        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[2])
+        stored_quats = e7_vec_push(stored_quats, q.x)
+        stored_quats = e7_vec_push(stored_quats, q.y)
+        stored_quats = e7_vec_push(stored_quats, q.z)
+        stored_quats = e7_vec_push(stored_quats, q.w)
+        body_count = body_count + 1
         broadphase_insert(
             &mut cells,
             cell_size,
-            flags.target_id,
-            Vec3 { x: final_min_x, y: final_min_y, z: final_min_z },
-            Vec3 { x: final_max_x, y: final_max_y, z: final_max_z },
+            id,
+            Vec3 { x: final_aabb.min.x, y: final_aabb.min.y, z: final_aabb.min.z },
+            Vec3 { x: final_aabb.max.x, y: final_aabb.max.y, z: final_aabb.max.z },
         )
         if flags.is_player:
             world.player_x = transform.translation[0]
@@ -548,7 +636,7 @@ pub physics_step <- sys (
     spatial.bounds = stored_bounds
     spatial.count = body_count
 
-    # ---------------------------------------------------------- interactions
+    # ------------------------------------------------------- nearest pickup
     released := false
     released_id := 0
     if input.interact_pressed:
@@ -556,22 +644,30 @@ pub physics_step <- sys (
             released_id = pickup_state.held_id
             pickup_state.held_id = 0
             released = true
-    # Player yaw for held-body placement (camera pass refreshes it after this).
+        else:
+            best_id := 0
+            best_distance := 1000000.0
+            for (transform, body, flags) in interaction_bodies:
+                if not flags.is_pickup:
+                    cont
+                dx := transform.translation[0] - world.player_x
+                dy := transform.translation[1] - world.player_y
+                dz := transform.translation[2] - world.player_z
+                distance := dx * dx + dy * dy + dz * dz
+                if distance > 6.76:
+                    cont
+                tie := e7_f32_abs(distance - best_distance) <= 0.000001
+                if best_id == 0 or distance < best_distance - 0.000001 or (tie and flags.target_id < best_id):
+                    best_id = flags.target_id
+                    best_distance = distance
+            pickup_state.held_id = best_id
+
     hold_yaw := world.camera_yaw
     forward_x := e7_f32_sin(hold_yaw)
     forward_z := 0.0 - e7_f32_cos(hold_yaw)
-    acquired := released
-    for (transform, body, flags) in interaction_bodies:
+    for (transform, body, flags) in hold_bodies:
         if not flags.is_pickup:
             cont
-        if input.interact_pressed and pickup_state.held_id == 0 and not acquired:
-            dx := transform.translation[0] - world.player_x
-            dy := transform.translation[1] - world.player_y
-            dz := transform.translation[2] - world.player_z
-            distance_sq := dx * dx + dy * dy + dz * dz
-            if distance_sq <= 6.76:
-                pickup_state.held_id = flags.target_id
-                acquired = true
         if flags.target_id == pickup_state.held_id:
             flags.held_by = 1
             transform.translation[0] = world.player_x + forward_x * 1.8
@@ -585,10 +681,8 @@ pub physics_step <- sys (
             body.angular_velocity[2] = 0.0
         else:
             flags.held_by = 0
-        if released and flags.target_id == released_id:
-            # Release impulse: a small deterministic spin from letting go.
-            if not body.rotation_locked:
-                body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + 1.6, -8.0, 8.0)
+        if released and flags.target_id == released_id and not body.rotation_locked:
+            body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + 1.6, -10.0, 10.0)
 
     # ------------------------------------------- camera look + follow (same step)
     for (camera, controller) in cameras:
@@ -611,10 +705,6 @@ pub physics_step <- sys (
         world.camera_pitch = camera.pitch
         world.move_speed = controller.move_speed
 
-# Surface the core pickup state as an actual ECS `Held` marker: add it to the
-# held entity and remove it from every other pickup entity.  Removal is deferred
-# through Commands, so this runs in PostUpdate as a cosmetic/tooling view; the
-# gameplay pickup/hold itself is inside the deterministic physics step.
 @trigger(PostUpdate)
 pub physics_held_marker <- sys (
     state: res &PickupState,

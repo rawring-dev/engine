@@ -160,6 +160,17 @@ fn imageForHandle(handle: u64) ?*Image {
     return registry.get(handle);
 }
 
+/// Copy a decoded image's metadata and RGBA8 pixels for GPU upload.  The
+/// caller owns the returned pixels (allocated with `allocator`).
+pub fn snapshot(handle: i64) ?struct { width: u32, height: u32, pixels: []u8 } {
+    if (handle <= 0) return null;
+    registry_mutex.lock();
+    defer registry_mutex.unlock();
+    const image = imageForHandle(@intCast(handle)) orelse return null;
+    const pixels = allocator().dupe(u8, image.pixels) catch return null;
+    return .{ .width = image.width, .height = image.height, .pixels = pixels };
+}
+
 pub export fn e7_image_load(path: i64) callconv(.c) i64 {
     const path_bytes = e7StringBytes(path) orelse return 0;
     if (path_bytes.len == 0) return 0;

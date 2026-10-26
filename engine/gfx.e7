@@ -1,4 +1,12 @@
-# GPU resources and shader/pipeline descriptions.
+# GPU resources, materials, and shader/pipeline descriptions.
+
+# Per-object material: a GPU texture id (0 = built-in white texture) and an
+# RGB tint.  The scene renderer samples `texture` with the mesh UVs and
+# multiplies its own vertex colour and `tint`.
+@Components
+pub Material <- struct
+    texture: u64
+    tint: [f32; 3]
 
 @resource
 pub Gpu <- struct

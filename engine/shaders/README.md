@@ -52,8 +52,20 @@ runtime package's dependency on `transpiler/`.
 | 256 | `tint` | rgb = per-object tint (multiplies the vertex colour); a unused |
 
 The fragment shader multiplies each mesh's base (vertex) colour by
-`scene.tint.rgb`, so procedural shapes share one pipeline/material while each
-object can have its own colour.
+`scene.tint.rgb`, so procedural shapes share one pipeline while each object can
+have its own colour.
+
+## Material textures
+
+Descriptor set 0 is the per-object uniform buffer (dynamic offset).  Descriptor
+set 1 holds the material: binding 1 is a `Texture2D<[f32; 4]>` sampled image and
+binding 2 is a `SamplerState`.  The fragment shader samples it with the vertex
+UV (`@location(3)` in/out) and multiplies `vertex_colour * tint * texture`.
+
+Texture id 0 is a built-in white 1x1 texture created by the renderer, so an
+untextured draw is exactly `vertex_colour * tint`.  The vertex format is
+position(3) + normal(3) + colour(3) + uv(2) = 11 floats; uploaded OBJ meshes
+are converted to that layout at upload time.
 
 The e7s source declares regular matrix fields (`model: [f32; 4, 4]`) and
 uses matrix products (`scene.model * position`).  The transpiler emits

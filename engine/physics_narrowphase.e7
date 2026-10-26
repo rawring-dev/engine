@@ -8,10 +8,34 @@
 #              closest-point tests; AABB helpers remain for coarse queries
 #   - plane:  infinite plane dot(normal, p) == offset
 #
-# Each penetration helper returns the minimum translation vector that separates
-# the first shape from the second; physics.e7 applies it to transforms, zeroes
-# the normal velocity, and adds a deterministic angular impulse on unlocked
-# bodies.
+# Advanced helpers: quaternion math + normalised integration, 15-axis OBB SAT,
+# OBB/plane, sphere/OBB, oriented capsule/OBB, capsule/capsule and
+# sphere/capsule manifolds, plus conservative rotated shape AABBs.  Manifolds
+# carry normal + penetration + approximate contact; physics.e7 applies the
+# positional correction, contact impulse, and angular impulse (r x J via the
+# shape's diagonal inverse inertia) on unlocked bodies.
+
+# Quaternion orientation, stored per body id in PhysicsWorld.quaternions.
+pub Quat <- struct
+    x: f32
+    y: f32
+    z: f32
+    w: f32
+
+# Oriented box: local half extents rotated by `orientation`.
+pub Obb <- struct
+    center: Vec3
+    half_extents: Vec3
+    orientation: Quat
+
+# Narrowphase manifold: `normal` pushes shape A out of shape B, `contact` is
+# the approximate contact point used for angular impulses.
+pub Manifold <- struct
+    hit: bool
+    normal: Vec3
+    penetration: f32
+    contact: Vec3
+
 
 pub vec3_dot <- (a: Vec3, b: Vec3) -> f32:
     ret a.x * b.x + a.y * b.y + a.z * b.z
@@ -276,6 +300,752 @@ pub ray_plane <- (ray: Ray, normal: Vec3, offset: f32) -> RayHit:
 # Capsule ray test approximated by a sphere around the capsule centre.
 pub ray_capsule <- (ray: Ray, center: Vec3, radius: f32, half_height: f32) -> RayHit:
     ret ray_sphere(ray, center, radius + half_height)
+
+# ---------------------------------------------------------------------------
+# Quaternion and oriented-bound helpers
+#
+# Quaternions are (x, y, z, w); `Obb` is a rotated box centred at `center` with
+# half extents along its local axes.  `Manifold.normal` always pushes shape A
+# out of shape B and `contact` is the approximate contact point used for the
+# angular impulse in physics.e7.
+# ---------------------------------------------------------------------------
+
+pub vec3_cross <- (a: Vec3, b: Vec3) -> Vec3:
+    ret Vec3 {
+        x: a.y * b.z - a.z * b.y,
+        y: a.z * b.x - a.x * b.z,
+        z: a.x * b.y - a.y * b.x,
+    }
+
+pub quat_identity <- () -> Quat:
+    ret Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+
+pub quat_normalize <- (q: Quat) -> Quat:
+    length := e7_f32_sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+    if length < 0.000001:
+        ret Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+    inv := 1.0 / length
+    ret Quat { x: q.x * inv, y: q.y * inv, z: q.z * inv, w: q.w * inv }
+
+pub quat_mul <- (a: Quat, b: Quat) -> Quat:
+    ret Quat {
+        x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+        z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    }
+
+pub quat_conjugate <- (q: Quat) -> Quat:
+    ret Quat { x: 0.0 - q.x, y: 0.0 - q.y, z: 0.0 - q.z, w: q.w }
+
+pub quat_rotate <- (q: Quat, v: Vec3) -> Vec3:
+    # v' = v + 2w(qv x v) + 2 qv x (qv x v)
+    tx := 2.0 * (q.y * v.z - q.z * v.y)
+    ty := 2.0 * (q.z * v.x - q.x * v.z)
+    tz := 2.0 * (q.x * v.y - q.y * v.x)
+    ret Vec3 {
+        x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+        y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+        z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+    }
+
+pub quat_from_euler <- (roll: f32, pitch: f32, yaw: f32) -> Quat:
+    half_roll := roll * 0.5
+    half_pitch := pitch * 0.5
+    half_yaw := yaw * 0.5
+    cr := e7_f32_cos(half_roll)
+    sr := e7_f32_sin(half_roll)
+    cp := e7_f32_cos(half_pitch)
+    sp := e7_f32_sin(half_pitch)
+    cy := e7_f32_cos(half_yaw)
+    sy := e7_f32_sin(half_yaw)
+    qx := Quat {
+        x: sr * cp * cy - cr * sp * sy,
+        y: cr * sp * cy + sr * cp * sy,
+        z: cr * cp * sy - sr * sp * cy,
+        w: cr * cp * cy + sr * sp * sy,
+    }
+    # qx here is the XYZ-convention quaternion; yaw is applied last.
+    ret quat_normalize(qx)
+
+pub quat_integrate <- (q: Quat, omega: Vec3, dt: f32) -> Quat:
+    half_dt := dt * 0.5
+    wx := omega.x * half_dt
+    wy := omega.y * half_dt
+    wz := omega.z * half_dt
+    next := Quat {
+        x: q.x + (wx * q.w + wy * q.z - wz * q.y),
+        y: q.y + (wy * q.w + wz * q.x - wx * q.z),
+        z: q.z + (wz * q.w + wx * q.y - wy * q.x),
+        w: q.w + (0.0 - wx * q.x - wy * q.y - wz * q.z),
+    }
+    ret quat_normalize(next)
+
+# Small atan approximation for |x| <= 1; rendering-quality Euler sync only.
+atan_unit <- (x: f32) -> f32:
+    x2 := x * x
+    poly := x * (1.0 - x2 * (0.3333333333 - x2 * (0.2 - x2 * (0.1428571428 - x2 * 0.1111111111))))
+    ret poly
+
+pub atan2_approx <- (y: f32, x: f32) -> f32:
+    pi := 3.1415926535
+    if x > 0.000001:
+        ret atan_unit(y / x)
+    if x < 0.0 - 0.000001:
+        if y >= 0.0:
+            ret atan_unit(y / x) + pi
+        ret atan_unit(y / x) - pi
+    if y > 0.0:
+        ret pi * 0.5
+    if y < 0.0:
+        ret 0.0 - pi * 0.5
+    ret 0.0
+
+pub asin_approx <- (x: f32) -> f32:
+    clamped := e7_f32_clamp(x, -1.0, 1.0)
+    root := e7_f32_sqrt(1.0 - clamped * clamped)
+    ret atan2_approx(clamped, root)
+
+pub quat_to_euler <- (q: Quat) -> Vec3:
+    sin_pitch := e7_f32_clamp(2.0 * (q.w * q.x - q.y * q.z), -1.0, 1.0)
+    pitch := asin_approx(sin_pitch)
+    yaw := atan2_approx(2.0 * (q.w * q.y + q.x * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+    roll := atan2_approx(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.x * q.x + q.z * q.z))
+    ret Vec3 { x: roll, y: pitch, z: yaw }
+
+pub quat_from_vec <- (values: [f32]) -> Quat:
+    if values.len() < 4:
+        ret Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+    ret quat_normalize(Quat {
+        x: values[0],
+        y: values[1],
+        z: values[2],
+        w: values[3],
+    })
+
+# World-space AABB of an oriented shape.  Broadphase stays conservative.
+pub shape_aabb <- (
+    shape: i64,
+    center: Vec3,
+    half_extents: Vec3,
+    radius: f32,
+    half_height: f32,
+    orientation: Quat,
+) -> Aabb:
+    if shape == 3:
+        ret Aabb {
+            min: Vec3 { x: center.x, y: center.y, z: center.z },
+            max: Vec3 { x: center.x, y: center.y, z: center.z },
+        }
+    if shape == 1:
+        ret Aabb {
+            min: Vec3 { x: center.x - radius, y: center.y - radius, z: center.z - radius },
+            max: Vec3 { x: center.x + radius, y: center.y + radius, z: center.z + radius },
+        }
+    axis_x := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    axis_y := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    axis_z := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    if shape == 2:
+        # Capsule segment endpoints + radius.
+        segment := Vec3 {
+            x: axis_y.x * half_height,
+            y: axis_y.y * half_height,
+            z: axis_y.z * half_height,
+        }
+        ret Aabb {
+            min: Vec3 {
+                x: center.x - segment.x - radius,
+                y: center.y - segment.y - radius,
+                z: center.z - segment.z - radius,
+            },
+            max: Vec3 {
+                x: center.x + segment.x + radius,
+                y: center.y + segment.y + radius,
+                z: center.z + segment.z + radius,
+            },
+        }
+    ex := e7_f32_abs(axis_x.x) * half_extents.x + e7_f32_abs(axis_y.x) * half_extents.y + e7_f32_abs(axis_z.x) * half_extents.z
+    ey := e7_f32_abs(axis_x.y) * half_extents.x + e7_f32_abs(axis_y.y) * half_extents.y + e7_f32_abs(axis_z.y) * half_extents.z
+    ez := e7_f32_abs(axis_x.z) * half_extents.x + e7_f32_abs(axis_y.z) * half_extents.y + e7_f32_abs(axis_z.z) * half_extents.z
+    ret Aabb {
+        min: Vec3 { x: center.x - ex, y: center.y - ey, z: center.z - ez },
+        max: Vec3 { x: center.x + ex, y: center.y + ey, z: center.z + ez },
+    }
+
+pub obb_axis_radius <- (axis: Vec3, half_extents: Vec3, orientation: Quat) -> f32:
+    ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    ret (
+        e7_f32_abs(axis.x * ax.x + axis.y * ax.y + axis.z * ax.z) * half_extents.x +
+        e7_f32_abs(axis.x * ay.x + axis.y * ay.y + axis.z * ay.z) * half_extents.y +
+        e7_f32_abs(axis.x * az.x + axis.y * az.y + axis.z * az.z) * half_extents.z
+    )
+
+# 15-axis SAT for two oriented boxes.
+pub obb_obb_manifold <- (a: Obb, b: Obb) -> Manifold:
+    ax_x := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ax_y := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    ax_z := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    bx := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    by := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    bz := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    dx := a.center.x - b.center.x
+    dy := a.center.y - b.center.y
+    dz := a.center.z - b.center.z
+
+    best := 1000000.0
+    bx_n := 0.0
+    by_n := 0.0
+    bz_n := 0.0
+
+    # 3 A axes
+    r := obb_axis_radius(Vec3 { x: ax_x.x, y: ax_x.y, z: ax_x.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    ra := a.half_extents.x
+    if ra + r <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    overlap := ra + r - e7_f32_abs(dx * ax_x.x + dy * ax_x.y + dz * ax_x.z)
+    if overlap <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap < best:
+        best = overlap
+        bx_n = ax_x.x
+        by_n = ax_x.y
+        bz_n = ax_x.z
+
+    r2 := obb_axis_radius(Vec3 { x: ax_y.x, y: ax_y.y, z: ax_y.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    ra2 := a.half_extents.y
+    overlap2 := ra2 + r2 - e7_f32_abs(dx * ax_y.x + dy * ax_y.y + dz * ax_y.z)
+    if overlap2 <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap2 < best:
+        best = overlap2
+        bx_n = ax_y.x
+        by_n = ax_y.y
+        bz_n = ax_y.z
+
+    r3 := obb_axis_radius(Vec3 { x: ax_z.x, y: ax_z.y, z: ax_z.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    ra3 := a.half_extents.z
+    overlap3 := ra3 + r3 - e7_f32_abs(dx * ax_z.x + dy * ax_z.y + dz * ax_z.z)
+    if overlap3 <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap3 < best:
+        best = overlap3
+        bx_n = ax_z.x
+        by_n = ax_z.y
+        bz_n = ax_z.z
+
+    # 3 B axes
+    rb := obb_axis_radius(Vec3 { x: bx.x, y: bx.y, z: bx.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    overlap4 := b.half_extents.x + rb - e7_f32_abs(dx * bx.x + dy * bx.y + dz * bx.z)
+    if overlap4 <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap4 < best:
+        best = overlap4
+        bx_n = bx.x
+        by_n = bx.y
+        bz_n = bx.z
+
+    rb2 := obb_axis_radius(Vec3 { x: by.x, y: by.y, z: by.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    overlap5 := b.half_extents.y + rb2 - e7_f32_abs(dx * by.x + dy * by.y + dz * by.z)
+    if overlap5 <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap5 < best:
+        best = overlap5
+        bx_n = by.x
+        by_n = by.y
+        bz_n = by.z
+
+    rb3 := obb_axis_radius(Vec3 { x: bz.x, y: bz.y, z: bz.z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+    overlap6 := b.half_extents.z + rb3 - e7_f32_abs(dx * bz.x + dy * bz.y + dz * bz.z)
+    if overlap6 <= 0.0:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+    if overlap6 < best:
+        best = overlap6
+        bx_n = bz.x
+        by_n = bz.y
+        bz_n = bz.z
+
+    # 9 cross axes (A axes x B axes); normalised before projection.
+    cross_xx := vec3_cross(Vec3 { x: ax_x.x, y: ax_x.y, z: ax_x.z }, Vec3 { x: bx.x, y: bx.y, z: bx.z })
+    cross_xx_l := e7_f32_sqrt(cross_xx.x * cross_xx.x + cross_xx.y * cross_xx.y + cross_xx.z * cross_xx.z)
+    if cross_xx_l > 0.0001:
+        axis_x := cross_xx.x / cross_xx_l
+        axis_y := cross_xx.y / cross_xx_l
+        axis_z := cross_xx.z / cross_xx_l
+        r_ax := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w })
+        overlap_c := r_ax + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_xy := vec3_cross(Vec3 { x: ax_x.x, y: ax_x.y, z: ax_x.z }, Vec3 { x: by.x, y: by.y, z: by.z })
+    cross_xy_l := e7_f32_sqrt(cross_xy.x * cross_xy.x + cross_xy.y * cross_xy.y + cross_xy.z * cross_xy.z)
+    if cross_xy_l > 0.0001:
+        axis_x := cross_xy.x / cross_xy_l
+        axis_y := cross_xy.y / cross_xy_l
+        axis_z := cross_xy.z / cross_xy_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_xz := vec3_cross(Vec3 { x: ax_x.x, y: ax_x.y, z: ax_x.z }, Vec3 { x: bz.x, y: bz.y, z: bz.z })
+    cross_xz_l := e7_f32_sqrt(cross_xz.x * cross_xz.x + cross_xz.y * cross_xz.y + cross_xz.z * cross_xz.z)
+    if cross_xz_l > 0.0001:
+        axis_x := cross_xz.x / cross_xz_l
+        axis_y := cross_xz.y / cross_xz_l
+        axis_z := cross_xz.z / cross_xz_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_yx := vec3_cross(Vec3 { x: ax_y.x, y: ax_y.y, z: ax_y.z }, Vec3 { x: bx.x, y: bx.y, z: bx.z })
+    cross_yx_l := e7_f32_sqrt(cross_yx.x * cross_yx.x + cross_yx.y * cross_yx.y + cross_yx.z * cross_yx.z)
+    if cross_yx_l > 0.0001:
+        axis_x := cross_yx.x / cross_yx_l
+        axis_y := cross_yx.y / cross_yx_l
+        axis_z := cross_yx.z / cross_yx_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_yy := vec3_cross(Vec3 { x: ax_y.x, y: ax_y.y, z: ax_y.z }, Vec3 { x: by.x, y: by.y, z: by.z })
+    cross_yy_l := e7_f32_sqrt(cross_yy.x * cross_yy.x + cross_yy.y * cross_yy.y + cross_yy.z * cross_yy.z)
+    if cross_yy_l > 0.0001:
+        axis_x := cross_yy.x / cross_yy_l
+        axis_y := cross_yy.y / cross_yy_l
+        axis_z := cross_yy.z / cross_yy_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_yz := vec3_cross(Vec3 { x: ax_y.x, y: ax_y.y, z: ax_y.z }, Vec3 { x: bz.x, y: bz.y, z: bz.z })
+    cross_yz_l := e7_f32_sqrt(cross_yz.x * cross_yz.x + cross_yz.y * cross_yz.y + cross_yz.z * cross_yz.z)
+    if cross_yz_l > 0.0001:
+        axis_x := cross_yz.x / cross_yz_l
+        axis_y := cross_yz.y / cross_yz_l
+        axis_z := cross_yz.z / cross_yz_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_zx := vec3_cross(Vec3 { x: ax_z.x, y: ax_z.y, z: ax_z.z }, Vec3 { x: bx.x, y: bx.y, z: bx.z })
+    cross_zx_l := e7_f32_sqrt(cross_zx.x * cross_zx.x + cross_zx.y * cross_zx.y + cross_zx.z * cross_zx.z)
+    if cross_zx_l > 0.0001:
+        axis_x := cross_zx.x / cross_zx_l
+        axis_y := cross_zx.y / cross_zx_l
+        axis_z := cross_zx.z / cross_zx_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_zy := vec3_cross(Vec3 { x: ax_z.x, y: ax_z.y, z: ax_z.z }, Vec3 { x: by.x, y: by.y, z: by.z })
+    cross_zy_l := e7_f32_sqrt(cross_zy.x * cross_zy.x + cross_zy.y * cross_zy.y + cross_zy.z * cross_zy.z)
+    if cross_zy_l > 0.0001:
+        axis_x := cross_zy.x / cross_zy_l
+        axis_y := cross_zy.y / cross_zy_l
+        axis_z := cross_zy.z / cross_zy_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    cross_zz := vec3_cross(Vec3 { x: ax_z.x, y: ax_z.y, z: ax_z.z }, Vec3 { x: bz.x, y: bz.y, z: bz.z })
+    cross_zz_l := e7_f32_sqrt(cross_zz.x * cross_zz.x + cross_zz.y * cross_zz.y + cross_zz.z * cross_zz.z)
+    if cross_zz_l > 0.0001:
+        axis_x := cross_zz.x / cross_zz_l
+        axis_y := cross_zz.y / cross_zz_l
+        axis_z := cross_zz.z / cross_zz_l
+        overlap_c := obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }) + obb_axis_radius(Vec3 { x: axis_x, y: axis_y, z: axis_z }, Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }) - e7_f32_abs(dx * axis_x + dy * axis_y + dz * axis_z)
+        if overlap_c <= 0.0:
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+        if overlap_c < best:
+            best = overlap_c
+            bx_n = axis_x
+            by_n = axis_y
+            bz_n = axis_z
+
+    # Orient the normal from B toward A.
+    if dx * bx_n + dy * by_n + dz * bz_n < 0.0:
+        bx_n = 0.0 - bx_n
+        by_n = 0.0 - by_n
+        bz_n = 0.0 - bz_n
+    contact := Vec3 {
+        x: a.center.x - bx_n * best * 0.5,
+        y: a.center.y - by_n * best * 0.5,
+        z: a.center.z - bz_n * best * 0.5,
+    }
+    ret Manifold {
+        hit: true,
+        normal: Vec3 { x: bx_n, y: by_n, z: bz_n },
+        penetration: best,
+        contact: contact,
+    }
+
+# OBB vs plane: push the OBB out along +normal.
+pub obb_plane_manifold <- (box: Obb, normal: Vec3, offset: f32) -> Manifold:
+    length := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if length < 0.000001:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y, z: box.center.z } }
+    nx := normal.x / length
+    ny := normal.y / length
+    nz := normal.z / length
+    ax := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    support := (
+        e7_f32_abs(nx * ax.x + ny * ax.y + nz * ax.z) * box.half_extents.x +
+        e7_f32_abs(nx * ay.x + ny * ay.y + nz * ay.z) * box.half_extents.y +
+        e7_f32_abs(nx * az.x + ny * az.y + nz * az.z) * box.half_extents.z
+    )
+    distance := nx * box.center.x + ny * box.center.y + nz * box.center.z - offset
+    if distance >= support:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y, z: box.center.z } }
+    penetration := support - distance
+    ret Manifold {
+        hit: true,
+        normal: Vec3 { x: nx, y: ny, z: nz },
+        penetration: penetration,
+        contact: Vec3 {
+            x: box.center.x - nx * support,
+            y: box.center.y - ny * support,
+            z: box.center.z - nz * support,
+        },
+    }
+
+pub sphere_obb_manifold <- (center: Vec3, radius: f32, box: Obb) -> Manifold:
+    inv := quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w })
+    local := quat_rotate(inv, Vec3 {
+        x: center.x - box.center.x,
+        y: center.y - box.center.y,
+        z: center.z - box.center.z,
+    })
+    closest_x := e7_f32_clamp(local.x, 0.0 - box.half_extents.x, box.half_extents.x)
+    closest_y := e7_f32_clamp(local.y, 0.0 - box.half_extents.y, box.half_extents.y)
+    closest_z := e7_f32_clamp(local.z, 0.0 - box.half_extents.z, box.half_extents.z)
+    dx := local.x - closest_x
+    dy := local.y - closest_y
+    dz := local.z - closest_z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    if distance >= radius:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+    local_normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    if distance > 0.000001:
+        local_normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
+    world_normal := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_normal)
+    local_contact := Vec3 { x: closest_x, y: closest_y, z: closest_z }
+    world_contact := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_contact)
+    ret Manifold {
+        hit: true,
+        normal: Vec3 { x: world_normal.x, y: world_normal.y, z: world_normal.z },
+        penetration: radius - distance,
+        contact: Vec3 {
+            x: box.center.x + world_contact.x,
+            y: box.center.y + world_contact.y,
+            z: box.center.z + world_contact.z,
+        },
+    }
+
+# Capsule (A) vs OBB (B), using the capsule segment's closest point in OBB space.
+pub capsule_obb_manifold <- (
+    center: Vec3,
+    radius: f32,
+    half_height: f32,
+    orientation: Quat,
+    box: Obb,
+) -> Manifold:
+    local_center := quat_rotate(quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }), Vec3 {
+        x: center.x - box.center.x,
+        y: center.y - box.center.y,
+        z: center.z - box.center.z,
+    })
+    local_axis := quat_rotate(quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }), quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 }))
+    segment_min := Vec3 {
+        x: local_center.x - local_axis.x * half_height,
+        y: local_center.y - local_axis.y * half_height,
+        z: local_center.z - local_axis.z * half_height,
+    }
+    segment_max := Vec3 {
+        x: local_center.x + local_axis.x * half_height,
+        y: local_center.y + local_axis.y * half_height,
+        z: local_center.z + local_axis.z * half_height,
+    }
+    # Closest point on the arbitrary-oriented segment to the box, sampled
+    # deterministically, then refined to a world-space manifold.
+    best_distance := 1000000.0
+    best_dx := 0.0
+    best_dy := 0.0
+    best_dz := 0.0
+    best_point_x := 0.0
+    best_point_y := 0.0
+    best_point_z := 0.0
+    sample := 0
+    while sample < 9:
+        t := e7_f32_from_i64(sample) / 8.0
+        px := segment_min.x + (segment_max.x - segment_min.x) * t
+        py := segment_min.y + (segment_max.y - segment_min.y) * t
+        pz := segment_min.z + (segment_max.z - segment_min.z) * t
+        cx := e7_f32_clamp(px, 0.0 - box.half_extents.x, box.half_extents.x)
+        cy := e7_f32_clamp(py, 0.0 - box.half_extents.y, box.half_extents.y)
+        cz := e7_f32_clamp(pz, 0.0 - box.half_extents.z, box.half_extents.z)
+        dx := px - cx
+        dy := py - cy
+        dz := pz - cz
+        distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+        if distance < best_distance:
+            best_distance = distance
+            best_dx = dx
+            best_dy = dy
+            best_dz = dz
+            best_point_x = cx
+            best_point_y = cy
+            best_point_z = cz
+        sample = sample + 1
+    if best_distance >= radius:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+    local_normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    if best_distance > 0.000001:
+        local_normal = Vec3 { x: best_dx / best_distance, y: best_dy / best_distance, z: best_dz / best_distance }
+    world_normal := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_normal)
+    local_contact := Vec3 { x: best_point_x, y: best_point_y, z: best_point_z }
+    world_contact := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_contact)
+    ret Manifold {
+        hit: true,
+        normal: Vec3 { x: world_normal.x, y: world_normal.y, z: world_normal.z },
+        penetration: radius - best_distance,
+        contact: Vec3 {
+            x: box.center.x + world_contact.x,
+            y: box.center.y + world_contact.y,
+            z: box.center.z + world_contact.z,
+        },
+    }
+
+# Oriented capsule (A) vs plane (B): +normal pushes the capsule out.
+pub capsule_plane_manifold <- (
+    center: Vec3,
+    radius: f32,
+    half_height: f32,
+    orientation: Quat,
+    normal: Vec3,
+    offset: f32,
+) -> Manifold:
+    length := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if length < 0.000001:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+    nx := normal.x / length
+    ny := normal.y / length
+    nz := normal.z / length
+    axis := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    support := radius + half_height * e7_f32_abs(nx * axis.x + ny * axis.y + nz * axis.z)
+    distance := nx * center.x + ny * center.y + nz * center.z - offset
+    if distance >= support:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+    return_contact := Vec3 {
+        x: center.x - nx * support,
+        y: center.y - ny * support,
+        z: center.z - nz * support,
+    }
+    ret Manifold {
+        hit: true,
+        normal: Vec3 { x: nx, y: ny, z: nz },
+        penetration: support - distance,
+        contact: return_contact,
+    }
+
+pub sphere_sphere_manifold <- (
+    center_a: Vec3,
+    radius_a: f32,
+    center_b: Vec3,
+    radius_b: f32,
+) -> Manifold:
+    dx := center_a.x - center_b.x
+    dy := center_a.y - center_b.y
+    dz := center_a.z - center_b.z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    combined := radius_a + radius_b
+    if distance >= combined:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center_a.x, y: center_a.y, z: center_a.z } }
+    normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    if distance > 0.000001:
+        normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
+    ret Manifold {
+        hit: true,
+        normal: normal,
+        penetration: combined - distance,
+        contact: Vec3 {
+            x: (center_a.x + center_b.x) * 0.5,
+            y: (center_a.y + center_b.y) * 0.5,
+            z: (center_a.z + center_b.z) * 0.5,
+        },
+    }
+
+# Diagonal inverse inertia for the simple demo shapes (world axes approximation).
+pub inverse_inertia_diagonal <- (
+    shape: i64,
+    half_extents: Vec3,
+    radius: f32,
+    half_height: f32,
+    inv_mass: f32,
+) -> Vec3:
+    if inv_mass <= 0.0:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    if shape == 1:
+        value := 2.5 * inv_mass / (radius * radius + 0.000001)
+        ret Vec3 { x: value, y: value, z: value }
+    if shape == 2:
+        lateral := 12.0 * inv_mass / (3.0 * radius * radius + 4.0 * half_height * half_height + 0.000001)
+        vertical := 2.0 * inv_mass / (radius * radius + 0.000001)
+        ret Vec3 { x: lateral, y: vertical, z: lateral }
+    x_axis := 3.0 * inv_mass / (half_extents.y * half_extents.y + half_extents.z * half_extents.z + 0.000001)
+    y_axis := 3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.z * half_extents.z + 0.000001)
+    z_axis := 3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.y * half_extents.y + 0.000001)
+    ret Vec3 { x: x_axis, y: y_axis, z: z_axis }
+
+pub capsule_capsule_manifold <- (
+    center_a: Vec3,
+    radius_a: f32,
+    half_height_a: f32,
+    orientation_a: Quat,
+    center_b: Vec3,
+    radius_b: f32,
+    half_height_b: f32,
+    orientation_b: Quat,
+) -> Manifold:
+    axis_a := quat_rotate(Quat { x: orientation_a.x, y: orientation_a.y, z: orientation_a.z, w: orientation_a.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    axis_b := quat_rotate(Quat { x: orientation_b.x, y: orientation_b.y, z: orientation_b.z, w: orientation_b.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    a1 := Vec3 { x: center_a.x - axis_a.x * half_height_a, y: center_a.y - axis_a.y * half_height_a, z: center_a.z - axis_a.z * half_height_a }
+    a2 := Vec3 { x: center_a.x + axis_a.x * half_height_a, y: center_a.y + axis_a.y * half_height_a, z: center_a.z + axis_a.z * half_height_a }
+    b1 := Vec3 { x: center_b.x - axis_b.x * half_height_b, y: center_b.y - axis_b.y * half_height_b, z: center_b.z - axis_b.z * half_height_b }
+    b2 := Vec3 { x: center_b.x + axis_b.x * half_height_b, y: center_b.y + axis_b.y * half_height_b, z: center_b.z + axis_b.z * half_height_b }
+    d1 := Vec3 { x: a2.x - a1.x, y: a2.y - a1.y, z: a2.z - a1.z }
+    d2 := Vec3 { x: b2.x - b1.x, y: b2.y - b1.y, z: b2.z - b1.z }
+    r := Vec3 { x: a1.x - b1.x, y: a1.y - b1.y, z: a1.z - b1.z }
+    aa := d1.x * d1.x + d1.y * d1.y + d1.z * d1.z
+    ee := d2.x * d2.x + d2.y * d2.y + d2.z * d2.z
+    ff := d2.x * r.x + d2.y * r.y + d2.z * r.z
+    s := 0.0
+    t := 0.0
+    if aa <= 0.000001 and ee <= 0.000001:
+        s = 0.0
+        t = 0.0
+    elif aa <= 0.000001:
+        s = 0.0
+        t = e7_f32_clamp(ff / ee, 0.0, 1.0)
+    else:
+        cc := d1.x * r.x + d1.y * r.y + d1.z * r.z
+        if ee <= 0.000001:
+            t = 0.0
+            s = e7_f32_clamp(0.0 - cc / aa, 0.0, 1.0)
+        else:
+            bb := d1.x * d2.x + d1.y * d2.y + d1.z * d2.z
+            denom := aa * ee - bb * bb
+            if e7_f32_abs(denom) > 0.000001:
+                s = e7_f32_clamp((bb * ff - cc * ee) / denom, 0.0, 1.0)
+            else:
+                s = 0.0
+            t = (bb * s + ff) / ee
+            if t < 0.0:
+                t = 0.0
+                s = e7_f32_clamp(0.0 - cc / aa, 0.0, 1.0)
+            elif t > 1.0:
+                t = 1.0
+                s = e7_f32_clamp((bb - cc) / aa, 0.0, 1.0)
+    point_a := Vec3 { x: a1.x + d1.x * s, y: a1.y + d1.y * s, z: a1.z + d1.z * s }
+    point_b := Vec3 { x: b1.x + d2.x * t, y: b1.y + d2.y * t, z: b1.z + d2.z * t }
+    dx := point_a.x - point_b.x
+    dy := point_a.y - point_b.y
+    dz := point_a.z - point_b.z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    combined := radius_a + radius_b
+    if distance >= combined:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: point_a.x, y: point_a.y, z: point_a.z } }
+    normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    if distance > 0.000001:
+        normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
+    ret Manifold {
+        hit: true,
+        normal: normal,
+        penetration: combined - distance,
+        contact: Vec3 {
+            x: (point_a.x + point_b.x) * 0.5,
+            y: (point_a.y + point_b.y) * 0.5,
+            z: (point_a.z + point_b.z) * 0.5,
+        },
+    }
+
+# Sphere vs capsule (sphere A, capsule B).
+pub sphere_capsule_manifold <- (
+    center: Vec3,
+    radius: f32,
+    capsule_center: Vec3,
+    capsule_radius: f32,
+    half_height: f32,
+    orientation: Quat,
+) -> Manifold:
+    axis := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    # Project the sphere centre onto the oriented capsule segment.
+    projected := center.x * axis.x + center.y * axis.y + center.z * axis.z
+    capsule_projection := capsule_center.x * axis.x + capsule_center.y * axis.y + capsule_center.z * axis.z
+    offset := e7_f32_clamp(projected - capsule_projection, 0.0 - half_height, half_height)
+    closest := Vec3 {
+        x: capsule_center.x + axis.x * offset,
+        y: capsule_center.y + axis.y * offset,
+        z: capsule_center.z + axis.z * offset,
+    }
+    dx := center.x - closest.x
+    dy := center.y - closest.y
+    dz := center.z - closest.z
+    distance := e7_f32_sqrt(dx * dx + dy * dy + dz * dz)
+    combined := radius + capsule_radius
+    if distance >= combined:
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: closest.x, y: closest.y, z: closest.z } }
+    normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    if distance > 0.000001:
+        normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
+    ret Manifold {
+        hit: true,
+        normal: normal,
+        penetration: combined - distance,
+        contact: Vec3 { x: closest.x, y: closest.y, z: closest.z },
+    }
 
 # Plugin marker: keeps the module in the project plugin graph; all narrowphase
 # work is exposed as pure functions called by `physics.e7` systems.

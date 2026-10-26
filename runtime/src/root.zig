@@ -1133,10 +1133,17 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     // `main` returns i32 0 on success after DeInit tears down window/scene.
     try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
     const stats = engine.renderStats();
+    if (engine.lastFailure()) |message| {
+        std.debug.print("engine project runtime failure: {s}\n", .{message});
+    }
     try std.testing.expect(stats.scene_draws > 0);
-    // The demo scene has a plane, player, ball, and three stacked cubes; each
-    // renderable must reach the multi-object scene renderer.
+    // The demo scene has a plane, ball, three stacked cubes, and a custom OBJ
+    // mesh; each renderable must reach the multi-object scene renderer.  The
+    // image/OBJ assets must have been uploaded to the GPU by AssetsPlugin.
     try std.testing.expect(stats.scene_boxes >= 6);
+    try std.testing.expect(stats.scene_textures >= 1);
+    try std.testing.expect(stats.scene_meshes >= 1);
+    try std.testing.expectEqual(@as(i64, 0), stats.scene_failed_draws);
 
     // Camera component slots: [0] position vector handle, [1] yaw, [2] pitch,
     // then fov/near/far.  Floats are f64 bit patterns in i64 slots.
@@ -1557,8 +1564,14 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
     defer std.testing.allocator.free(obj_source);
     const assets_source = readRepoTextForTest("engine/assets.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(assets_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
+    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(gfx_source);
 
     const root_source =
+        \\mod ecs
+        \\mod gfx
         \\mod obj
         \\mod assets
         \\main <- async () -> i32:
@@ -1571,6 +1584,8 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "gfx", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
             .{ .name = "assets", .source = assets_source },
         },

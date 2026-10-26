@@ -33,6 +33,7 @@ const renderer = @import("ffi/renderer.zig");
 const time_mod = @import("ffi/time.zig");
 const io_mod = @import("ffi/io.zig");
 const aggregate = @import("aggregate.zig");
+const image_mod = @import("image.zig");
 const sdl = @import("ffi/sdl.zig");
 const c = sdl.c;
 
@@ -100,6 +101,9 @@ const State = struct {
     input: InputState = .{},
     scene_draws: i64 = 0,
     scene_boxes: i64 = 0,
+    scene_textures: i64 = 0,
+    scene_meshes: i64 = 0,
+    scene_failed_draws: i64 = 0,
 };
 
 var state: State = .{};
@@ -135,6 +139,42 @@ fn check(status: i32) i64 {
 
 fn milli(value: i64) f32 {
     return @as(f32, @floatFromInt(value)) / 1000.0;
+}
+
+/// e7 float values are f64 bit patterns in i64 slots; narrow for the GPU.
+fn floatSlot(slot: i64) f32 {
+    return @floatCast(@as(f64, @bitCast(slot)));
+}
+
+/// Copy an e7 `[f32]` vector (f64 bit patterns) into a temporary f32 slice.
+fn readFloatVector(handle: i64) ?[]f32 {
+    if (handle == 0) return null;
+    const length = aggregate.e7_vec_len(handle);
+    if (length <= 0) return null;
+    const values = std.heap.c_allocator.alloc(f32, @intCast(length)) catch return null;
+    errdefer std.heap.c_allocator.free(values);
+    for (values, 0..) |*value, index| {
+        value.* = floatSlot(aggregate.e7_vec_get(handle, @intCast(index)));
+    }
+    return values;
+}
+
+/// Copy an e7 `[i32]` vector into a temporary u32 index slice.
+fn readIndexVector(handle: i64) ?[]u32 {
+    if (handle == 0) return null;
+    const length = aggregate.e7_vec_len(handle);
+    if (length <= 0) return null;
+    const values = std.heap.c_allocator.alloc(u32, @intCast(length)) catch return null;
+    errdefer std.heap.c_allocator.free(values);
+    for (values, 0..) |*value, index| {
+        const raw = aggregate.e7_vec_get(handle, @intCast(index));
+        if (raw < 0 or raw > std.math.maxInt(u32)) {
+            std.heap.c_allocator.free(values);
+            return null;
+        }
+        value.* = @intCast(raw);
+    }
+    return values;
 }
 
 fn milliDegreesToRadians(value: i64) f32 {
@@ -247,6 +287,9 @@ pub fn reset() void {
     state.input = .{};
     state.scene_draws = 0;
     state.scene_boxes = 0;
+    state.scene_textures = 0;
+    state.scene_meshes = 0;
+    state.scene_failed_draws = 0;
 }
 
 /// Human-readable first failure observed by the engine intrinsics, if any.
@@ -277,14 +320,27 @@ pub fn setCaptureEnabled(enabled: bool) void {
 pub const RenderStats = struct {
     /// Frames opened with `e7_engine_scene_begin_frame`.
     scene_draws: i64,
-    /// Box draws recorded across all frames (`draw_box` plus `draw_mesh`).
+    /// Object draws recorded across all frames (`draw_box`/`draw_mesh`/
+    /// `draw_shape`/`draw_shape_tex`/`draw_custom`).
     scene_boxes: i64,
+    /// GPU textures created through `e7_engine_scene_texture_create`.
+    scene_textures: i64,
+    /// Custom meshes uploaded through `e7_engine_scene_mesh_upload`.
+    scene_meshes: i64,
+    /// Draws rejected by the renderer (invalid frame/kind/texture/mesh).
+    scene_failed_draws: i64,
 };
 
 pub fn renderStats() RenderStats {
     state.mutex.lock();
     defer state.mutex.unlock();
-    return .{ .scene_draws = state.scene_draws, .scene_boxes = state.scene_boxes };
+    return .{
+        .scene_draws = state.scene_draws,
+        .scene_boxes = state.scene_boxes,
+        .scene_textures = state.scene_textures,
+        .scene_meshes = state.scene_meshes,
+        .scene_failed_draws = state.scene_failed_draws,
+    };
 }
 
 pub fn frames() i64 {
@@ -605,8 +661,8 @@ pub export fn e7_engine_scene_draw_mesh(handle: i64) callconv(.c) i64 {
 /// `e7_engine_scene_begin_frame`.  `kind` selects box=0, sphere=1, capsule=2,
 /// plane=3.  Position, scale, and RGB tint are milli-units (world units /
 /// colour x1000); the Y rotation is milli-radians.  Returns 0 on success, -1
-/// for an invalid kind, no active frame, or the per-frame object limit
-/// (`renderer.max_objects`, 64).
+/// for an invalid kind, no active frame, or allocator/descriptor limits (the
+/// per-frame object count is dynamic).
 pub export fn e7_engine_scene_draw_box(
     handle: i64,
     x_milli: i64,
@@ -656,6 +712,116 @@ pub export fn e7_engine_scene_draw_shape(
     return 0;
 }
 
+/// Create a GPU texture from an `e7_image_load` handle (RGBA8) and return a
+/// scene-local texture id (>= 1; 0 is the built-in white texture).
+pub export fn e7_engine_scene_texture_create(handle: i64, image_handle: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    const snapshot = image_mod.snapshot(image_handle) orelse return -1;
+    defer std.heap.c_allocator.free(snapshot.pixels);
+    const id = scene.createTextureFromRgba(snapshot.width, snapshot.height, snapshot.pixels) catch return 0;
+    state.scene_textures += 1;
+    return @intCast(id);
+}
+
+pub export fn e7_engine_scene_texture_destroy(handle: i64, texture_id: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    if (texture_id <= 0 or texture_id > std.math.maxInt(u32)) return -1;
+    scene.destroyTexture(@intCast(texture_id)) catch return -1;
+    return 0;
+}
+
+/// Draw a procedural shape with an explicit material texture id.
+pub export fn e7_engine_scene_draw_shape_tex(
+    handle: i64,
+    shape_kind: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    angle_milli_radians: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+    texture_id: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    const shape = renderer.shapeFromInt(shape_kind) orelse return -1;
+    if (texture_id < 0 or texture_id > std.math.maxInt(u32)) return -1;
+    scene.drawShapeTextured(shape, .{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .angle = milli(angle_milli_radians),
+    }, .{ milli(r_milli), milli(g_milli), milli(b_milli) }, @intCast(texture_id)) catch {
+        state.scene_failed_draws += 1;
+        return -1;
+    };
+    state.scene_boxes += 1;
+    return 0;
+}
+
+/// Upload an OBJ-style mesh from e7 arrays:
+/// `vertices` is `[f32]` interleaved by `layout` (0 = pos3+normal3+uv2,
+/// 1 = pos3+normal3+colour3+uv2), `indices` is `[i32]`.
+pub export fn e7_engine_scene_mesh_upload(
+    handle: i64,
+    vertices_handle: i64,
+    indices_handle: i64,
+    layout: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    const mesh_layout = renderer.meshLayoutFromInt(layout) orelse return -1;
+    const vertices = readFloatVector(vertices_handle) orelse return -1;
+    defer std.heap.c_allocator.free(vertices);
+    const indices = readIndexVector(indices_handle) orelse return -1;
+    defer std.heap.c_allocator.free(indices);
+    const mesh_id = scene.uploadMesh(vertices, indices, mesh_layout) catch return 0;
+    state.scene_meshes += 1;
+    return @intCast(mesh_id);
+}
+
+/// Draw a custom mesh uploaded with `e7_engine_scene_mesh_upload`.
+pub export fn e7_engine_scene_draw_custom(
+    handle: i64,
+    mesh_id: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    angle_milli_radians: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+    texture_id: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    if (mesh_id <= 0 or mesh_id > std.math.maxInt(u32)) return -1;
+    if (texture_id < 0 or texture_id > std.math.maxInt(u32)) return -1;
+    scene.drawCustom(@intCast(mesh_id), .{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .angle = milli(angle_milli_radians),
+    }, .{ milli(r_milli), milli(g_milli), milli(b_milli) }, @intCast(texture_id)) catch {
+        state.scene_failed_draws += 1;
+        return -1;
+    };
+    state.scene_boxes += 1;
+    return 0;
+}
+
 pub export fn e7_engine_scene_end_frame(handle: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
@@ -679,7 +845,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [21]Symbol {
+pub fn symbols() [26]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -697,6 +863,11 @@ pub fn symbols() [21]Symbol {
         .{ .name = "e7_engine_scene_draw_mesh", .address = @intFromPtr(&e7_engine_scene_draw_mesh) },
         .{ .name = "e7_engine_scene_draw_box", .address = @intFromPtr(&e7_engine_scene_draw_box) },
         .{ .name = "e7_engine_scene_draw_shape", .address = @intFromPtr(&e7_engine_scene_draw_shape) },
+        .{ .name = "e7_engine_scene_draw_shape_tex", .address = @intFromPtr(&e7_engine_scene_draw_shape_tex) },
+        .{ .name = "e7_engine_scene_draw_custom", .address = @intFromPtr(&e7_engine_scene_draw_custom) },
+        .{ .name = "e7_engine_scene_texture_create", .address = @intFromPtr(&e7_engine_scene_texture_create) },
+        .{ .name = "e7_engine_scene_texture_destroy", .address = @intFromPtr(&e7_engine_scene_texture_destroy) },
+        .{ .name = "e7_engine_scene_mesh_upload", .address = @intFromPtr(&e7_engine_scene_mesh_upload) },
         .{ .name = "e7_engine_scene_end_frame", .address = @intFromPtr(&e7_engine_scene_end_frame) },
         .{ .name = "e7_engine_should_close", .address = @intFromPtr(&e7_engine_should_close) },
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
@@ -877,4 +1048,121 @@ test "engine draw_box records one draw per box and captures them" {
     try std.testing.expectEqual(@as(u32, 320), capture.width);
     try std.testing.expect(captureIsNonBlack(capture));
     try std.testing.expect(captureHasContent(capture));
+}
+
+test "engine texture, material draw, and custom mesh ABI" {
+    reset();
+    defer shutdown();
+    setHeadless(true);
+    setMaxFrames(1);
+    setCaptureEnabled(true);
+
+    const title_text = "engine7 texture ABI test";
+    const title = aggregate.e7_str_new(@intCast(@intFromPtr(title_text.ptr)), title_text.len);
+    const window = e7_engine_window_create(title, 320, 240);
+    if (window == 0) {
+        std.debug.print("skipping engine texture test (no display)\n", .{});
+        return;
+    }
+    const vert_path = "engine/shaders/cube.vert.spv";
+    const frag_path = "engine/shaders/cube.frag.spv";
+    const vert_str = aggregate.e7_str_new(@intCast(@intFromPtr(vert_path.ptr)), vert_path.len);
+    const frag_str = aggregate.e7_str_new(@intCast(@intFromPtr(frag_path.ptr)), frag_path.len);
+    const scene = e7_engine_scene_create(window, e7_engine_read_shader(vert_str), e7_engine_read_shader(frag_str));
+    if (scene == 0) {
+        std.debug.print("skipping engine texture test (no Vulkan)\n", .{});
+        return;
+    }
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_camera(scene, 0, 1800, 5500, 0, -200));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_light(scene, 2000, 4000, 3000, 1000, 950, 900, 2500));
+
+    // Load the sample PNG and upload it as a material texture.
+    const image_path = "engine/assets/testdata/cube.png";
+    const image_path_str = aggregate.e7_str_new(@intCast(@intFromPtr(image_path.ptr)), image_path.len);
+    const image_handle = image_mod.e7_image_load(image_path_str);
+    if (image_handle == 0) {
+        std.debug.print("skipping engine texture test (image codec unavailable)\n", .{});
+        return;
+    }
+    const texture_id = e7_engine_scene_texture_create(scene, image_handle);
+    try std.testing.expect(texture_id > 0);
+    try std.testing.expectEqual(@as(i64, 1), renderStats().scene_textures);
+
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_begin_frame(scene));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_shape_tex(
+        scene,
+        0,
+        0,
+        0,
+        0,
+        800,
+        800,
+        800,
+        0,
+        1000,
+        1000,
+        1000,
+        texture_id,
+    ));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));
+    try std.testing.expectEqual(@as(i64, 1), renderStats().scene_boxes);
+
+    // Upload a custom mesh from e7 f32/i32 vectors (8-float layout).
+    const vertices = aggregate.e7_vec_new(24 * 8, 0);
+    const indices = aggregate.e7_vec_new(36, 0);
+    try std.testing.expect(vertices != 0 and indices != 0);
+    for (cubeVerticesForTest(), 0..) |vertex, at| {
+        const base = at * 8;
+        aggregate.e7_vec_set(vertices, @intCast(base + 0), @bitCast(@as(f64, vertex[0])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 1), @bitCast(@as(f64, vertex[1])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 2), @bitCast(@as(f64, vertex[2])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 3), @bitCast(@as(f64, vertex[3])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 4), @bitCast(@as(f64, vertex[4])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 5), @bitCast(@as(f64, vertex[5])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 6), @bitCast(@as(f64, vertex[6])));
+        aggregate.e7_vec_set(vertices, @intCast(base + 7), @bitCast(@as(f64, vertex[7])));
+    }
+    for (cubeIndicesForTest(), 0..) |index, at| {
+        aggregate.e7_vec_set(indices, @intCast(at), @intCast(index));
+    }
+    const mesh_id = e7_engine_scene_mesh_upload(scene, vertices, indices, 0);
+    try std.testing.expect(mesh_id > 0);
+    try std.testing.expectEqual(@as(i64, 1), renderStats().scene_meshes);
+
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_begin_frame(scene));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_custom(
+        scene,
+        mesh_id,
+        0,
+        0,
+        0,
+        800,
+        800,
+        800,
+        0,
+        1000,
+        1000,
+        1000,
+        texture_id,
+    ));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));
+    try std.testing.expectEqual(@as(i64, 2), renderStats().scene_boxes);
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_texture_destroy(scene, texture_id));
+    try std.testing.expectEqual(@as(i32, 0), image_mod.e7_image_free(image_handle));
+}
+
+fn cubeVerticesForTest() [24][8]f32 {
+    var data: [24][8]f32 = undefined;
+    for (renderer.cube_vertices, 0..) |vertex, at| {
+        data[at] = .{
+            vertex.position[0], vertex.position[1], vertex.position[2],
+            vertex.normal[0],   vertex.normal[1],   vertex.normal[2],
+            vertex.uv[0],       vertex.uv[1],
+        };
+    }
+    return data;
+}
+
+fn cubeIndicesForTest() [36]u16 {
+    return renderer.cube_indices;
 }

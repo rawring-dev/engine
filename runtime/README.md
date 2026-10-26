@@ -127,10 +127,21 @@ position/normal/colour vertex format, an indexed unit cube, a host-visible
 uniform buffer with one aligned slot per object (model/view/projection columns,
 camera position, point-light position/colour/intensity, ambient), a depth-tested
 colour+depth offscreen target, dynamic viewport/scissor, and RGBA8 readback.
-Up to `renderer.max_objects` (64) boxes can be drawn per frame; each `drawBox`
-writes its own model matrix into a dynamic uniform-buffer slot, so all objects
-share the frame's camera/light while having independent position/scale/Y
-rotation. `drawMesh` (legacy single cube), `captureFrame` (single cube) and
+The per-frame object count is dynamic (initial capacity 64, doubles on demand
+as a frame records more objects) — a few hundred objects/frame are routine and
+only allocator/descriptor limits return an error.  Each object writes its own
+model matrix/tint into a dynamic uniform-buffer slot, so all objects share the
+frame's camera/light while having independent transform, shape, material, and
+colour.  When the uniform buffer grows mid-frame the old buffer/descriptor
+generation stays alive until the next frame boundary.
+
+Objects select geometry per draw: the built-in procedural meshes (box, UV
+sphere, capsule, plane) or a custom mesh uploaded from OBJ-style interleaved
+arrays.  Materials sample a GPU texture (set 1, bindings 1/2) multiplied by the
+per-object RGB tint and the mesh vertex colour; texture id 0 is a built-in
+white 1x1 texture, so untextured draws behave exactly like tint-only draws.
+Up to `renderer.max_textures` (512) textures can be created per scene.
+`drawMesh` (legacy single cube), `captureFrame` (single cube) and
 `captureRecordedFrame` (replays the last frame's objects for headless capture)
 remain available. The `Surface` owns the
 render pass and depth image so its clear/present/capture paths and the scene
@@ -167,12 +178,19 @@ The e7 engine host uses a higher-level per-object ABI in
 | --- | --- |
 | `e7_engine_scene_draw_box(handle, x, y, z, sx, sy, sz, angle_milli_radians) -> i64` | legacy box draw; white tint |
 | `e7_engine_scene_draw_shape(handle, kind, x, y, z, sx, sy, sz, angle_milli_radians, r, g, b) -> i64` | `kind` 0 box / 1 sphere / 2 capsule / 3 plane; position/scale in milli-units, Y rotation in milli-radians, RGB tint in milli (1000 = 1.0) |
+| `e7_engine_scene_draw_shape_tex(handle, kind, ..., r, g, b, texture_id) -> i64` | same as `draw_shape` plus a material texture id |
+| `e7_engine_scene_texture_create(handle, image_handle) -> u64` | upload an `e7_image_load` RGBA8 image as a sampled texture; `0` on failure, ids start at 1 |
+| `e7_engine_scene_texture_destroy(handle, texture_id) -> i64` | free a user texture (texture 0 is the built-in white texture and cannot be destroyed) |
+| `e7_engine_scene_mesh_upload(handle, vertices, indices, layout) -> u64` | upload `[f32]` interleaved vertices + `[i32]` indices (layout 0 = pos3+normal3+uv2, layout 1 = pos3+normal3+colour3+uv2); `0` on failure, mesh ids start at 1 |
+| `e7_engine_scene_draw_custom(handle, mesh_id, ..., r, g, b, texture_id) -> i64` | draw an uploaded custom mesh |
 
-Both return `0` on success and `-1` when no frame is active, the kind is
-invalid, or the 64-object limit is exceeded.  The renderer owns one
-vertex/index mesh per shape kind (`cube`, UV sphere, capsule with hemispherical
-caps, flat XZ plane), so every object shares one pipeline and one dynamic
-uniform slot while selecting its geometry per draw.
+The per-object draw calls return `0` on success and `-1` when no frame is
+active, the kind/texture/mesh is invalid, or allocation fails; handle-producing
+calls return `0` on failure.  The renderer owns one vertex/index mesh per
+built-in shape kind (`cube`, UV sphere, capsule with hemispherical caps, flat
+XZ plane) plus uploaded custom meshes, so every object shares one pipeline
+(two descriptor sets: set 0 dynamic uniforms, set 1 material texture/sampler)
+while selecting geometry and material per draw.
 
 The `i64`-bitcast convention exists because all JIT ABI values are `i64`. For
 example `1.0f` is `0x3F800000` = `1065353216`; helpers truncate to 32 bits, so

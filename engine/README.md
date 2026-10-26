@@ -70,14 +70,21 @@ engine/
   `physics.e7` from the player capsule, and PostUpdate follows the player with
   the first-person Camera eye. `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
-  one `draw_shape` per `Renderable` + `Transform` + `BodyBounds` row (up to the
-  renderer limit of 64 objects), and `end_frame`.
+  one `draw_shape_tex` per `Renderable` + `Transform` + `BodyBounds` +
+  `Material` row (object count is dynamic; there is no fixed per-frame limit),
+  one `draw_custom` per uploaded OBJ mesh row, and `end_frame`.
 - `Renderable { kind, colour }` marks drawable rows and selects a procedural
-  mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `colour` is the per-object RGB
-  tint multiplied into the mesh's vertex colour, so the ball, plane, and each
-  stacked cube are visually distinct.  The player capsule is deliberately not
-  renderable in the first-person demo.  `CubeMesh` carries a per-cube spin
-  phase.
+  mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `Material { texture, tint }`
+  provides the per-object GPU texture and RGB tint (texture * tint * vertex
+  colour); the ball and stacked cubes receive the sample PNG through their
+  Material.  The player capsule is deliberately not renderable in the
+  first-person demo.  `CubeMesh` carries a per-cube spin phase.
+- `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
+  then a `FrameInit` system uploads them once the window/scene exists:
+  `e7_engine_scene_texture_create` for the image and
+  `e7_engine_scene_mesh_upload` for `cube.obj`.  The demo adds one
+  `Transform + MeshRenderer + Material` row that is drawn as a textured custom
+  mesh; `render_scene` skips it until the mesh id is assigned.
 
 ## Running
 
@@ -102,7 +109,8 @@ them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
 `runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
 window lifecycle/event pumping, scene create/destroy/resize, per-frame scene
 state (`set_camera`/`set_cube_angle`/`set_light`/`begin_frame`/`draw_mesh`/
-`draw_box`/`draw_shape`/`end_frame`), time, raw key/mouse queries, a raw asset
+`draw_box`/`draw_shape`/`draw_shape_tex`/`draw_custom`/`texture_create`/
+`texture_destroy`/`mesh_upload`/`end_frame`), time, raw key/mouse queries, a raw asset
 read, and the host frame limiter/capture. Engine policy — shader asset selection/loading, input
 mapping, camera look/movement, time updates, cube spin, light animation, frame
 phases, ECS queries, plugins and Commands — lives in `main.e7`.

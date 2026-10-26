@@ -7,8 +7,10 @@
 //! model/view/projection matrices plus point-light parameters into a per-object
 //! uniform slot, records one indexed draw per object into the surface's
 //! offscreen colour+depth target, and either presents the result or copies it
-//! back for headless validation.  Up to `max_objects` boxes can be drawn per
-//! frame; all share the frame's camera and light.
+//! back for headless validation.  The number of objects per frame is dynamic:
+//! per-object uniform slots and the recorded-object list grow on demand (a
+//! few hundred objects/frame are routine); all share the frame's camera and
+//! light.
 //!
 //! Matrix convention: matrices are column-major (`Mat4[col][row]`), matching
 //! the `column_major float4x4` fields emitted from `engine/shaders/*.e7`.
@@ -35,27 +37,32 @@ pub const Error = vulkan.Error || error{
     WindowOperationFailed,
     FrameAlreadyActive,
     FrameNotActive,
-    ObjectLimit,
+    TextureLimit,
+    InvalidTexture,
+    InvalidMesh,
 };
 
 /// A scene frame starts from this background colour unless overridden.
 pub const default_clear_color = [4]f32{ 0.02, 0.025, 0.04, 1.0 };
 pub const default_clear_depth: f32 = 1.0;
 
-/// Fixed vertex format: position, normal, colour.  Matches the
+/// Fixed vertex format: position, normal, colour, UV.  Matches the
 /// `[[vk::location(n)]]` inputs in `engine/shaders/cube.vert.e7`.
 pub const Vertex = extern struct {
     position: [3]f32,
     normal: [3]f32,
     color: [3]f32,
+    uv: [2]f32 = .{ 0.0, 0.0 },
 };
 
 pub const vertex_count = 24;
 pub const index_count = 36;
 
-/// Per-frame draw limit.  Each object gets its own aligned uniform-buffer slot
-/// so a frame can draw up to this many boxes with distinct model matrices.
-pub const max_objects = 64;
+/// Initial per-frame object capacity.  The object count is dynamic: the
+/// uniform buffer and recorded-object list double from here when a frame needs
+/// more slots.  There is no fixed per-frame object cap; only allocator,
+/// descriptor-pool, and dynamic-offset range limits apply.
+pub const initial_object_capacity = 64;
 
 /// Uniform block, std140-compatible and 272 bytes.  Matrices are stored as
 /// four contiguous columns (`Mat4[col][row]`), matching the `column_major`
@@ -117,11 +124,60 @@ pub fn shapeFromInt(value: i64) ?Shape {
 
 pub const default_tint = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
 
+/// Combined image-sampler materials: id 0 is always the built-in white 1x1
+/// texture, user textures are appended.  The descriptor pool is sized for
+/// this many texture/material descriptor sets.
+pub const max_textures = 512;
+
+/// Which mesh a recorded draw uses: one of the built-in procedural shapes or
+/// a custom uploaded mesh id.
+pub const MeshRef = union(enum) {
+    builtin: Shape,
+    custom: u64,
+};
+
 const RecordedObject = struct {
     model: Mat4,
     tint: [4]f32,
-    shape: Shape,
+    mesh: MeshRef,
+    texture: u32,
 };
+
+const Texture = struct {
+    image: ?c.VkImage = null,
+    memory: ?c.VkDeviceMemory = null,
+    view: ?c.VkImageView = null,
+    set: ?c.VkDescriptorSet = null,
+    destroyed: bool = false,
+};
+
+const CustomMesh = struct {
+    mesh: Mesh = .{},
+    destroyed: bool = false,
+};
+
+/// Vertex layouts accepted by `uploadMesh` for e7 OBJ data.
+pub const MeshLayout = enum(u32) {
+    /// Interleaved position(3) + normal(3) + uv(2) = 8 floats (obj.e7 output).
+    pos_normal_uv = 0,
+    /// Interleaved position(3) + normal(3) + colour(3) + uv(2) = 11 floats.
+    pos_normal_color_uv = 1,
+
+    pub fn floatsPerVertex(self: MeshLayout) usize {
+        return switch (self) {
+            .pos_normal_uv => 8,
+            .pos_normal_color_uv => 11,
+        };
+    }
+};
+
+pub fn meshLayoutFromInt(value: i64) ?MeshLayout {
+    return switch (value) {
+        0 => .pos_normal_uv,
+        1 => .pos_normal_color_uv,
+        else => null,
+    };
+}
 
 pub const default_light_color = [4]f32{ 1.0, 0.94, 0.86, 4.0 };
 pub const default_ambient = [4]f32{ 0.24, 0.26, 0.30, 1.0 };
@@ -154,11 +210,13 @@ pub const cube_vertices: [vertex_count]Vertex = blk: {
     @setEvalBranchQuota(20_000);
     var vertices: [vertex_count]Vertex = undefined;
     for (cube_faces, 0..) |face, face_index| {
+        const face_uvs = [4][2]f32{ .{ 0.0, 0.0 }, .{ 1.0, 0.0 }, .{ 1.0, 1.0 }, .{ 0.0, 1.0 } };
         for (face.corners, 0..) |corner, corner_index| {
             vertices[face_index * 4 + corner_index] = .{
                 .position = corner,
                 .normal = face.normal,
                 .color = face.color,
+                .uv = face_uvs[corner_index],
             };
         }
     }
@@ -202,6 +260,10 @@ pub const sphere_vertices: [sphere_vertex_count]Vertex = blk: {
                 .position = position,
                 .normal = position,
                 .color = .{ 1.0, 1.0, 1.0 },
+                .uv = .{
+                    @as(f32, @floatFromInt(slice)) / sphere_slices,
+                    @as(f32, @floatFromInt(stack)) / sphere_stacks,
+                },
             };
         }
     }
@@ -260,6 +322,10 @@ pub const capsule_vertices: [capsule_vertex_count]Vertex = blk: {
                 .position = .{ x, y, z },
                 .normal = .{ x, y - 1.0, z },
                 .color = .{ 1.0, 1.0, 1.0 },
+                .uv = .{
+                    @as(f32, @floatFromInt(slice)) / capsule_slices,
+                    (y + 2.0) / 4.0,
+                },
             };
         }
         row_base += row_stride;
@@ -278,6 +344,10 @@ pub const capsule_vertices: [capsule_vertex_count]Vertex = blk: {
                 .position = .{ x, y, z },
                 .normal = .{ x, y + 1.0, z },
                 .color = .{ 1.0, 1.0, 1.0 },
+                .uv = .{
+                    @as(f32, @floatFromInt(slice)) / capsule_slices,
+                    (y + 2.0) / 4.0,
+                },
             };
         }
         row_base += row_stride;
@@ -331,10 +401,10 @@ pub const capsule_indices: [capsule_index_count]u16 = blk: {
 
 /// Flat XZ plane spanning [-1, 1] with a +Y normal; the Y scale is ignored.
 pub const plane_vertices = [4]Vertex{
-    .{ .position = .{ -1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
-    .{ .position = .{ 1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
-    .{ .position = .{ 1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
-    .{ .position = .{ -1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
+    .{ .position = .{ -1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 }, .uv = .{ 0.0, 0.0 } },
+    .{ .position = .{ 1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 }, .uv = .{ 1.0, 0.0 } },
+    .{ .position = .{ 1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 }, .uv = .{ 1.0, 1.0 } },
+    .{ .position = .{ -1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 }, .uv = .{ 0.0, 1.0 } },
 };
 pub const plane_indices = [6]u16{ 0, 1, 2, 0, 2, 3 };
 
@@ -511,7 +581,19 @@ const Mesh = struct {
     vertex: BufferAllocation = .{},
     index: BufferAllocation = .{},
     index_count: u32 = 0,
+    index_type: c.VkIndexType = c.VK_INDEX_TYPE_UINT16,
 };
+
+/// Destroy a texture's GPU image/view/memory.  The descriptor set is returned
+/// to the texture pool (the set is not needed once the image is gone).
+fn destroyTextureResources(device: c.VkDevice, texture: *Texture) void {
+    if (texture.view) |view| c.vkDestroyImageView(device, view, null);
+    if (texture.image) |image| c.vkDestroyImage(device, image, null);
+    if (texture.memory) |memory| c.vkFreeMemory(device, memory, null);
+    texture.view = null;
+    texture.image = null;
+    texture.memory = null;
+}
 
 pub const Scene = struct {
     allocator: std.mem.Allocator,
@@ -519,9 +601,19 @@ pub const Scene = struct {
 
     vert_module: ?c.VkShaderModule = null,
     frag_module: ?c.VkShaderModule = null,
+    /// Set 0: per-object uniform buffer (dynamic offset).
     descriptor_set_layout: ?c.VkDescriptorSetLayout = null,
     descriptor_pool: ?c.VkDescriptorPool = null,
     descriptor_set: ?c.VkDescriptorSet = null,
+    /// Set 1: per-material combined image sampler + sampler.
+    texture_set_layout: ?c.VkDescriptorSetLayout = null,
+    texture_pool: ?c.VkDescriptorPool = null,
+    textures: std.ArrayListUnmanaged(Texture) = .empty,
+    custom_meshes: std.ArrayListUnmanaged(CustomMesh) = .empty,
+    /// One-shot upload command buffer/fence for texture and mesh staging.
+    upload_pool: ?c.VkCommandPool = null,
+    upload_cmd: ?c.VkCommandBuffer = null,
+    upload_fence: ?c.VkFence = null,
     pipeline_layout: ?c.VkPipelineLayout = null,
     pipeline: ?c.VkPipeline = null,
     /// Render pass the current pipeline was built against; `Surface` recreates
@@ -531,15 +623,22 @@ pub const Scene = struct {
     /// One vertex/index mesh per `Shape` (box, sphere, capsule, plane).
     meshes: [shape_count]Mesh = [_]Mesh{.{}} ** shape_count,
     uniform: BufferAllocation = .{},
+    /// Buffers/descriptor sets retired by mid-frame growth.  They stay alive
+    /// until the next frame boundary (the GPU may still reference them from a
+    /// command buffer that is being recorded).
+    retired_uniforms: std.ArrayListUnmanaged(BufferAllocation) = .empty,
+    retired_uniform_sets: std.ArrayListUnmanaged(c.VkDescriptorSet) = .empty,
+    /// Number of per-object uniform slots currently allocated.
+    uniform_capacity: usize = 0,
     /// Bytes between per-object uniform slots (a multiple of the device's
     /// minUniformBufferOffsetAlignment and of @sizeOf(Uniforms)).
     uniform_stride: u32 = @sizeOf(Uniforms),
     /// Draws recorded by the current/last frame, replayed by
     /// `captureRecordedFrame` so headless captures include every object.
-    recorded_objects: [max_objects]RecordedObject = undefined,
-    recorded_count: usize = 0,
+    recorded_objects: std.ArrayListUnmanaged(RecordedObject) = .empty,
 
     camera: Camera = .{},
+    default_sampler: ?c.VkSampler = null,
     /// Pending frame state for the split begin/draw/end ABI used by e7.
     frame_index: ?u32 = null,
     frame_cmd: ?c.VkCommandBuffer = null,
@@ -568,11 +667,15 @@ pub const Scene = struct {
 
         const device = self.surface.device.?;
         self.uniform_stride = self.computeUniformStride();
+        self.uniform_capacity = initial_object_capacity;
         self.vert_module = try self.createShaderModule(device, vert_spv);
         self.frag_module = try self.createShaderModule(device, frag_spv);
 
         try self.createBuffers(device);
+        try self.createUploadCommands(device);
         try self.createDescriptors(device);
+        try self.createDefaultSampler(device);
+        _ = try self.createTextureFromRgba(1, 1, &[_]u8{ 255, 255, 255, 255 });
         try self.createPipeline(device);
         return self;
     }
@@ -583,20 +686,41 @@ pub const Scene = struct {
             if (self.pipeline) |v| c.vkDestroyPipeline(device, v, null);
             if (self.pipeline_layout) |v| c.vkDestroyPipelineLayout(device, v, null);
             if (self.descriptor_pool) |v| c.vkDestroyDescriptorPool(device, v, null);
+            if (self.texture_pool) |v| c.vkDestroyDescriptorPool(device, v, null);
             if (self.descriptor_set_layout) |v| c.vkDestroyDescriptorSetLayout(device, v, null);
+            if (self.texture_set_layout) |v| c.vkDestroyDescriptorSetLayout(device, v, null);
+            for (self.textures.items) |*texture| destroyTextureResources(device, texture);
+            for (self.custom_meshes.items) |*custom| {
+                destroyBuffer(device, &custom.mesh.vertex);
+                destroyBuffer(device, &custom.mesh.index);
+            }
+            if (self.default_sampler) |v| c.vkDestroySampler(device, v, null);
+            if (self.upload_fence) |v| c.vkDestroyFence(device, v, null);
+            if (self.upload_pool) |v| c.vkDestroyCommandPool(device, v, null);
             if (self.vert_module) |v| c.vkDestroyShaderModule(device, v, null);
             if (self.frag_module) |v| c.vkDestroyShaderModule(device, v, null);
             for (&self.meshes) |*mesh| {
                 destroyBuffer(device, &mesh.vertex);
                 destroyBuffer(device, &mesh.index);
             }
+            self.flushRetiredUniforms();
             destroyBuffer(device, &self.uniform);
         }
+        self.recorded_objects.deinit(self.allocator);
+        self.retired_uniforms.deinit(self.allocator);
+        self.retired_uniform_sets.deinit(self.allocator);
+        self.textures.deinit(self.allocator);
+        self.custom_meshes.deinit(self.allocator);
         self.pipeline = null;
         self.pipeline_layout = null;
         self.descriptor_pool = null;
         self.descriptor_set = null;
         self.descriptor_set_layout = null;
+        self.texture_pool = null;
+        self.texture_set_layout = null;
+        self.default_sampler = null;
+        self.upload_fence = null;
+        self.upload_pool = null;
         self.vert_module = null;
         self.frag_module = null;
         self.surface.deinit();
@@ -679,7 +803,14 @@ pub const Scene = struct {
         allocation.* = .{};
     }
 
-    fn createMesh(self: *Scene, device: c.VkDevice, vertices: []const Vertex, indices: []const u16) Error!Mesh {
+    fn createMesh(
+        self: *Scene,
+        device: c.VkDevice,
+        vertices: []const Vertex,
+        index_bytes: []const u8,
+        index_total: u32,
+        index_type: c.VkIndexType,
+    ) Error!Mesh {
         var mesh = Mesh{};
         errdefer {
             destroyBuffer(device, &mesh.vertex);
@@ -692,25 +823,35 @@ pub const Scene = struct {
         );
         mesh.index = try self.createHostBuffer(
             device,
-            @sizeOf(u16) * indices.len,
+            index_bytes.len,
             c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         );
         const vertex_target: [*]Vertex = @ptrCast(@alignCast(mesh.vertex.mapped.?));
         @memcpy(vertex_target[0..vertices.len], vertices);
-        const index_target: [*]u16 = @ptrCast(@alignCast(mesh.index.mapped.?));
-        @memcpy(index_target[0..indices.len], indices);
-        mesh.index_count = @intCast(indices.len);
+        @memcpy(mesh.index.mapped.?[0..index_bytes.len], index_bytes);
+        mesh.index_count = index_total;
+        mesh.index_type = index_type;
         return mesh;
     }
 
+    fn createMeshU16(self: *Scene, device: c.VkDevice, vertices: []const Vertex, indices: []const u16) Error!Mesh {
+        return self.createMesh(
+            device,
+            vertices,
+            std.mem.sliceAsBytes(indices),
+            @intCast(indices.len),
+            c.VK_INDEX_TYPE_UINT16,
+        );
+    }
+
     fn createBuffers(self: *Scene, device: c.VkDevice) Error!void {
-        self.meshes[@intFromEnum(Shape.box)] = try self.createMesh(device, &cube_vertices, &cube_indices);
-        self.meshes[@intFromEnum(Shape.sphere)] = try self.createMesh(device, &sphere_vertices, &sphere_indices);
-        self.meshes[@intFromEnum(Shape.capsule)] = try self.createMesh(device, &capsule_vertices, &capsule_indices);
-        self.meshes[@intFromEnum(Shape.plane)] = try self.createMesh(device, &plane_vertices, &plane_indices);
+        self.meshes[@intFromEnum(Shape.box)] = try self.createMeshU16(device, &cube_vertices, &cube_indices);
+        self.meshes[@intFromEnum(Shape.sphere)] = try self.createMeshU16(device, &sphere_vertices, &sphere_indices);
+        self.meshes[@intFromEnum(Shape.capsule)] = try self.createMeshU16(device, &capsule_vertices, &capsule_indices);
+        self.meshes[@intFromEnum(Shape.plane)] = try self.createMeshU16(device, &plane_vertices, &plane_indices);
         self.uniform = try self.createHostBuffer(
             device,
-            @as(usize, self.uniform_stride) * max_objects,
+            @as(usize, self.uniform_stride) * self.uniform_capacity,
             c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         );
     }
@@ -729,48 +870,73 @@ pub const Scene = struct {
         return @ptrCast(@alignCast(self.uniform.mapped.? + offset));
     }
 
-    fn createDescriptors(self: *Scene, device: c.VkDevice) Error!void {
-        var binding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
-        binding.binding = 0;
-        binding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        binding.descriptorCount = 1;
-        binding.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
+    /// Grow the per-object uniform buffer so at least `required` slots fit.
+    /// The old buffer and its descriptor set are retired (not destroyed) until
+    /// the next frame boundary, because a command buffer that is currently
+    /// recording may still reference them.  At a frame boundary the GPU is
+    /// idle (the surface waits on its frame fence), so retired generations can
+    /// be released safely.
+    fn ensureUniformCapacity(self: *Scene, required: usize) Error!void {
+        if (required <= self.uniform_capacity) return;
+        const device = self.surface.device.?;
+        var new_capacity = @max(self.uniform_capacity, initial_object_capacity);
+        while (new_capacity < required) new_capacity *= 2;
 
-        var layout_info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-        layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 1;
-        layout_info.pBindings = &binding;
-        var set_layout: c.VkDescriptorSetLayout = null;
-        if (c.vkCreateDescriptorSetLayout(device, &layout_info, null, &set_layout) != c.VK_SUCCESS) {
-            return error.DescriptorCreateFailed;
+        const used = @as(usize, self.recorded_objects.items.len) * self.uniform_stride;
+        var replacement = try self.createHostBuffer(
+            device,
+            @as(usize, self.uniform_stride) * new_capacity,
+            c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        );
+        errdefer destroyBuffer(device, &replacement);
+        if (used > 0 and self.uniform.mapped != null) {
+            @memcpy(replacement.mapped.?[0..used], self.uniform.mapped.?[0..used]);
         }
-        self.descriptor_set_layout = set_layout;
 
-        var pool_size = std.mem.zeroes(c.VkDescriptorPoolSize);
-        pool_size.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        pool_size.descriptorCount = 1;
-        var pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-        pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.maxSets = 1;
-        pool_info.poolSizeCount = 1;
-        pool_info.pPoolSizes = &pool_size;
-        var pool: c.VkDescriptorPool = null;
-        if (c.vkCreateDescriptorPool(device, &pool_info, null, &pool) != c.VK_SUCCESS) {
-            return error.DescriptorCreateFailed;
-        }
-        self.descriptor_pool = pool;
-
+        var set: c.VkDescriptorSet = null;
         var allocate_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
         allocate_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocate_info.descriptorPool = pool;
+        allocate_info.descriptorPool = self.descriptor_pool.?;
         allocate_info.descriptorSetCount = 1;
-        allocate_info.pSetLayouts = &set_layout;
-        var set: c.VkDescriptorSet = null;
+        allocate_info.pSetLayouts = &self.descriptor_set_layout.?;
         if (c.vkAllocateDescriptorSets(device, &allocate_info, &set) != c.VK_SUCCESS) {
             return error.DescriptorCreateFailed;
         }
+        const old_allocation = self.uniform;
+        const old_set = self.descriptor_set;
+        self.uniform = replacement;
         self.descriptor_set = set;
+        self.uniform_capacity = new_capacity;
+        self.writeUniformDescriptor(set);
 
+        // Keep the previous generation alive until the frame boundary.
+        if (old_allocation.buffer != null) {
+            self.retired_uniforms.append(self.allocator, old_allocation) catch return error.OutOfMemory;
+        }
+        if (old_set != null) {
+            self.retired_uniform_sets.append(self.allocator, old_set.?) catch return error.OutOfMemory;
+        }
+    }
+
+    /// Release uniform generations retired during the previous recording.
+    /// Must only be called when the GPU is idle for this surface (start of a
+    /// frame recording, after the surface's frame fence wait).
+    fn flushRetiredUniforms(self: *Scene) void {
+        const device = self.surface.device.?;
+        for (self.retired_uniforms.items) |*allocation| destroyBuffer(device, allocation);
+        self.retired_uniforms.clearRetainingCapacity();
+        if (self.retired_uniform_sets.items.len > 0) {
+            _ = c.vkFreeDescriptorSets(
+                device,
+                self.descriptor_pool.?,
+                @intCast(self.retired_uniform_sets.items.len),
+                self.retired_uniform_sets.items.ptr,
+            );
+            self.retired_uniform_sets.clearRetainingCapacity();
+        }
+    }
+
+    fn writeUniformDescriptor(self: *Scene, set: c.VkDescriptorSet) void {
         var buffer_info = std.mem.zeroes(c.VkDescriptorBufferInfo);
         buffer_info.buffer = self.uniform.buffer.?;
         buffer_info.offset = 0;
@@ -782,12 +948,430 @@ pub const Scene = struct {
         write.descriptorCount = 1;
         write.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         write.pBufferInfo = &buffer_info;
-        c.vkUpdateDescriptorSets(device, 1, &write, 0, null);
+        c.vkUpdateDescriptorSets(self.surface.device.?, 1, &write, 0, null);
+    }
 
+    fn createUploadCommands(self: *Scene, device: c.VkDevice) Error!void {
+        var pool_info = std.mem.zeroes(c.VkCommandPoolCreateInfo);
+        pool_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_info.flags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pool_info.queueFamilyIndex = self.surface.queue_family;
+        var pool: c.VkCommandPool = null;
+        if (c.vkCreateCommandPool(device, &pool_info, null, &pool) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.upload_pool = pool;
+
+        var allocate_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+        allocate_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocate_info.commandPool = pool;
+        allocate_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocate_info.commandBufferCount = 1;
+        var cmd: c.VkCommandBuffer = null;
+        if (c.vkAllocateCommandBuffers(device, &allocate_info, &cmd) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.upload_cmd = cmd;
+
+        var fence_info = std.mem.zeroes(c.VkFenceCreateInfo);
+        fence_info.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        var fence: c.VkFence = null;
+        if (c.vkCreateFence(device, &fence_info, null, &fence) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.upload_fence = fence;
+    }
+
+    fn beginUploadCommands(self: *Scene) Error!c.VkCommandBuffer {
+        const cmd = self.upload_cmd.?;
+        _ = c.vkResetCommandBuffer(cmd, 0);
+        var begin = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+        begin.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (c.vkBeginCommandBuffer(cmd, &begin) != c.VK_SUCCESS) return error.VulkanFailed;
+        return cmd;
+    }
+
+    fn submitUpload(self: *Scene) Error!void {
+        const device = self.surface.device.?;
+        const cmd = self.upload_cmd.?;
+        const fence = self.upload_fence.?;
+        if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) return error.VulkanFailed;
+        var submit = std.mem.zeroes(c.VkSubmitInfo);
+        submit.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        if (c.vkQueueSubmit(self.surface.queue.?, 1, &submit, fence) != c.VK_SUCCESS) {
+            return error.VulkanFailed;
+        }
+        _ = c.vkWaitForFences(device, 1, &fence, c.VK_TRUE, std.math.maxInt(u64));
+        _ = c.vkResetFences(device, 1, &fence);
+    }
+
+    fn createDefaultSampler(self: *Scene, device: c.VkDevice) Error!void {
+        var info = std.mem.zeroes(c.VkSamplerCreateInfo);
+        info.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = c.VK_FILTER_LINEAR;
+        info.minFilter = c.VK_FILTER_LINEAR;
+        info.mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        info.addressModeU = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeV = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeW = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.maxLod = 0.0;
+        var sampler: c.VkSampler = null;
+        if (c.vkCreateSampler(device, &info, null, &sampler) != c.VK_SUCCESS) return error.VulkanFailed;
+        self.default_sampler = sampler;
+    }
+
+    fn writeTextureDescriptor(self: *Scene, set: c.VkDescriptorSet, view: c.VkImageView) void {
+        var image_info = std.mem.zeroes(c.VkDescriptorImageInfo);
+        image_info.imageView = view;
+        image_info.imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        var sampler_info = std.mem.zeroes(c.VkDescriptorImageInfo);
+        sampler_info.sampler = self.default_sampler.?;
+        var writes = [_]c.VkWriteDescriptorSet{
+            std.mem.zeroes(c.VkWriteDescriptorSet),
+            std.mem.zeroes(c.VkWriteDescriptorSet),
+        };
+        writes[0].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = set;
+        writes[0].dstBinding = 1;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[0].pImageInfo = &image_info;
+        writes[1].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = set;
+        writes[1].dstBinding = 2;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER;
+        writes[1].pImageInfo = &sampler_info;
+        c.vkUpdateDescriptorSets(self.surface.device.?, writes.len, &writes, 0, null);
+    }
+
+    /// Create a GPU texture from tightly packed top-down RGBA8 pixels.
+    /// Returns the texture id; id 0 is the built-in white 1x1 texture.
+    pub fn createTextureFromRgba(self: *Scene, width: u32, height: u32, pixels: []const u8) Error!u32 {
+        if (width == 0 or height == 0) return error.InvalidTexture;
+        if (pixels.len != @as(usize, width) * height * 4) return error.InvalidTexture;
+        if (self.textures.items.len >= max_textures) return error.TextureLimit;
+        const device = self.surface.device.?;
+
+        var texture = Texture{};
+        errdefer destroyTextureResources(device, &texture);
+
+        var image_info = std.mem.zeroes(c.VkImageCreateInfo);
+        image_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_info.imageType = c.VK_IMAGE_TYPE_2D;
+        image_info.format = c.VK_FORMAT_R8G8B8A8_UNORM;
+        image_info.extent = .{ .width = width, .height = height, .depth = 1 };
+        image_info.mipLevels = 1;
+        image_info.arrayLayers = 1;
+        image_info.samples = c.VK_SAMPLE_COUNT_1_BIT;
+        image_info.tiling = c.VK_IMAGE_TILING_OPTIMAL;
+        image_info.usage = c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        image_info.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+        image_info.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        var image: c.VkImage = null;
+        if (c.vkCreateImage(device, &image_info, null, &image) != c.VK_SUCCESS) return error.VulkanFailed;
+        texture.image = image;
+
+        var requirements = std.mem.zeroes(c.VkMemoryRequirements);
+        c.vkGetImageMemoryRequirements(device, image, &requirements);
+        const memory_type = self.surface.memoryType(
+            requirements.memoryTypeBits,
+            c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            null,
+        ) catch return error.VulkanFailed;
+        var alloc_info = std.mem.zeroes(c.VkMemoryAllocateInfo);
+        alloc_info.sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = requirements.size;
+        alloc_info.memoryTypeIndex = memory_type;
+        var memory: c.VkDeviceMemory = null;
+        if (c.vkAllocateMemory(device, &alloc_info, null, &memory) != c.VK_SUCCESS) return error.VulkanFailed;
+        texture.memory = memory;
+        if (c.vkBindImageMemory(device, image, memory, 0) != c.VK_SUCCESS) return error.VulkanFailed;
+
+        var staging = try self.createHostBuffer(device, pixels.len, c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        defer destroyBuffer(device, &staging);
+        @memcpy(staging.mapped.?[0..pixels.len], pixels);
+
+        const cmd = try self.beginUploadCommands();
+        const subresource = c.VkImageSubresourceRange{
+            .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+        var to_dst = std.mem.zeroes(c.VkImageMemoryBarrier);
+        to_dst.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        to_dst.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        to_dst.newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_dst.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        to_dst.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        to_dst.image = image;
+        to_dst.subresourceRange = subresource;
+        to_dst.srcAccessMask = 0;
+        to_dst.dstAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+        c.vkCmdPipelineBarrier(
+            cmd,
+            c.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &to_dst,
+        );
+
+        var region = std.mem.zeroes(c.VkBufferImageCopy);
+        region.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = .{ .width = width, .height = height, .depth = 1 };
+        c.vkCmdCopyBufferToImage(
+            cmd,
+            staging.buffer.?,
+            image,
+            c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &region,
+        );
+
+        var to_sample = std.mem.zeroes(c.VkImageMemoryBarrier);
+        to_sample.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        to_sample.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_sample.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        to_sample.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        to_sample.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        to_sample.image = image;
+        to_sample.subresourceRange = subresource;
+        to_sample.srcAccessMask = c.VK_ACCESS_TRANSFER_WRITE_BIT;
+        to_sample.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
+        c.vkCmdPipelineBarrier(
+            cmd,
+            c.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &to_sample,
+        );
+        try self.submitUpload();
+
+        var view_info = std.mem.zeroes(c.VkImageViewCreateInfo);
+        view_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = c.VK_FORMAT_R8G8B8A8_UNORM;
+        view_info.subresourceRange = subresource;
+        var view: c.VkImageView = null;
+        if (c.vkCreateImageView(device, &view_info, null, &view) != c.VK_SUCCESS) return error.VulkanFailed;
+        texture.view = view;
+
+        var allocate_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
+        allocate_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocate_info.descriptorPool = self.texture_pool.?;
+        allocate_info.descriptorSetCount = 1;
+        allocate_info.pSetLayouts = &self.texture_set_layout.?;
+        var set: c.VkDescriptorSet = null;
+        if (c.vkAllocateDescriptorSets(device, &allocate_info, &set) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        texture.set = set;
+        self.writeTextureDescriptor(set, view);
+
+        const id: u32 = @intCast(self.textures.items.len);
+        self.textures.append(self.allocator, texture) catch return error.OutOfMemory;
+        return id;
+    }
+
+    /// Destroy a user texture.  Id 0 (the built-in white texture) cannot be
+    /// destroyed; ids stay stable for the scene lifetime.
+    pub fn destroyTexture(self: *Scene, id: u32) Error!void {
+        if (id == 0 or id >= self.textures.items.len) return error.InvalidTexture;
+        var texture = &self.textures.items[id];
+        if (texture.destroyed) return error.InvalidTexture;
+        const device = self.surface.device.?;
+        if (texture.set) |set| _ = c.vkFreeDescriptorSets(device, self.texture_pool.?, 1, &set);
+        destroyTextureResources(device, texture);
+        texture.set = null;
+        texture.destroyed = true;
+    }
+
+    fn textureSetFor(self: *Scene, id: u32) ?c.VkDescriptorSet {
+        if (id >= self.textures.items.len) return null;
+        const texture = &self.textures.items[id];
+        if (texture.destroyed) return null;
+        return texture.set;
+    }
+
+    /// Upload an interleaved OBJ-style mesh (vertex layout from
+    /// `MeshLayout`) and return its mesh id (>= 1), or `error.InvalidMesh`.
+    pub fn uploadMesh(self: *Scene, vertices: []const f32, indices: []const u32, layout: MeshLayout) Error!u64 {
+        const stride = layout.floatsPerVertex();
+        if (vertices.len == 0 or vertices.len % stride != 0) return error.InvalidMesh;
+        if (indices.len == 0 or indices.len % 3 != 0) return error.InvalidMesh;
+        const vertex_total = vertices.len / stride;
+        if (vertex_total > std.math.maxInt(u32)) return error.InvalidMesh;
+
+        var mesh_vertices = self.allocator.alloc(Vertex, vertex_total) catch return error.OutOfMemory;
+        defer self.allocator.free(mesh_vertices);
+        for (0..vertex_total) |index| {
+            const base = index * stride;
+            var vertex = Vertex{
+                .position = .{ vertices[base], vertices[base + 1], vertices[base + 2] },
+                .normal = .{ vertices[base + 3], vertices[base + 4], vertices[base + 5] },
+                .color = .{ 1.0, 1.0, 1.0 },
+            };
+            if (layout == .pos_normal_color_uv) {
+                vertex.color = .{ vertices[base + 6], vertices[base + 7], vertices[base + 8] };
+                vertex.uv = .{ vertices[base + 9], vertices[base + 10] };
+            } else {
+                vertex.uv = .{ vertices[base + 6], vertices[base + 7] };
+            }
+            mesh_vertices[index] = vertex;
+        }
+        for (indices) |index| {
+            if (index >= vertex_total) return error.InvalidMesh;
+        }
+
+        const device = self.surface.device.?;
+        var mesh = Mesh{};
+        errdefer {
+            destroyBuffer(device, &mesh.vertex);
+            destroyBuffer(device, &mesh.index);
+        }
+        if (vertex_total <= std.math.maxInt(u16)) {
+            var converted = self.allocator.alloc(u16, indices.len) catch return error.OutOfMemory;
+            defer self.allocator.free(converted);
+            for (indices, 0..) |index, at| converted[at] = @intCast(index);
+            mesh = try self.createMesh(
+                device,
+                mesh_vertices,
+                std.mem.sliceAsBytes(converted),
+                @intCast(indices.len),
+                c.VK_INDEX_TYPE_UINT16,
+            );
+        } else {
+            mesh = try self.createMesh(
+                device,
+                mesh_vertices,
+                std.mem.sliceAsBytes(indices),
+                @intCast(indices.len),
+                c.VK_INDEX_TYPE_UINT32,
+            );
+        }
+
+        self.custom_meshes.append(self.allocator, .{ .mesh = mesh }) catch return error.OutOfMemory;
+        return @intCast(self.custom_meshes.items.len);
+    }
+
+    fn meshFor(self: *Scene, ref: MeshRef) ?*Mesh {
+        return switch (ref) {
+            .builtin => |shape| &self.meshes[@intFromEnum(shape)],
+            .custom => |id| blk: {
+                if (id == 0 or id > self.custom_meshes.items.len) break :blk null;
+                const custom = &self.custom_meshes.items[id - 1];
+                if (custom.destroyed) break :blk null;
+                break :blk &custom.mesh;
+            },
+        };
+    }
+
+    fn createDescriptors(self: *Scene, device: c.VkDevice) Error!void {
+        // Set 0: per-object dynamic uniform buffer.
+        var uniform_binding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
+        uniform_binding.binding = 0;
+        uniform_binding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        uniform_binding.descriptorCount = 1;
+        uniform_binding.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
+        var uniform_layout_info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+        uniform_layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        uniform_layout_info.bindingCount = 1;
+        uniform_layout_info.pBindings = &uniform_binding;
+        var uniform_layout: c.VkDescriptorSetLayout = null;
+        if (c.vkCreateDescriptorSetLayout(device, &uniform_layout_info, null, &uniform_layout) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        self.descriptor_set_layout = uniform_layout;
+
+        // Set 1: per-material sampled image + sampler.
+        var texture_bindings = [_]c.VkDescriptorSetLayoutBinding{
+            std.mem.zeroes(c.VkDescriptorSetLayoutBinding),
+            std.mem.zeroes(c.VkDescriptorSetLayoutBinding),
+        };
+        texture_bindings[0].binding = 1;
+        texture_bindings[0].descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        texture_bindings[0].descriptorCount = 1;
+        texture_bindings[0].stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT;
+        texture_bindings[1].binding = 2;
+        texture_bindings[1].descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER;
+        texture_bindings[1].descriptorCount = 1;
+        texture_bindings[1].stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT;
+        var texture_layout_info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+        texture_layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        texture_layout_info.bindingCount = texture_bindings.len;
+        texture_layout_info.pBindings = &texture_bindings;
+        var texture_layout: c.VkDescriptorSetLayout = null;
+        if (c.vkCreateDescriptorSetLayout(device, &texture_layout_info, null, &texture_layout) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        self.texture_set_layout = texture_layout;
+
+        // Uniform pool: one set per uniform-buffer generation.  Freed sets are
+        // returned to the pool at frame boundaries.
+        var uniform_pool_size = std.mem.zeroes(c.VkDescriptorPoolSize);
+        uniform_pool_size.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        uniform_pool_size.descriptorCount = 1024;
+        var uniform_pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+        uniform_pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        uniform_pool_info.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        uniform_pool_info.maxSets = 1024;
+        uniform_pool_info.poolSizeCount = 1;
+        uniform_pool_info.pPoolSizes = &uniform_pool_size;
+        var uniform_pool: c.VkDescriptorPool = null;
+        if (c.vkCreateDescriptorPool(device, &uniform_pool_info, null, &uniform_pool) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        self.descriptor_pool = uniform_pool;
+
+        // Texture pool: one set per combined image sampler.
+        var texture_pool_sizes = [_]c.VkDescriptorPoolSize{
+            std.mem.zeroes(c.VkDescriptorPoolSize),
+            std.mem.zeroes(c.VkDescriptorPoolSize),
+        };
+        texture_pool_sizes[0].type = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        texture_pool_sizes[0].descriptorCount = max_textures;
+        texture_pool_sizes[1].type = c.VK_DESCRIPTOR_TYPE_SAMPLER;
+        texture_pool_sizes[1].descriptorCount = max_textures;
+        var texture_pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+        texture_pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        texture_pool_info.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        texture_pool_info.maxSets = max_textures;
+        texture_pool_info.poolSizeCount = texture_pool_sizes.len;
+        texture_pool_info.pPoolSizes = &texture_pool_sizes;
+        var texture_pool: c.VkDescriptorPool = null;
+        if (c.vkCreateDescriptorPool(device, &texture_pool_info, null, &texture_pool) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        self.texture_pool = texture_pool;
+
+        var allocate_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
+        allocate_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocate_info.descriptorPool = uniform_pool;
+        allocate_info.descriptorSetCount = 1;
+        allocate_info.pSetLayouts = &uniform_layout;
+        var set: c.VkDescriptorSet = null;
+        if (c.vkAllocateDescriptorSets(device, &allocate_info, &set) != c.VK_SUCCESS) {
+            return error.DescriptorCreateFailed;
+        }
+        self.descriptor_set = set;
+        self.writeUniformDescriptor(set);
+
+        var set_layouts = [_]c.VkDescriptorSetLayout{ uniform_layout, texture_layout };
         var pipeline_layout_info = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
         pipeline_layout_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &set_layout;
+        pipeline_layout_info.setLayoutCount = set_layouts.len;
+        pipeline_layout_info.pSetLayouts = &set_layouts;
         var pipeline_layout: c.VkPipelineLayout = null;
         if (c.vkCreatePipelineLayout(device, &pipeline_layout_info, null, &pipeline_layout) != c.VK_SUCCESS) {
             return error.DescriptorCreateFailed;
@@ -823,6 +1407,7 @@ pub const Scene = struct {
             std.mem.zeroes(c.VkVertexInputAttributeDescription),
             std.mem.zeroes(c.VkVertexInputAttributeDescription),
             std.mem.zeroes(c.VkVertexInputAttributeDescription),
+            std.mem.zeroes(c.VkVertexInputAttributeDescription),
         };
         attributes[0].location = 0;
         attributes[0].binding = 0;
@@ -836,6 +1421,10 @@ pub const Scene = struct {
         attributes[2].binding = 0;
         attributes[2].format = c.VK_FORMAT_R32G32B32_SFLOAT;
         attributes[2].offset = @intCast(@offsetOf(Vertex, "color"));
+        attributes[3].location = 3;
+        attributes[3].binding = 0;
+        attributes[3].format = c.VK_FORMAT_R32G32_SFLOAT;
+        attributes[3].offset = @intCast(@offsetOf(Vertex, "uv"));
 
         var vertex_input = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
         vertex_input.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -1003,47 +1592,61 @@ pub const Scene = struct {
 
     /// Reset the recorded-object list and bind the shared pipeline state for
     /// the render pass that is currently open.
-    fn beginRecordedFrame(self: *Scene, cmd: c.VkCommandBuffer) void {
-        self.recorded_count = 0;
+    fn beginRecordedFrame(self: *Scene, cmd: c.VkCommandBuffer) Error!void {
+        // The surface waited on its frame fence before this point, so any
+        // generations retired by the previous frame are no longer referenced.
+        self.flushRetiredUniforms();
+        self.recorded_objects.clearRetainingCapacity();
+        // Keep the uniform buffer at least as large as the previous frame's
+        // demand so steady-state frames do not grow mid-recording.
+        try self.ensureUniformCapacity(self.recorded_objects.capacity);
+        self.flushRetiredUniforms();
         self.recordFrameSetup(cmd);
     }
 
     /// Write `model`/`tint` into the next per-object uniform slot and record
-    /// one indexed draw of `shape`'s mesh with that slot bound as a dynamic
-    /// UBO offset.  Returns false when the per-frame object limit is reached.
+    /// one indexed draw of `mesh` bound to the `texture` material.  Grows the
+    /// uniform buffer/list on demand, so there is no fixed per-frame object
+    /// cap; only allocator/descriptor limits return an error.
     fn recordObject(
         self: *Scene,
         cmd: c.VkCommandBuffer,
         model: Mat4,
         tint: [4]f32,
-        shape: Shape,
-    ) bool {
-        if (self.recorded_count >= max_objects) return false;
-        const slot = self.recorded_count;
-        self.writeUniformSlot(slot, model, tint);
-        self.recorded_objects[slot] = .{ .model = model, .tint = tint, .shape = shape };
-        self.recorded_count += 1;
+        mesh_ref: MeshRef,
+        texture_id: u32,
+    ) Error!void {
+        const mesh = self.meshFor(mesh_ref) orelse return error.InvalidMesh;
+        const texture_set = self.textureSetFor(texture_id) orelse return error.InvalidTexture;
 
-        const mesh = &self.meshes[@intFromEnum(shape)];
+        const slot = self.recorded_objects.items.len;
+        try self.ensureUniformCapacity(slot + 1);
+        self.recorded_objects.append(self.allocator, .{
+            .model = model,
+            .tint = tint,
+            .mesh = mesh_ref,
+            .texture = texture_id,
+        }) catch return error.OutOfMemory;
+        self.writeUniformSlot(slot, model, tint);
+
         var vertex_buffer = mesh.vertex.buffer.?;
         var vertex_offset: c.VkDeviceSize = 0;
         c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
-        c.vkCmdBindIndexBuffer(cmd, mesh.index.buffer.?, 0, c.VK_INDEX_TYPE_UINT16);
+        c.vkCmdBindIndexBuffer(cmd, mesh.index.buffer.?, 0, mesh.index_type);
 
-        var descriptor_set = self.descriptor_set.?;
+        var descriptor_sets = [2]c.VkDescriptorSet{ self.descriptor_set.?, texture_set };
         var dynamic_offset: u32 = @intCast(slot * self.uniform_stride);
         c.vkCmdBindDescriptorSets(
             cmd,
             c.VK_PIPELINE_BIND_POINT_GRAPHICS,
             self.pipeline_layout.?,
             0,
-            1,
-            &descriptor_set,
+            2,
+            &descriptor_sets,
             1,
             &dynamic_offset,
         );
         c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0);
-        return true;
     }
 
     /// Model matrix used by the legacy single-cube entry points (`drawMesh`,
@@ -1064,7 +1667,11 @@ pub const Scene = struct {
             return err;
         };
         self.frame_cmd = cmd;
-        self.beginRecordedFrame(cmd);
+        self.beginRecordedFrame(cmd) catch |err| {
+            self.frame_cmd = null;
+            self.frame_index = null;
+            return err;
+        };
     }
 
     /// Draw one box (position, scale, Y angle) in the frame opened by
@@ -1074,18 +1681,31 @@ pub const Scene = struct {
     }
 
     /// Draw one procedural shape (box/sphere/capsule/plane) with a per-object
-    /// RGB tint in the frame opened by `beginFrame`.
+    /// RGB tint in the frame opened by `beginFrame` (white material texture).
     pub fn drawShape(self: *Scene, shape: Shape, box: Box, tint: Vec3) Error!void {
+        return self.drawShapeTextured(shape, box, tint, 0);
+    }
+
+    /// Draw one procedural shape with an explicit material texture id.
+    pub fn drawShapeTextured(self: *Scene, shape: Shape, box: Box, tint: Vec3, texture_id: u32) Error!void {
         const cmd = self.frame_cmd orelse return error.FrameNotActive;
         const tint4 = [4]f32{ tint[0], tint[1], tint[2], 1.0 };
-        if (!self.recordObject(cmd, boxModel(box), tint4, shape)) return error.ObjectLimit;
+        try self.recordObject(cmd, boxModel(box), tint4, .{ .builtin = shape }, texture_id);
+    }
+
+    /// Draw a mesh uploaded with `uploadMesh`, with an explicit material
+    /// texture id, in the frame opened by `beginFrame`.
+    pub fn drawCustom(self: *Scene, mesh_id: u64, box: Box, tint: Vec3, texture_id: u32) Error!void {
+        const cmd = self.frame_cmd orelse return error.FrameNotActive;
+        const tint4 = [4]f32{ tint[0], tint[1], tint[2], 1.0 };
+        try self.recordObject(cmd, boxModel(box), tint4, .{ .custom = mesh_id }, texture_id);
     }
 
     /// Record the built-in single cube for the frame opened by `beginFrame`.
     /// Kept for the pre-multi-object path and back-compat tests.
     pub fn drawMesh(self: *Scene) void {
         const cmd = self.frame_cmd orelse return;
-        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
+        self.recordObject(cmd, self.legacyCubeModel(), default_tint, .{ .builtin = .box }, 0) catch {};
     }
 
     /// Close the render pass and present the acquired image.
@@ -1114,8 +1734,8 @@ pub const Scene = struct {
         const index = try self.surface.acquireFrame();
         try self.ensurePipeline();
         const cmd = try self.surface.beginScene(self.clear_color, default_clear_depth);
-        self.beginRecordedFrame(cmd);
-        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
+        try self.beginRecordedFrame(cmd);
+        try self.recordObject(cmd, self.legacyCubeModel(), default_tint, .{ .builtin = .box }, 0);
         try self.surface.endScenePresent(index);
     }
 
@@ -1132,8 +1752,8 @@ pub const Scene = struct {
 
         const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
         try self.ensurePipeline();
-        self.beginRecordedFrame(cmd);
-        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
+        try self.beginRecordedFrame(cmd);
+        try self.recordObject(cmd, self.legacyCubeModel(), default_tint, .{ .builtin = .box }, 0);
         return self.surface.endSceneCapture();
     }
 
@@ -1142,16 +1762,19 @@ pub const Scene = struct {
     /// frame limiter uses this so a headless capture contains every object that
     /// was drawn, not just the legacy single cube.
     pub fn captureRecordedFrame(self: *Scene) Error![]u8 {
-        const saved_count = self.recorded_count;
+        const saved_count = self.recorded_objects.items.len;
+        const saved = self.allocator.alloc(RecordedObject, saved_count) catch return error.OutOfMemory;
+        defer self.allocator.free(saved);
+        @memcpy(saved, self.recorded_objects.items[0..saved_count]);
+
         const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
         try self.ensurePipeline();
-        self.beginRecordedFrame(cmd);
+        try self.beginRecordedFrame(cmd);
         if (saved_count == 0) {
-            _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
+            try self.recordObject(cmd, self.legacyCubeModel(), default_tint, .{ .builtin = .box }, 0);
         } else {
-            for (0..saved_count) |slot| {
-                const object = self.recorded_objects[slot];
-                _ = self.recordObject(cmd, object.model, object.tint, object.shape);
+            for (saved) |object| {
+                try self.recordObject(cmd, object.model, object.tint, object.mesh, object.texture);
             }
         }
         return self.surface.endSceneCapture();
@@ -1160,7 +1783,7 @@ pub const Scene = struct {
     /// Number of objects recorded for the current/last frame (test and
     /// diagnostics hook).
     pub fn recordedObjectCount(self: *const Scene) usize {
-        return self.recorded_count;
+        return self.recorded_objects.items.len;
     }
 
     pub fn size(self: *const Scene) struct { width: u32, height: u32 } {
@@ -1453,13 +2076,31 @@ test "scene draws multiple boxes at distinct positions" {
         try std.testing.expect(sum > background + 40);
     }
 
-    // The per-frame limit is 64 objects; the 65th draw is rejected.
+    // The object count is dynamic: a few hundred boxes fit in one frame and
+    // the uniform buffer grows past its initial capacity.
     try scene.beginFrame();
-    for (0..max_objects) |_| try scene.drawBox(.{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.3, 0.3, 0.3 } });
-    try std.testing.expectEqual(@as(usize, max_objects), scene.recordedObjectCount());
-    try std.testing.expectError(error.ObjectLimit, scene.drawBox(.{}));
-    try std.testing.expectEqual(@as(usize, max_objects), scene.recordedObjectCount());
+    const many = 300;
+    for (0..many) |box_index| {
+        const f = @as(f32, @floatFromInt(box_index));
+        const x = (f - @as(f32, @floatFromInt(many)) * 0.5) * 0.02;
+        const y = 0.3 * @sin(f * 0.3);
+        try scene.drawBox(.{
+            .position = .{ x, y, 0.5 },
+            .scale = .{ 0.05, 0.05, 0.05 },
+            .angle = f * 0.1,
+        });
+    }
+    try std.testing.expectEqual(@as(usize, many), scene.recordedObjectCount());
     try scene.endFrame();
+    const many_frame = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(many_frame);
+    var many_lit: usize = 0;
+    var many_index: usize = 0;
+    while (many_index + 3 < many_frame.len) : (many_index += 4) {
+        const sum: u32 = @as(u32, many_frame[many_index]) + many_frame[many_index + 1] + many_frame[many_index + 2];
+        if (sum > background + 60) many_lit += 1;
+    }
+    try std.testing.expect(many_lit > 300);
 }
 
 test "scene renders sphere, capsule, and plane geometry with per-object tint" {
@@ -1555,4 +2196,116 @@ test "scene renders sphere, capsule, and plane geometry with per-object tint" {
     const blue = ChannelSums.sums(blue_frame);
     try std.testing.expect(red.r > red.b);
     try std.testing.expect(blue.b > blue.r);
+}
+
+test "scene samples GPU textures and draws uploaded custom meshes" {
+    var window = window_mod.Window.create("engine7 texture/mesh test", 256, 192, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping texture/mesh test (no display): {s}\n", .{@errorName(err)});
+        window_mod.shutdownVideo();
+        return;
+    };
+    defer window_mod.shutdownVideo();
+    defer window.destroy();
+
+    var scene = Scene.init(
+        std.testing.allocator,
+        &window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping texture/mesh test (no Vulkan): {s} ({s})\n", .{ @errorName(err), abi.lastError() });
+        return;
+    };
+    defer scene.deinit();
+    scene.setCamera(.{ 0.0, 1.8, 5.5 }, 0.0, -0.25);
+    scene.setLight(.{ 2.0, 4.0, 3.0 }, .{ 1.0, 0.95, 0.9, 2.5 });
+
+    const Capture = struct {
+        fn single(
+            target: *Scene,
+            shape: Shape,
+            box: Box,
+            tint: Vec3,
+            texture: u32,
+        ) Error![]u8 {
+            try target.beginFrame();
+            try target.drawShapeTextured(shape, box, tint, texture);
+            try target.endFrame();
+            return target.captureRecordedFrame();
+        }
+    };
+
+    const box = Box{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.9, 0.9, 0.9 } };
+    const white = Vec3{ 1.0, 1.0, 1.0 };
+
+    // 4x4 checker texture: red and blue cells.
+    var checker: [4 * 4 * 4]u8 = undefined;
+    for (0..4) |y| {
+        for (0..4) |x| {
+            const at = (y * 4 + x) * 4;
+            const red = (x + y) % 2 == 0;
+            checker[at + 0] = if (red) 255 else 20;
+            checker[at + 1] = 20;
+            checker[at + 2] = if (red) 20 else 255;
+            checker[at + 3] = 255;
+        }
+    }
+    const texture_id = try scene.createTextureFromRgba(4, 4, &checker);
+    try std.testing.expect(texture_id == 1);
+
+    const tinted = try Capture.single(&scene, .box, box, white, 0);
+    defer std.testing.allocator.free(tinted);
+    const textured = try Capture.single(&scene, .box, box, white, texture_id);
+    defer std.testing.allocator.free(textured);
+    try std.testing.expect(!std.mem.eql(u8, tinted, textured));
+
+    // Upload a custom mesh built from the built-in cube geometry, in the
+    // 8-float pos/normal/uv layout produced by engine/obj.e7.
+    var interleaved = std.testing.allocator.alloc(f32, cube_vertices.len * 8) catch return error.OutOfMemory;
+    defer std.testing.allocator.free(interleaved);
+    for (cube_vertices, 0..) |vertex, at| {
+        const base = at * 8;
+        interleaved[base + 0] = vertex.position[0];
+        interleaved[base + 1] = vertex.position[1];
+        interleaved[base + 2] = vertex.position[2];
+        interleaved[base + 3] = vertex.normal[0];
+        interleaved[base + 4] = vertex.normal[1];
+        interleaved[base + 5] = vertex.normal[2];
+        interleaved[base + 6] = vertex.uv[0];
+        interleaved[base + 7] = vertex.uv[1];
+    }
+    var indices = std.testing.allocator.alloc(u32, cube_indices.len) catch return error.OutOfMemory;
+    defer std.testing.allocator.free(indices);
+    for (cube_indices, 0..) |index, at| indices[at] = index;
+
+    const mesh_id = try scene.uploadMesh(interleaved, indices, .pos_normal_uv);
+    try std.testing.expect(mesh_id >= 1);
+
+    // Custom mesh with the checker texture must render content distinct from
+    // the built-in box (different UV mapping / geometry path).
+    try scene.beginFrame();
+    try scene.drawCustom(mesh_id, Box{ .position = .{ 1.6, 0.0, 0.0 }, .scale = .{ 0.7, 0.7, 0.7 } }, white, texture_id);
+    try scene.endFrame();
+    const custom = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(custom);
+    try std.testing.expect(!std.mem.eql(u8, custom, textured));
+    var lit: usize = 0;
+    var at: usize = 0;
+    while (at + 3 < custom.len) : (at += 4) {
+        const sum: u32 = @as(u32, custom[at]) + custom[at + 1] + custom[at + 2];
+        if (sum > 60) lit += 1;
+    }
+    try std.testing.expect(lit > 200);
+
+    // Invalid material / mesh ids are rejected.
+    try scene.beginFrame();
+    try std.testing.expectError(error.InvalidTexture, scene.drawShapeTextured(.box, box, white, 999));
+    try std.testing.expectError(error.InvalidMesh, scene.drawCustom(999, box, white, 0));
+    try scene.endFrame();
+
+    try scene.destroyTexture(texture_id);
+    try std.testing.expectError(error.InvalidTexture, scene.destroyTexture(texture_id));
 }

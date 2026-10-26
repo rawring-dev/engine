@@ -75,6 +75,19 @@ pub fn main(init: std.process.Init) !void {
     defer engine.shutdown();
 
     var compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
+        if (err == error.SemanticFailed) {
+            if (compiler.pipeline.loadProject(allocator, project_path)) |loaded| {
+                var project = loaded;
+                defer project.deinit();
+                if (compiler.semantic.analyze(allocator, project.root_ast.module)) |analysis| {
+                    var owned = analysis;
+                    defer owned.deinit();
+                    for (owned.diagnostics) |diagnostic| {
+                        std.debug.print("run-engine: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+                    }
+                } else |_| {}
+            } else |_| {}
+        }
         std.debug.print("run-engine: failed to compile project '{s}': {s}\n", .{ project_path, @errorName(err) });
         return error.ProjectCompileFailed;
     };
@@ -134,7 +147,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (options.verbose) {
         const stats = engine.renderStats();
-        std.debug.print("run-engine: scene_draws={d} scene_boxes={d} frames={d}\n", .{ stats.scene_draws, stats.scene_boxes, engine.frames() });
+        std.debug.print("run-engine: scene_draws={d} scene_boxes={d} textures={d} meshes={d} failed={d} frames={d}\n", .{ stats.scene_draws, stats.scene_boxes, stats.scene_textures, stats.scene_meshes, stats.scene_failed_draws, engine.frames() });
     }
     if (engine.lastFailure()) |message| {
         std.debug.print("run-engine: engine stopped: {s}\n", .{message});
