@@ -104,6 +104,10 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   now creates successfully with lavapipe; the earlier crash was caused by
   cleanup code inserted into the wrong e7 function, not by the pipeline state.
   The verified vertex-buffer draw remains green. Runtime: **136/136**.
+- **5e (fix):** corrected `VkBufferCreateInfo` offsets (`size` at 24,
+  `usage` at 32) and `VkMemoryRequirements.memoryTypeBits` (offset 16) in all
+  e7 buffer/readback/uniform paths.  Buffers were previously tiny/invalid, which
+  explained the capture crashes.  Runtime: **136/136**.
 - Remaining: descriptor-bound UBO draw, full engine renderer/scene API,
   image/text, and deletion of the Zig layer.
 
