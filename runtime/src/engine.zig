@@ -822,6 +822,81 @@ pub export fn e7_engine_scene_draw_custom(
     return 0;
 }
 
+/// Draw a procedural shape with full XYZ Euler orientation (milli-radians,
+/// intrinsic XYZ order: x=roll, y=pitch, z=yaw, composed Rz * Ry * Rx to match
+/// physics).  Position/scale are milli-units, RGB tint milli, texture id u64.
+pub export fn e7_engine_scene_draw_shape_rot(
+    handle: i64,
+    shape_kind: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    rx_milli: i64,
+    ry_milli: i64,
+    rz_milli: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+    texture_id: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    const shape = renderer.shapeFromInt(shape_kind) orelse return -1;
+    if (texture_id < 0 or texture_id > std.math.maxInt(u32)) return -1;
+    scene.drawShapeTextured(shape, .{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .rotation = .{ milli(rx_milli), milli(ry_milli), milli(rz_milli) },
+        .angle = 0.0,
+    }, .{ milli(r_milli), milli(g_milli), milli(b_milli) }, @intCast(texture_id)) catch {
+        state.scene_failed_draws += 1;
+        return -1;
+    };
+    state.scene_boxes += 1;
+    return 0;
+}
+
+/// Draw an uploaded custom mesh with full XYZ Euler orientation (same
+/// convention and units as `e7_engine_scene_draw_shape_rot`).
+pub export fn e7_engine_scene_draw_custom_rot(
+    handle: i64,
+    mesh_id: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    rx_milli: i64,
+    ry_milli: i64,
+    rz_milli: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+    texture_id: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    if (mesh_id <= 0 or mesh_id > std.math.maxInt(u32)) return -1;
+    if (texture_id < 0 or texture_id > std.math.maxInt(u32)) return -1;
+    scene.drawCustom(@intCast(mesh_id), .{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .rotation = .{ milli(rx_milli), milli(ry_milli), milli(rz_milli) },
+        .angle = 0.0,
+    }, .{ milli(r_milli), milli(g_milli), milli(b_milli) }, @intCast(texture_id)) catch {
+        state.scene_failed_draws += 1;
+        return -1;
+    };
+    state.scene_boxes += 1;
+    return 0;
+}
+
 pub export fn e7_engine_scene_end_frame(handle: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
@@ -845,7 +920,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [26]Symbol {
+pub fn symbols() [28]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -865,6 +940,8 @@ pub fn symbols() [26]Symbol {
         .{ .name = "e7_engine_scene_draw_shape", .address = @intFromPtr(&e7_engine_scene_draw_shape) },
         .{ .name = "e7_engine_scene_draw_shape_tex", .address = @intFromPtr(&e7_engine_scene_draw_shape_tex) },
         .{ .name = "e7_engine_scene_draw_custom", .address = @intFromPtr(&e7_engine_scene_draw_custom) },
+        .{ .name = "e7_engine_scene_draw_shape_rot", .address = @intFromPtr(&e7_engine_scene_draw_shape_rot) },
+        .{ .name = "e7_engine_scene_draw_custom_rot", .address = @intFromPtr(&e7_engine_scene_draw_custom_rot) },
         .{ .name = "e7_engine_scene_texture_create", .address = @intFromPtr(&e7_engine_scene_texture_create) },
         .{ .name = "e7_engine_scene_texture_destroy", .address = @intFromPtr(&e7_engine_scene_texture_destroy) },
         .{ .name = "e7_engine_scene_mesh_upload", .address = @intFromPtr(&e7_engine_scene_mesh_upload) },

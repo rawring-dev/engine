@@ -72,9 +72,11 @@ engine/
   follows the player with the first-person Camera eye. Pickup picks the nearest
   body (deterministic body-id tie-break). `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
-  one `draw_shape_tex` per `Renderable` + `Transform` + `BodyBounds` +
+  one `draw_shape_rot` per `Renderable` + `Transform` + `BodyBounds` +
   `Material` row (object count is dynamic; there is no fixed per-frame limit),
-  one `draw_custom` per uploaded OBJ mesh row, and `end_frame`.
+  one `draw_custom_rot` per uploaded OBJ mesh row, and `end_frame`.  The draw
+  calls receive the full `Transform.rotation` XYZ Euler triple, so physics
+  rotation around any axis is rendered (previous code passed only rotation[1]).
 - `Renderable { kind, colour }` marks drawable rows and selects a procedural
   mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `Material { texture, tint }`
   provides the per-object GPU texture and RGB tint (texture * tint * vertex

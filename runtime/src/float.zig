@@ -26,11 +26,15 @@ fn boolBits(value: bool) i64 {
 }
 
 fn toI64(value: f64) i64 {
-    if (std.math.isNan(value)) return 0;
+    // NaN and infinities have no integer value; map them to 0.  The i64
+    // bounds are not exactly representable as f64 (maxInt rounds up to 2^63),
+    // so do the saturation explicitly instead of relying on @intFromFloat.
+    if (!std.math.isFinite(value)) return 0;
     const min: f64 = @floatFromInt(std.math.minInt(i64));
     const max: f64 = @floatFromInt(std.math.maxInt(i64));
-    const clamped = std.math.clamp(value, min, max);
-    return @intFromFloat(clamped);
+    if (value <= min) return std.math.minInt(i64);
+    if (value >= max) return std.math.maxInt(i64);
+    return @intFromFloat(value);
 }
 
 // ----------------------------------------------------------- arithmetic ------
@@ -161,4 +165,13 @@ test "float helpers round-trip and compute" {
     try std.testing.expectEqual(@as(i64, 3000), e7_f32_to_milli(e7_f32_sqrt(e7_f32_from_i64(9))));
     try std.testing.expectEqual(@as(i64, 2500), e7_f32_to_milli(e7_f32_abs(e7_f32_neg(e7_f32_from_milli(2500)))));
     try std.testing.expectEqual(@as(i64, 0), e7_f32_to_milli(e7_f32_clamp(e7_f32_from_i64(-5), e7_f32_from_i64(0), e7_f32_from_i64(1))));
+}
+
+test "float to-i64 conversions saturate instead of trapping" {
+    try std.testing.expectEqual(@as(i64, 0), toI64(std.math.inf(f64)));
+    try std.testing.expectEqual(@as(i64, 0), toI64(-std.math.inf(f64)));
+    try std.testing.expectEqual(@as(i64, 0), toI64(std.math.nan(f64)));
+    try std.testing.expectEqual(std.math.maxInt(i64), toI64(1.0e300));
+    try std.testing.expectEqual(std.math.minInt(i64), toI64(-1.0e300));
+    try std.testing.expectEqual(@as(i64, 1234), toI64(1234.0));
 }

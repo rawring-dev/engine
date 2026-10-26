@@ -183,6 +183,16 @@ The e7 engine host uses a higher-level per-object ABI in
 | `e7_engine_scene_texture_destroy(handle, texture_id) -> i64` | free a user texture (texture 0 is the built-in white texture and cannot be destroyed) |
 | `e7_engine_scene_mesh_upload(handle, vertices, indices, layout) -> u64` | upload `[f32]` interleaved vertices + `[i32]` indices (layout 0 = pos3+normal3+uv2, layout 1 = pos3+normal3+colour3+uv2); `0` on failure, mesh ids start at 1 |
 | `e7_engine_scene_draw_custom(handle, mesh_id, ..., r, g, b, texture_id) -> i64` | draw an uploaded custom mesh |
+| `e7_engine_scene_draw_shape_rot(handle, kind, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture_id) -> i64` | full XYZ Euler orientation: `rx/ry/rz` are milli-radians (roll/pitch/yaw), composed `Rz * Ry * Rx` to match the physics quaternion convention |
+| `e7_engine_scene_draw_custom_rot(handle, mesh_id, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture_id) -> i64` | same full-orientation draw for uploaded meshes |
+
+Rotation convention: the legacy `draw_shape`/`draw_custom` ABI still takes a
+single Y angle (radians); the `*_rot` variants take an intrinsic-XYZ Euler
+triple in milli-radians (`x` = roll, `y` = pitch, `z` = yaw) and build
+`model = T * Rz * Ry * Rx * S`, which is exactly
+`physics::quat_from_euler`/`quat_to_euler`'s convention.  e7 passes
+`Transform.rotation[0..2]` through `scene.e7` so physics tumbling around X/Z
+now renders.
 
 The per-object draw calls return `0` on success and `-1` when no frame is
 active, the kind/texture/mesh is invalid, or allocation fails; handle-producing

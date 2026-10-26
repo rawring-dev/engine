@@ -90,13 +90,19 @@ pub const Camera = struct {
     pitch: f32 = -0.14,
 };
 
-/// One drawable box: world translation, per-axis scale, and a Y rotation
-/// (radians).  The built-in unit cube spans [-1, 1], so scale is half-extent
-/// based: a 1x1x1 cube needs scale (1, 1, 1), a plane 100x0.2x100 needs
-/// (50, 0.1, 50).
+/// One drawable box: world translation, per-axis scale, and an orientation.
+/// The built-in unit cube spans [-1, 1], so scale is half-extent based: a
+/// 1x1x1 cube needs scale (1, 1, 1), a plane 100x0.2x100 needs (50, 0.1, 50).
+///
+/// `rotation` is an intrinsic-XYZ Euler triple in radians (x = roll, y = pitch,
+/// z = yaw), composed as R = Rz * Ry * Rx to match `physics::quat_from_euler`
+/// and the Euler values physics writes back into `Transform.rotation`.
+/// `angle` is the legacy single Y rotation and is added to `rotation[1]`; new
+/// full-orientation callers set `rotation` and leave `angle` at zero.
 pub const Box = struct {
     position: Vec3 = .{ 0.0, 0.0, 0.0 },
     scale: Vec3 = .{ 1.0, 1.0, 1.0 },
+    rotation: Vec3 = .{ 0.0, 0.0, 0.0 },
     angle: f32 = 0.0,
 };
 
@@ -484,6 +490,17 @@ pub fn matRotationY(angle: f32) Mat4 {
     return m;
 }
 
+pub fn matRotationZ(angle: f32) Mat4 {
+    const cos = @cos(angle);
+    const sin = @sin(angle);
+    var m = matIdentity();
+    m[0][0] = cos;
+    m[0][1] = sin;
+    m[1][0] = -sin;
+    m[1][1] = cos;
+    return m;
+}
+
 pub fn matTranslation(translation: Vec3) Mat4 {
     var m = matIdentity();
     m[3] = .{ translation[0], translation[1], translation[2], 1.0 };
@@ -498,10 +515,16 @@ pub fn matScale(scale: Vec3) Mat4 {
     return m;
 }
 
-/// Model matrix for a box: translate * rotate around Y * scale (column-vector
-/// convention, so the box is scaled first, then rotated, then moved).
+/// Model matrix for a box: translate * Rz(z) * Ry(y) * Rx(x) * scale
+/// (column-vector convention, so the box is scaled first, then rotated X, Y,
+/// Z, then moved).  This matches the physics Euler convention; the legacy
+/// `angle` field adds to the Y component for old callers.
 pub fn boxModel(box: Box) Mat4 {
-    return matMul(matTranslation(box.position), matMul(matRotationY(box.angle), matScale(box.scale)));
+    const rotation = matMul(
+        matRotationZ(box.rotation[2]),
+        matMul(matRotationY(box.rotation[1] + box.angle), matRotationX(box.rotation[0])),
+    );
+    return matMul(matTranslation(box.position), matMul(rotation, matScale(box.scale)));
 }
 
 pub const CameraBasis = struct {
@@ -2308,4 +2331,120 @@ test "scene samples GPU textures and draws uploaded custom meshes" {
 
     try scene.destroyTexture(texture_id);
     try std.testing.expectError(error.InvalidTexture, scene.destroyTexture(texture_id));
+}
+
+test "scene renders full X/Y/Z Euler orientation, not just Y" {
+    var window = window_mod.Window.create("engine7 orientation test", 256, 192, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping orientation test (no display): {s}\n", .{@errorName(err)});
+        window_mod.shutdownVideo();
+        return;
+    };
+    defer window_mod.shutdownVideo();
+    defer window.destroy();
+
+    var scene = Scene.init(
+        std.testing.allocator,
+        &window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping orientation test (no Vulkan): {s} ({s})\n", .{ @errorName(err), abi.lastError() });
+        return;
+    };
+    defer scene.deinit();
+    scene.setCamera(.{ 0.8, 1.8, 4.8 }, 0.0, -0.25);
+    scene.setLight(.{ 2.0, 4.0, 3.0 }, .{ 1.0, 0.95, 0.9, 2.5 });
+
+    const Capture = struct {
+        fn single(target: *Scene, box: Box, tint: Vec3, texture: u32) Error![]u8 {
+            try target.beginFrame();
+            try target.drawShapeTextured(.box, box, tint, texture);
+            try target.endFrame();
+            return target.captureRecordedFrame();
+        }
+    };
+
+    // Asymmetric scale makes X/Y/Z rotations produce distinct silhouettes.
+    const base = Box{
+        .position = .{ 0.0, 0.0, 0.0 },
+        .scale = .{ 0.9, 0.45, 0.65 },
+        .angle = 0.0,
+    };
+    const white = Vec3{ 1.0, 1.0, 1.0 };
+    const quarter_turn = std.math.pi * 0.5;
+
+    var identity_box = base;
+    identity_box.rotation = .{ 0.0, 0.0, 0.0 };
+    const identity = try Capture.single(&scene, identity_box, white, 0);
+    defer std.testing.allocator.free(identity);
+
+    var rotate_x = base;
+    rotate_x.rotation = .{ quarter_turn, 0.0, 0.0 };
+    const x90 = try Capture.single(&scene, rotate_x, white, 0);
+    defer std.testing.allocator.free(x90);
+
+    var rotate_y = base;
+    rotate_y.rotation = .{ 0.0, quarter_turn, 0.0 };
+    const y90 = try Capture.single(&scene, rotate_y, white, 0);
+    defer std.testing.allocator.free(y90);
+
+    var rotate_z = base;
+    rotate_z.rotation = .{ 0.0, 0.0, quarter_turn };
+    const z90 = try Capture.single(&scene, rotate_z, white, 0);
+    defer std.testing.allocator.free(z90);
+
+    // X=90 and Y=90 must not be the same image (previously only Y was applied).
+    try std.testing.expect(!std.mem.eql(u8, x90, y90));
+    try std.testing.expect(!std.mem.eql(u8, identity, x90));
+    try std.testing.expect(!std.mem.eql(u8, identity, y90));
+    try std.testing.expect(!std.mem.eql(u8, identity, z90));
+
+    // Combined X/Z tilt (tumbling) must differ from any single-axis rotation.
+    var tumble_box = base;
+    tumble_box.rotation = .{ std.math.pi * 0.25, 0.0, std.math.pi * 0.25 };
+    const tumble = try Capture.single(&scene, tumble_box, white, 0);
+    defer std.testing.allocator.free(tumble);
+    try std.testing.expect(!std.mem.eql(u8, identity, tumble));
+    try std.testing.expect(!std.mem.eql(u8, x90, tumble));
+
+    const background: u32 = @as(u32, identity[0]) + identity[1] + identity[2];
+    for ([_][]const u8{ identity, x90, y90, z90, tumble }) |frame| {
+        var lit: usize = 0;
+        var at: usize = 0;
+        while (at + 3 < frame.len) : (at += 4) {
+            const sum: u32 = @as(u32, frame[at]) + frame[at + 1] + frame[at + 2];
+            if (sum > background + 60) lit += 1;
+        }
+        try std.testing.expect(lit > 150);
+    }
+
+    // A custom mesh also takes the full Euler orientation.
+    var interleaved = std.testing.allocator.alloc(f32, cube_vertices.len * 8) catch return error.OutOfMemory;
+    defer std.testing.allocator.free(interleaved);
+    for (cube_vertices, 0..) |vertex, at| {
+        const offset = at * 8;
+        interleaved[offset + 0] = vertex.position[0];
+        interleaved[offset + 1] = vertex.position[1];
+        interleaved[offset + 2] = vertex.position[2];
+        interleaved[offset + 3] = vertex.normal[0];
+        interleaved[offset + 4] = vertex.normal[1];
+        interleaved[offset + 5] = vertex.normal[2];
+        interleaved[offset + 6] = vertex.uv[0];
+        interleaved[offset + 7] = vertex.uv[1];
+    }
+    var indices = std.testing.allocator.alloc(u32, cube_indices.len) catch return error.OutOfMemory;
+    defer std.testing.allocator.free(indices);
+    for (cube_indices, 0..) |index, at| indices[at] = index;
+    const mesh_id = try scene.uploadMesh(interleaved, indices, .pos_normal_uv);
+    var custom_x = base;
+    custom_x.rotation = .{ quarter_turn, 0.0, 0.0 };
+    try scene.beginFrame();
+    try scene.drawCustom(mesh_id, custom_x, white, 0);
+    try scene.endFrame();
+    const custom_frame = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(custom_frame);
+    try std.testing.expect(!std.mem.eql(u8, custom_frame, identity));
 }

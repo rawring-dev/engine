@@ -77,7 +77,9 @@ pub render_scene <- sys (
             sx = radius
             sy = cylinder_half
             sz = radius
-        e7_engine_scene_draw_shape_tex(
+        # Full XYZ Euler orientation from the physics Transform (roll/pitch/yaw
+        # in radians), matching the physics quaternion convention.
+        e7_engine_scene_draw_shape_rot(
             gpu.scene,
             renderable.kind,
             e7_f32_to_milli(transform.translation[0]),
@@ -86,7 +88,9 @@ pub render_scene <- sys (
             e7_f32_to_milli(sx),
             e7_f32_to_milli(sy),
             e7_f32_to_milli(sz),
+            e7_f32_to_milli(transform.rotation[0]),
             e7_f32_to_milli(transform.rotation[1]),
+            e7_f32_to_milli(transform.rotation[2]),
             e7_f32_to_milli(material.tint[0]),
             e7_f32_to_milli(material.tint[1]),
             e7_f32_to_milli(material.tint[2]),
@@ -97,7 +101,7 @@ pub render_scene <- sys (
     for (mesh_transform, mesh_renderer, mesh_material) in meshes:
         if mesh_renderer.mesh == 0:
             cont
-        e7_engine_scene_draw_custom(
+        e7_engine_scene_draw_custom_rot(
             gpu.scene,
             mesh_renderer.mesh,
             e7_f32_to_milli(mesh_transform.translation[0]),
@@ -106,7 +110,9 @@ pub render_scene <- sys (
             e7_f32_to_milli(mesh_transform.scale[0]),
             e7_f32_to_milli(mesh_transform.scale[1]),
             e7_f32_to_milli(mesh_transform.scale[2]),
+            e7_f32_to_milli(mesh_transform.rotation[0]),
             e7_f32_to_milli(mesh_transform.rotation[1]),
+            e7_f32_to_milli(mesh_transform.rotation[2]),
             e7_f32_to_milli(mesh_material.tint[0]),
             e7_f32_to_milli(mesh_material.tint[1]),
             e7_f32_to_milli(mesh_material.tint[2]),

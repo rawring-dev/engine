@@ -1047,6 +1047,279 @@ pub sphere_capsule_manifold <- (
         contact: Vec3 { x: closest.x, y: closest.y, z: closest.z },
     }
 
+# ---------------------------------------------------------------------------
+# World-space inertia and multi-point box contact generation
+# ---------------------------------------------------------------------------
+
+# Row-major 3x3 matrix.
+pub Mat3 <- struct
+    m00: f32
+    m01: f32
+    m02: f32
+    m10: f32
+    m11: f32
+    m12: f32
+    m20: f32
+    m21: f32
+    m22: f32
+
+pub mat3_mul_vec <- (m: Mat3, v: Vec3) -> Vec3:
+    ret Vec3 {
+        x: m.m00 * v.x + m.m01 * v.y + m.m02 * v.z,
+        y: m.m10 * v.x + m.m11 * v.y + m.m12 * v.z,
+        z: m.m20 * v.x + m.m21 * v.y + m.m22 * v.z,
+    }
+
+# I_world^-1 = R * I_body^-1 * R^T.  The diagonal body inertia is rotated by
+# the body's quaternion orientation, so off-diagonal terms appear for boxes
+# whose local axes are not world axes.
+pub inverse_inertia_world <- (
+    shape: i64,
+    half_extents: Vec3,
+    radius: f32,
+    half_height: f32,
+    inv_mass: f32,
+    orientation: Quat,
+) -> Mat3:
+    diag := inverse_inertia_diagonal(shape, Vec3 { x: half_extents.x, y: half_extents.y, z: half_extents.z }, radius, half_height, inv_mass)
+    ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    # R columns are ax, ay, az; M = sum_k axis_k * diag_k * axis_k^T.
+    ret Mat3 {
+        m00: ax.x * diag.x * ax.x + ay.x * diag.y * ay.x + az.x * diag.z * az.x,
+        m01: ax.x * diag.x * ax.y + ay.x * diag.y * ay.y + az.x * diag.z * az.y,
+        m02: ax.x * diag.x * ax.z + ay.x * diag.y * ay.z + az.x * diag.z * az.z,
+        m10: ax.y * diag.x * ax.x + ay.y * diag.y * ay.x + az.y * diag.z * az.x,
+        m11: ax.y * diag.x * ax.y + ay.y * diag.y * ay.y + az.y * diag.z * az.y,
+        m12: ax.y * diag.x * ax.z + ay.y * diag.y * ay.z + az.y * diag.z * az.z,
+        m20: ax.z * diag.x * ax.x + ay.z * diag.y * ay.x + az.z * diag.z * az.x,
+        m21: ax.z * diag.x * ax.y + ay.z * diag.y * ay.y + az.z * diag.z * az.y,
+        m22: ax.z * diag.x * ax.z + ay.z * diag.y * ay.z + az.z * diag.z * az.z,
+    }
+
+pub point_inside_obb <- (point: Vec3, box: Obb) -> bool:
+    local := quat_rotate(
+        quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }),
+        Vec3 { x: point.x - box.center.x, y: point.y - box.center.y, z: point.z - box.center.z },
+    )
+    ret (
+        e7_f32_abs(local.x) <= box.half_extents.x + 0.0001 and
+        e7_f32_abs(local.y) <= box.half_extents.y + 0.0001 and
+        e7_f32_abs(local.z) <= box.half_extents.z + 0.0001
+    )
+
+# Up to `max_points` world-space corners of `box` below the plane, deepest
+# first.  Returned as flattened x,y,z triples.
+pub box_plane_contacts <- (
+    center: Vec3,
+    half_extents: Vec3,
+    orientation: Quat,
+    normal: Vec3,
+    offset: f32,
+    max_points: i64,
+) -> [f32]:
+    ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    xs: [f32] := []
+    ys: [f32] := []
+    zs: [f32] := []
+    depths: [f32] := []
+    corner := 0
+    while corner < 8:
+        sx := e7_f32_from_i64(corner % 2) * 2.0 - 1.0
+        sy := e7_f32_from_i64((corner / 2) % 2) * 2.0 - 1.0
+        sz := e7_f32_from_i64((corner / 4) % 2) * 2.0 - 1.0
+        px := center.x + ax.x * sx * half_extents.x + ay.x * sy * half_extents.y + az.x * sz * half_extents.z
+        py := center.y + ax.y * sx * half_extents.x + ay.y * sy * half_extents.y + az.y * sz * half_extents.z
+        pz := center.z + ax.z * sx * half_extents.x + ay.z * sy * half_extents.y + az.z * sz * half_extents.z
+        distance := normal.x * px + normal.y * py + normal.z * pz - offset
+        if distance < 0.0:
+            xs = e7_vec_push(xs, px)
+            ys = e7_vec_push(ys, py)
+            zs = e7_vec_push(zs, pz)
+            depths = e7_vec_push(depths, 0.0 - distance)
+        corner = corner + 1
+    result: [f32] := []
+    count := xs.len() as i64
+    if count <= max_points:
+        index := 0
+        while index < count:
+            result = e7_vec_push(result, xs[index as usize])
+            result = e7_vec_push(result, ys[index as usize])
+            result = e7_vec_push(result, zs[index as usize])
+            index = index + 1
+        ret result
+    selected := 0
+    while selected < max_points:
+        best := -1.0
+        best_index := 0
+        index := 0
+        while index < count:
+            if depths[index as usize] > best:
+                best = depths[index as usize]
+                best_index = index
+            index = index + 1
+        result = e7_vec_push(result, xs[best_index as usize])
+        result = e7_vec_push(result, ys[best_index as usize])
+        result = e7_vec_push(result, zs[best_index as usize])
+        depths[best_index as usize] = -1000000.0
+        selected = selected + 1
+    ret result
+
+# Up to four world-space corners of A inside B or B inside A (box-box contact
+# candidates).  Returned as flattened x,y,z triples.
+pub obb_obb_contacts <- (a: Obb, b: Obb) -> [f32]:
+    result: [f32] := []
+    ax := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az := quat_rotate(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    corner := 0
+    while corner < 8:
+        sx := e7_f32_from_i64(corner % 2) * 2.0 - 1.0
+        sy := e7_f32_from_i64((corner / 2) % 2) * 2.0 - 1.0
+        sz := e7_f32_from_i64((corner / 4) % 2) * 2.0 - 1.0
+        point := Vec3 {
+            x: a.center.x + ax.x * sx * a.half_extents.x + ay.x * sy * a.half_extents.y + az.x * sz * a.half_extents.z,
+            y: a.center.y + ax.y * sx * a.half_extents.x + ay.y * sy * a.half_extents.y + az.y * sz * a.half_extents.z,
+            z: a.center.z + ax.z * sx * a.half_extents.x + ay.z * sy * a.half_extents.y + az.z * sz * a.half_extents.z,
+        }
+        if point_inside_obb(Vec3 { x: point.x, y: point.y, z: point.z }, Obb { center: Vec3 { x: b.center.x, y: b.center.y, z: b.center.z }, half_extents: Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, orientation: Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w } }) and result.len() < 12:
+            result = e7_vec_push(result, point.x)
+            result = e7_vec_push(result, point.y)
+            result = e7_vec_push(result, point.z)
+        corner = corner + 1
+    bx := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    by := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    bz := quat_rotate(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    corner = 0
+    while corner < 8:
+        sx := e7_f32_from_i64(corner % 2) * 2.0 - 1.0
+        sy := e7_f32_from_i64((corner / 2) % 2) * 2.0 - 1.0
+        sz := e7_f32_from_i64((corner / 4) % 2) * 2.0 - 1.0
+        point := Vec3 {
+            x: b.center.x + bx.x * sx * b.half_extents.x + by.x * sy * b.half_extents.y + bz.x * sz * b.half_extents.z,
+            y: b.center.y + bx.y * sx * b.half_extents.x + by.y * sy * b.half_extents.y + bz.y * sz * b.half_extents.z,
+            z: b.center.z + bx.z * sx * b.half_extents.x + by.z * sy * b.half_extents.y + bz.z * sz * b.half_extents.z,
+        }
+        if point_inside_obb(Vec3 { x: point.x, y: point.y, z: point.z }, Obb { center: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z }, half_extents: Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, orientation: Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w } }) and result.len() < 12:
+            result = e7_vec_push(result, point.x)
+            result = e7_vec_push(result, point.y)
+            result = e7_vec_push(result, point.z)
+        corner = corner + 1
+    ret result
+
+# Coulomb contact impulse at one point.  `v*`/`w*` are the current body
+# velocity and angular velocity; returns the post-impulse state.
+pub ImpulseResult <- struct
+    vx: f32
+    vy: f32
+    vz: f32
+    wx: f32
+    wy: f32
+    wz: f32
+
+pub contact_impulse <- (
+    vx: f32,
+    vy: f32,
+    vz: f32,
+    wx: f32,
+    wy: f32,
+    wz: f32,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+    nx: f32,
+    ny: f32,
+    nz: f32,
+    inverse_inertia: Mat3,
+    inv_mass: f32,
+    friction: f32,
+    static_friction: f32,
+) -> ImpulseResult:
+    # Normal point velocity v + omega x r.
+    px := vx + wy * rz - wz * ry
+    py := vy + wz * rx - wx * rz
+    pz := vz + wx * ry - wy * rx
+    vn := px * nx + py * ny + pz * nz
+    out_vx := vx
+    out_vy := vy
+    out_vz := vz
+    out_wx := wx
+    out_wy := wy
+    out_wz := wz
+    normal_impulse := 0.0
+    if vn < 0.0:
+        rn_x := ry * nz - rz * ny
+        rn_y := rz * nx - rx * nz
+        rn_z := rx * ny - ry * nx
+        ang := mat3_mul_vec(Mat3 {
+            m00: inverse_inertia.m00, m01: inverse_inertia.m01, m02: inverse_inertia.m02,
+            m10: inverse_inertia.m10, m11: inverse_inertia.m11, m12: inverse_inertia.m12,
+            m20: inverse_inertia.m20, m21: inverse_inertia.m21, m22: inverse_inertia.m22,
+        }, Vec3 { x: rn_x, y: rn_y, z: rn_z })
+        axr_x := ang.y * rz - ang.z * ry
+        axr_y := ang.z * rx - ang.x * rz
+        axr_z := ang.x * ry - ang.y * rx
+        denom := inv_mass + axr_x * nx + axr_y * ny + axr_z * nz
+        if denom < 0.000001:
+            ret ImpulseResult { vx: out_vx, vy: out_vy, vz: out_vz, wx: out_wx, wy: out_wy, wz: out_wz }
+        jn := (0.0 - vn) / denom
+        normal_impulse = jn
+        out_vx = out_vx + nx * jn * inv_mass
+        out_vy = out_vy + ny * jn * inv_mass
+        out_vz = out_vz + nz * jn * inv_mass
+        out_wx = out_wx + ang.x * jn
+        out_wy = out_wy + ang.y * jn
+        out_wz = out_wz + ang.z * jn
+    # Tangential velocity after the normal impulse.
+    px = out_vx + out_wy * rz - out_wz * ry
+    py = out_vy + out_wz * rx - out_wx * rz
+    pz = out_vz + out_wx * ry - out_wy * rx
+    vn = px * nx + py * ny + pz * nz
+    tx := px - nx * vn
+    ty := py - ny * vn
+    tz := pz - nz * vn
+    speed := e7_f32_sqrt(tx * tx + ty * ty + tz * tz)
+    if speed > 0.000001:
+        tx = tx / speed
+        ty = ty / speed
+        tz = tz / speed
+        rt_x := ry * tz - rz * ty
+        rt_y := rz * tx - rx * tz
+        rt_z := rx * ty - ry * tx
+        ang_t := mat3_mul_vec(Mat3 {
+            m00: inverse_inertia.m00, m01: inverse_inertia.m01, m02: inverse_inertia.m02,
+            m10: inverse_inertia.m10, m11: inverse_inertia.m11, m12: inverse_inertia.m12,
+            m20: inverse_inertia.m20, m21: inverse_inertia.m21, m22: inverse_inertia.m22,
+        }, Vec3 { x: rt_x, y: rt_y, z: rt_z })
+        atr_x := ang_t.y * rz - ang_t.z * ry
+        atr_y := ang_t.z * rx - ang_t.x * rz
+        atr_z := ang_t.x * ry - ang_t.y * rx
+        denom_t := inv_mass + atr_x * tx + atr_y * ty + atr_z * tz
+        if denom_t > 0.000001:
+            mu := friction
+            if speed < 0.5 and static_friction > friction:
+                mu = static_friction
+            # Maintain a small resting-contact budget so friction still acts
+            # after the first of several simultaneous contacts has stopped the
+            # normal velocity.
+            max_friction := mu * (normal_impulse + 0.1)
+            jt := speed / denom_t
+            if jt > max_friction:
+                jt = max_friction
+            out_vx = out_vx - tx * jt * inv_mass
+            out_vy = out_vy - ty * jt * inv_mass
+            out_vz = out_vz - tz * jt * inv_mass
+            out_wx = out_wx - ang_t.x * jt
+            out_wy = out_wy - ang_t.y * jt
+            out_wz = out_wz - ang_t.z * jt
+    ret ImpulseResult {
+        vx: out_vx, vy: out_vy, vz: out_vz,
+        wx: out_wx, wy: out_wy, wz: out_wz,
+    }
+
 # Plugin marker: keeps the module in the project plugin graph; all narrowphase
 # work is exposed as pure functions called by `physics.e7` systems.
 pub NarrowphasePlugin <- plugin

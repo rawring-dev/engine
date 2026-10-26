@@ -64,6 +64,10 @@ pub PhysicsWorld <- struct
     # Ground plane used by narrowphase (demo plane is y-up at 0).
     plane_normal: [f32; 3]
     plane_offset: f32
+    # Coulomb friction coefficients (dynamic / static).  High by default so
+    # boxes stop sliding and stack instead of gliding.
+    friction: f32
+    friction_static: f32
 
 @resource
 pub RaycastState <- struct
@@ -94,6 +98,8 @@ pub PhysicsPlugin <- plugin
             quaternions: map[i64, [f32]] {},
             plane_normal: [0.0, 1.0, 0.0],
             plane_offset: 0.0,
+            friction: 0.9,
+            friction_static: 1.15,
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -279,15 +285,77 @@ pub physics_step <- sys (
             half := Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] }
             center := Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] }
             normal := Vec3 { x: plane_x, y: plane_y, z: plane_z }
+            world_inv_i := inverse_inertia_world(
+                flags.shape,
+                Vec3 { x: half.x, y: half.y, z: half.z },
+                flags.radius,
+                flags.half_height,
+                body.inv_mass,
+                Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+            )
+            if body.rotation_locked:
+                world_inv_i = Mat3 {
+                    m00: 0.0, m01: 0.0, m02: 0.0,
+                    m10: 0.0, m11: 0.0, m12: 0.0,
+                    m20: 0.0, m21: 0.0, m22: 0.0,
+                }
 
-            ground_manifold := Manifold {
-                hit: false,
-                normal: Vec3 { x: 0.0, y: 1.0, z: 0.0 },
-                penetration: 0.0,
-                contact: Vec3 { x: center.x, y: center.y, z: center.z },
-            }
-            if flags.shape == 2:
-                ground_manifold = capsule_plane_manifold(
+            if flags.shape == 0:
+                # Box-plane: corner contacts, deepest first (up to four).
+                points := box_plane_contacts(
+                    Vec3 { x: center.x, y: center.y, z: center.z },
+                    Vec3 { x: half.x, y: half.y, z: half.z },
+                    Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                    Vec3 { x: normal.x, y: normal.y, z: normal.z },
+                    ground,
+                    4,
+                )
+                contact_count := points.len() / 3
+                if contact_count > 0:
+                    max_depth := 0.0
+                    index := 0
+                    while index < contact_count * 3:
+                        depth := 0.0 - (normal.x * points[index as usize] + normal.y * points[(index + 1) as usize] + normal.z * points[(index + 2) as usize] - ground)
+                        if depth > max_depth:
+                            max_depth = depth
+                        index = index + 3
+                    transform.translation[0] = transform.translation[0] + normal.x * max_depth * 0.9
+                    transform.translation[1] = transform.translation[1] + normal.y * max_depth * 0.9
+                    transform.translation[2] = transform.translation[2] + normal.z * max_depth * 0.9
+                    index = 0
+                    while index < contact_count * 3:
+                        rx := points[index as usize] - transform.translation[0]
+                        ry := points[(index + 1) as usize] - transform.translation[1]
+                        rz := points[(index + 2) as usize] - transform.translation[2]
+                        result := contact_impulse(
+                            body.velocity[0], body.velocity[1], body.velocity[2],
+                            body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
+                            rx, ry, rz,
+                            normal.x, normal.y, normal.z,
+                            Mat3 {
+                                m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
+                                m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
+                                m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
+                            },
+                            body.inv_mass,
+                            world.friction,
+                            world.friction_static,
+                        )
+                        body.velocity[0] = result.vx
+                        body.velocity[1] = result.vy
+                        body.velocity[2] = result.vz
+                        if not body.rotation_locked:
+                            body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
+                            body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
+                            body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                        else:
+                            body.angular_velocity[0] = 0.0
+                            body.angular_velocity[1] = 0.0
+                            body.angular_velocity[2] = 0.0
+                        index = index + 3
+                    on_ground = true
+            elif flags.shape == 2:
+                ground_manifold := capsule_plane_manifold(
                     Vec3 { x: center.x, y: center.y, z: center.z },
                     flags.radius,
                     flags.half_height,
@@ -295,7 +363,40 @@ pub physics_step <- sys (
                     Vec3 { x: normal.x, y: normal.y, z: normal.z },
                     ground,
                 )
-            elif flags.shape == 1:
+                if ground_manifold.hit:
+                    transform.translation[0] = transform.translation[0] + normal.x * ground_manifold.penetration * 0.9
+                    transform.translation[1] = transform.translation[1] + normal.y * ground_manifold.penetration * 0.9
+                    transform.translation[2] = transform.translation[2] + normal.z * ground_manifold.penetration * 0.9
+                    rx := ground_manifold.contact.x - transform.translation[0]
+                    ry := ground_manifold.contact.y - transform.translation[1]
+                    rz := ground_manifold.contact.z - transform.translation[2]
+                    result := contact_impulse(
+                        body.velocity[0], body.velocity[1], body.velocity[2],
+                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
+                        rx, ry, rz,
+                        normal.x, normal.y, normal.z,
+                        Mat3 {
+                            m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
+                            m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
+                            m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
+                        },
+                        body.inv_mass,
+                        world.friction,
+                        world.friction_static,
+                    )
+                    body.velocity[0] = result.vx
+                    body.velocity[1] = result.vy
+                    body.velocity[2] = result.vz
+                    if not body.rotation_locked:
+                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
+                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
+                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                    else:
+                        body.angular_velocity[0] = 0.0
+                        body.angular_velocity[1] = 0.0
+                        body.angular_velocity[2] = 0.0
+                    on_ground = true
+            else:
                 ground_push := sphere_plane_penetration(
                     Vec3 { x: center.x, y: center.y, z: center.z },
                     flags.radius,
@@ -304,110 +405,49 @@ pub physics_step <- sys (
                 )
                 if ground_push.x != 0.0 or ground_push.y != 0.0 or ground_push.z != 0.0:
                     push_distance := e7_f32_sqrt(ground_push.x * ground_push.x + ground_push.y * ground_push.y + ground_push.z * ground_push.z)
-                    ground_manifold = Manifold {
-                        hit: true,
-                        normal: Vec3 { x: normal.x, y: normal.y, z: normal.z },
-                        penetration: push_distance,
-                        contact: Vec3 {
-                            x: center.x - normal.x * flags.radius,
-                            y: center.y - normal.y * flags.radius,
-                            z: center.z - normal.z * flags.radius,
+                    transform.translation[0] = transform.translation[0] + normal.x * push_distance * 0.9
+                    transform.translation[1] = transform.translation[1] + normal.y * push_distance * 0.9
+                    transform.translation[2] = transform.translation[2] + normal.z * push_distance * 0.9
+                    contact_x := center.x - normal.x * flags.radius
+                    contact_y := center.y - normal.y * flags.radius
+                    contact_z := center.z - normal.z * flags.radius
+                    rx := contact_x - transform.translation[0]
+                    ry := contact_y - transform.translation[1]
+                    rz := contact_z - transform.translation[2]
+                    result := contact_impulse(
+                        body.velocity[0], body.velocity[1], body.velocity[2],
+                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
+                        rx, ry, rz,
+                        normal.x, normal.y, normal.z,
+                        Mat3 {
+                            m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
+                            m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
+                            m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
                         },
-                    }
-            elif flags.shape == 0:
-                ground_manifold = obb_plane_manifold(
-                    Obb {
-                        center: Vec3 { x: center.x, y: center.y, z: center.z },
-                        half_extents: Vec3 { x: half.x, y: half.y, z: half.z },
-                        orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                    },
-                    Vec3 { x: normal.x, y: normal.y, z: normal.z },
-                    ground,
-                )
-
-            if ground_manifold.hit:
-                transform.translation[0] = transform.translation[0] + ground_manifold.normal.x * ground_manifold.penetration
-                transform.translation[1] = transform.translation[1] + ground_manifold.normal.y * ground_manifold.penetration
-                transform.translation[2] = transform.translation[2] + ground_manifold.normal.z * ground_manifold.penetration
-                on_ground = true
-                world.grounded = true
-                normal_speed := body.velocity[0] * ground_manifold.normal.x + body.velocity[1] * ground_manifold.normal.y + body.velocity[2] * ground_manifold.normal.z
-                if normal_speed < 0.0:
-                    impulse := 0.0 - normal_speed
-                    body.velocity[0] = body.velocity[0] + ground_manifold.normal.x * impulse
-                    body.velocity[1] = body.velocity[1] + ground_manifold.normal.y * impulse
-                    body.velocity[2] = body.velocity[2] + ground_manifold.normal.z * impulse
-                    rx := ground_manifold.contact.x - transform.translation[0]
-                    ry := ground_manifold.contact.y - transform.translation[1]
-                    rz := ground_manifold.contact.z - transform.translation[2]
-                    torque_x := ry * ground_manifold.normal.z - rz * ground_manifold.normal.y
-                    torque_y := rz * ground_manifold.normal.x - rx * ground_manifold.normal.z
-                    torque_z := rx * ground_manifold.normal.y - ry * ground_manifold.normal.x
-                    inv_i := inverse_inertia_diagonal(
-                        flags.shape,
-                        Vec3 { x: half.x, y: half.y, z: half.z },
-                        flags.radius,
-                        flags.half_height,
                         body.inv_mass,
+                        world.friction,
+                        world.friction_static,
                     )
+                    body.velocity[0] = result.vx
+                    body.velocity[1] = result.vy
+                    body.velocity[2] = result.vz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + inv_i.x * torque_x * impulse, -10.0, 10.0)
-                        body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + inv_i.y * torque_y * impulse, -10.0, 10.0)
-                        body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + inv_i.z * torque_z * impulse, -10.0, 10.0)
-                # Gravity torque about the support corner.  A box resting on a
-                # flat face has its centre of mass over the support and stays
-                # put; once tilted, the lowest corner is offset from the COM, so
-                # gravity produces a real tipping torque.  This is what lets a
-                # stack collapse and boxes tumble from gravity instead of only
-                # from initial spin.
-                if not body.rotation_locked and flags.shape == 0 and body.inv_mass > 0.0:
-                    ax := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
-                    ay := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-                    az := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
-                    dot_x := ax.x * normal.x + ax.y * normal.y + ax.z * normal.z
-                    dot_y := ay.x * normal.x + ay.y * normal.y + ay.z * normal.z
-                    dot_z := az.x * normal.x + az.y * normal.y + az.z * normal.z
-                    sign_x := 0.0
-                    if dot_x > 0.0001:
-                        sign_x = -1.0
-                    elif dot_x < -0.0001:
-                        sign_x = 1.0
-                    sign_y := 0.0
-                    if dot_y > 0.0001:
-                        sign_y = -1.0
-                    elif dot_y < -0.0001:
-                        sign_y = 1.0
-                    sign_z := 0.0
-                    if dot_z > 0.0001:
-                        sign_z = -1.0
-                    elif dot_z < -0.0001:
-                        sign_z = 1.0
-                    ox := ax.x * half.x * sign_x + ay.x * half.y * sign_y + az.x * half.z * sign_z
-                    oy := ax.y * half.x * sign_x + ay.y * half.y * sign_y + az.y * half.z * sign_z
-                    oz := ax.z * half.x * sign_x + ay.z * half.y * sign_y + az.z * half.z * sign_z
-                    force := world.gravity_y * body.gravity_scale / body.inv_mass
-                    fx := normal.x * force
-                    fy := normal.y * force
-                    fz := normal.z * force
-                    torque_x := oy * fz - oz * fy
-                    torque_y := oz * fx - ox * fz
-                    torque_z := ox * fy - oy * fx
-                    gravity_inv_i := inverse_inertia_diagonal(
-                        flags.shape,
-                        Vec3 { x: half.x, y: half.y, z: half.z },
-                        flags.radius,
-                        flags.half_height,
-                        body.inv_mass,
-                    )
-                    body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + gravity_inv_i.x * torque_x * dt, -10.0, 10.0)
-                    body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + gravity_inv_i.y * torque_y * dt, -10.0, 10.0)
-                    body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + gravity_inv_i.z * torque_z * dt, -10.0, 10.0)
+                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
+                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
+                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                    else:
+                        body.angular_velocity[0] = 0.0
+                        body.angular_velocity[1] = 0.0
+                        body.angular_velocity[2] = 0.0
+                    on_ground = true
+            if on_ground:
+                world.grounded = true
+                # Small rolling/air resistance only; sliding friction is now
+                # handled by contact impulses.
                 if not body.rotation_locked:
-                    body.velocity[0] = body.velocity[0] * 0.985
-                    body.velocity[2] = body.velocity[2] * 0.985
-                    body.angular_velocity[0] = body.angular_velocity[0] * 0.95
-                    body.angular_velocity[1] = body.angular_velocity[1] * 0.95
-                    body.angular_velocity[2] = body.angular_velocity[2] * 0.95
+                    body.angular_velocity[0] = body.angular_velocity[0] * 0.998
+                    body.angular_velocity[1] = body.angular_velocity[1] * 0.998
+                    body.angular_velocity[2] = body.angular_velocity[2] * 0.998
 
             if flags.is_player:
                 yaw := world.camera_yaw
@@ -613,32 +653,67 @@ pub physics_step <- sys (
                     }
 
             if contact.hit and contact.penetration > 0.0:
-                transform.translation[0] = transform.translation[0] + contact.normal.x * contact.penetration
-                transform.translation[1] = transform.translation[1] + contact.normal.y * contact.penetration
-                transform.translation[2] = transform.translation[2] + contact.normal.z * contact.penetration
-                normal_speed := body.velocity[0] * contact.normal.x + body.velocity[1] * contact.normal.y + body.velocity[2] * contact.normal.z
-                if normal_speed < 0.0:
-                    impulse := 0.0 - normal_speed
-                    body.velocity[0] = body.velocity[0] + contact.normal.x * impulse
-                    body.velocity[1] = body.velocity[1] + contact.normal.y * impulse
-                    body.velocity[2] = body.velocity[2] + contact.normal.z * impulse
-                    rx := contact.contact.x - transform.translation[0]
-                    ry := contact.contact.y - transform.translation[1]
-                    rz := contact.contact.z - transform.translation[2]
-                    torque_x := ry * contact.normal.z - rz * contact.normal.y
-                    torque_y := rz * contact.normal.x - rx * contact.normal.z
-                    torque_z := rx * contact.normal.y - ry * contact.normal.x
-                    inv_i := inverse_inertia_diagonal(
-                        flags.shape,
-                        Vec3 { x: half_x, y: half_y, z: half_z },
-                        flags.radius,
-                        flags.half_height,
-                        body.inv_mass,
+                # Contact points: box-box uses clipped corner candidates, other
+                # shape pairs use the manifold's closest point.
+                points: [f32] := []
+                if flags.shape == 0 and other_shape == 0:
+                    points = obb_obb_contacts(
+                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
+                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
                     )
+                if points.len() == 0:
+                    points = e7_vec_push(points, contact.contact.x)
+                    points = e7_vec_push(points, contact.contact.y)
+                    points = e7_vec_push(points, contact.contact.z)
+                transform.translation[0] = transform.translation[0] + contact.normal.x * contact.penetration * 0.85
+                transform.translation[1] = transform.translation[1] + contact.normal.y * contact.penetration * 0.85
+                transform.translation[2] = transform.translation[2] + contact.normal.z * contact.penetration * 0.85
+                collision_inv_i := inverse_inertia_world(
+                    flags.shape,
+                    Vec3 { x: half_x, y: half_y, z: half_z },
+                    flags.radius,
+                    flags.half_height,
+                    body.inv_mass,
+                    Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                )
+                if body.rotation_locked:
+                    collision_inv_i = Mat3 {
+                        m00: 0.0, m01: 0.0, m02: 0.0,
+                        m10: 0.0, m11: 0.0, m12: 0.0,
+                        m20: 0.0, m21: 0.0, m22: 0.0,
+                    }
+                point_index := 0
+                point_count := points.len()
+                while point_index < point_count:
+                    rx := points[point_index as usize] - transform.translation[0]
+                    ry := points[(point_index + 1) as usize] - transform.translation[1]
+                    rz := points[(point_index + 2) as usize] - transform.translation[2]
+                    result := contact_impulse(
+                        body.velocity[0], body.velocity[1], body.velocity[2],
+                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
+                        rx, ry, rz,
+                        contact.normal.x, contact.normal.y, contact.normal.z,
+                        Mat3 {
+                            m00: collision_inv_i.m00, m01: collision_inv_i.m01, m02: collision_inv_i.m02,
+                            m10: collision_inv_i.m10, m11: collision_inv_i.m11, m12: collision_inv_i.m12,
+                            m20: collision_inv_i.m20, m21: collision_inv_i.m21, m22: collision_inv_i.m22,
+                        },
+                        body.inv_mass,
+                        world.friction,
+                        world.friction_static,
+                    )
+                    body.velocity[0] = result.vx
+                    body.velocity[1] = result.vy
+                    body.velocity[2] = result.vz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + inv_i.x * torque_x * impulse, -10.0, 10.0)
-                        body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + inv_i.y * torque_y * impulse, -10.0, 10.0)
-                        body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + inv_i.z * torque_z * impulse, -10.0, 10.0)
+                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
+                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
+                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                    else:
+                        body.angular_velocity[0] = 0.0
+                        body.angular_velocity[1] = 0.0
+                        body.angular_velocity[2] = 0.0
+                    point_index = point_index + 3
 
         # Store final broadphase/collision data (after push-out).
         final_aabb := shape_aabb(

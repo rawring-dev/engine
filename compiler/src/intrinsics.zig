@@ -154,6 +154,28 @@ pub const functions = [_]Function{
         .units = scene_shape_units,
     },
     .{
+        // handle, kind, position, scale, XYZ Euler rotation (milli-radians),
+        // rgb tint, texture id.
+        .name = "e7_engine_scene_draw_shape_rot",
+        .params = &.{
+            .u64_, .i32_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_, .i64_, .i64_, .u64_,
+        },
+        .result = .i64_,
+        .units = "kind, position/scale milli-units, XYZ euler milli-radians, rgb tint milli, texture id",
+    },
+    .{
+        // handle, mesh id, position, scale, XYZ Euler rotation, rgb tint,
+        // texture id.
+        .name = "e7_engine_scene_draw_custom_rot",
+        .params = &.{
+            .u64_, .u64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_, .i64_, .i64_, .u64_,
+        },
+        .result = .i64_,
+        .units = "mesh id, position/scale milli-units, XYZ euler milli-radians, rgb tint milli, texture id",
+    },
+    .{
         .name = "e7_engine_scene_draw_shape_tex",
         .params = &.{
             .u64_, .i32_, .i64_, .i64_, .i64_, .i64_, .i64_,
@@ -298,6 +320,13 @@ test "compiler-known intrinsics map to bytecode runtime calls with matching arit
     const draw_custom = lookup("e7_engine_scene_draw_custom").?;
     try std.testing.expectEqual(@as(usize, 13), draw_custom.params.len);
     try std.testing.expectEqual(ValueType.u64_, draw_custom.params[1]);
+    const draw_shape_rot = lookup("e7_engine_scene_draw_shape_rot").?;
+    try std.testing.expectEqual(@as(usize, 15), draw_shape_rot.params.len);
+    try std.testing.expectEqual(ValueType.i32_, draw_shape_rot.params[1]);
+    try std.testing.expectEqual(ValueType.u64_, draw_shape_rot.params[14]);
+    const draw_custom_rot = lookup("e7_engine_scene_draw_custom_rot").?;
+    try std.testing.expectEqual(@as(usize, 15), draw_custom_rot.params.len);
+    try std.testing.expectEqual(ValueType.u64_, draw_custom_rot.params[1]);
     const mesh_upload = lookup("e7_engine_scene_mesh_upload").?;
     try std.testing.expectEqual(@as(usize, 4), mesh_upload.params.len);
     try std.testing.expectEqual(ValueType.f32_vec_, mesh_upload.params[1]);
