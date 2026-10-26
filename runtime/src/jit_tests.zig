@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const orc = @import("orc.zig");
+const compiler = @import("compiler");
 const intrinsics = @import("intrinsics.zig");
 const abi = @import("ffi/abi.zig");
 const fs = @import("ffi/fs.zig");
@@ -533,7 +534,6 @@ test "JITed IR drives the scene renderer ABI" {
 const ecs = @import("ecs.zig");
 const aggregate = @import("aggregate.zig");
 const task = @import("task.zig");
-const compiler = @import("compiler");
 
 // End-to-end ECS vertical slice: compile e7 source, run it through ORC, and
 // observe the runtime world through the ECS ABI.  `main`'s body emits the
@@ -789,4 +789,48 @@ test "JITed IR resolves and reads a C data symbol" {
     const symbol = "stdout";
     const value = jit_data(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len);
     try std.testing.expect(value != 0);
+}
+
+test "e7 source binds and calls libc strlen through the generic C FFI" {
+    const library_path = cLibraryPath() orelse return;
+    if (!canResolve(library_path, "strlen")) return;
+
+    const source = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\strlen_len <- () -> u64:
+        \\    addr := e7_cffi_bind("{s}", "strlen")
+        \\    ret e7_ffi_call1(addr, e7_str_data("hello"))
+    ,
+        .{library_path},
+    );
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |diagnostic| {
+            std.debug.print("e7 C FFI parse diagnostic: {s}\n", .{diagnostic.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |diagnostic| {
+            std.debug.print("e7 C FFI diagnostic: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-c-ffi");
+    const StrlenLen = *const fn () callconv(.c) u64;
+    const strlen_len = try jit.get(StrlenLen, "strlen_len");
+    try std.testing.expectEqual(@as(u64, 5), strlen_len());
 }

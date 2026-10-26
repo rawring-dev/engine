@@ -4019,6 +4019,7 @@ const Checker = struct {
         for (call.args, 0..) |arg, index| {
             const actual = try self.checkMoveExpr(arg, null);
             if (index >= intrinsic.params.len) continue;
+            if (intrinsic.params[index] == .any_) continue;
             if (intrinsic.params[index] == .float_) {
                 if (!self.isFloatLike(actual)) {
                     const name_of = try self.store.typeName(self.store.resolve(actual));
