@@ -41,9 +41,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   against a workspace-local Mesa lavapipe ICD (CPU Vulkan):
   `VK_ICD_FILENAMES=.local-vulkan/usr/share/vulkan/icd.d/lvp_icd.json`
   `LD_LIBRARY_PATH=.local-vulkan/usr/lib`; all 134 runtime tests pass.
-  Queue-family selection currently uses family 0; the
-  `vkGetPhysicalDeviceQueueFamilyProperties` e7 query path crashes in lavapipe
-  and must be replaced with a correct query before general-GPU use.
+  Queue-family selection now queries
+  `vkGetPhysicalDeviceQueueFamilyProperties` and
+  `vkGetPhysicalDeviceSurfaceSupportKHR` and picks a family that supports both
+  graphics and presentation (the earlier crash was a missing third argument to
+  the properties query).
 - **2c (done):** `engine/platform/vulkan.e7` creates a `VkSwapchainKHR` with
   surface capabilities/formats, image usage, FIFO present mode, and returns the
   swapchain images.  Verified with lavapipe (extent > 0, image count > 0) and

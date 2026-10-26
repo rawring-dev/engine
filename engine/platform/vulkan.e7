@@ -68,7 +68,7 @@ queue_family_supported <- (physical: i64, surface: i64, props: u64, index: i64) 
 find_queue_family <- (physical: i64, surface: i64) -> i64:
     get_families := bind_vk("vkGetPhysicalDeviceQueueFamilyProperties")
     count_out := e7_alloc_bytes(4)
-    e7_ffi_call2(get_families, physical, count_out)
+    e7_ffi_call3(get_families, physical, count_out, 0)
     count := e7_load_u32(count_out)
     if count <= 0:
         e7_free_ptr(count_out)
@@ -185,32 +185,40 @@ vulkan_device_create <- (
         ret -5
     if count > 0:
         physical := e7_load_u64(devices)
-        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
-        if result != 0:
-            e7_free_ptr(count_out)
-            e7_free_ptr(devices)
-            ret result
+        family := find_queue_family(physical, surface)
+        if family >= 0:
+            result := create_logical_device(physical, family, out_device, out_queue, out_family, out_physical)
+            if result != 0:
+                e7_free_ptr(count_out)
+                e7_free_ptr(devices)
+                ret result
     if count > 1:
         physical := e7_load_u64(devices + 8)
-        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
-        if result != 0:
-            e7_free_ptr(count_out)
-            e7_free_ptr(devices)
-            ret result
+        family := find_queue_family(physical, surface)
+        if family >= 0:
+            result := create_logical_device(physical, family, out_device, out_queue, out_family, out_physical)
+            if result != 0:
+                e7_free_ptr(count_out)
+                e7_free_ptr(devices)
+                ret result
     if count > 2:
         physical := e7_load_u64(devices + 16)
-        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
-        if result != 0:
-            e7_free_ptr(count_out)
-            e7_free_ptr(devices)
-            ret result
+        family := find_queue_family(physical, surface)
+        if family >= 0:
+            result := create_logical_device(physical, family, out_device, out_queue, out_family, out_physical)
+            if result != 0:
+                e7_free_ptr(count_out)
+                e7_free_ptr(devices)
+                ret result
     if count > 3:
         physical := e7_load_u64(devices + 24)
-        result := create_logical_device(physical, 0, out_device, out_queue, out_family, out_physical)
-        if result != 0:
-            e7_free_ptr(count_out)
-            e7_free_ptr(devices)
-            ret result
+        family := find_queue_family(physical, surface)
+        if family >= 0:
+            result := create_logical_device(physical, family, out_device, out_queue, out_family, out_physical)
+            if result != 0:
+                e7_free_ptr(count_out)
+                e7_free_ptr(devices)
+                ret result
     e7_free_ptr(count_out)
     e7_free_ptr(devices)
     ret 0

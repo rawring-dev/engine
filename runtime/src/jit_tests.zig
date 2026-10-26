@@ -1170,6 +1170,7 @@ test "e7 SDL+Vulkan platform module creates a device and swapchain" {
         \\        result = vulkan_device_create(instance, surface, device_out, queue_out, family_out, physical_out)
         \\        if result != 0:
         \\            device := e7_load_u64(device_out)
+        \\            queue := e7_load_u64(queue_out)
         \\            physical := e7_load_u64(physical_out)
         \\            swapchain_out := e7_alloc_bytes(8)
         \\            format_out := e7_alloc_bytes(4)
