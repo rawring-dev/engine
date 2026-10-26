@@ -2032,6 +2032,32 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
         \\        score = score + 4096
         \\    if capsule_capsule.hit and capsule_capsule.penetration > 0.099 and capsule_capsule.penetration < 0.101 and capsule_capsule.normal.x < -0.99:
         \\        score = score + 8192
+        \\    identity_matrix := quat_to_mat3(quat_identity())
+        \\    yaw_matrix := quat_to_mat3(quat_from_euler(0.0, 0.0, 1.5707963))
+        \\    yaw_x := mat3_mul_vec(yaw_matrix, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        \\    y_axis_matrix := quat_to_mat3(quat_from_euler(0.0, 1.5707963, 0.0))
+        \\    y_axis_x := mat3_mul_vec(y_axis_matrix, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        \\    matrix_q := quat_from_euler(0.3, 0.4, 0.5)
+        \\    matrix_v := Vec3 { x: 0.2, y: -0.7, z: 1.1 }
+        \\    by_matrix := mat3_mul_vec(quat_to_mat3(matrix_q), matrix_v)
+        \\    by_quat := quat_rotate(quat_from_euler(0.3, 0.4, 0.5), Vec3 { x: 0.2, y: -0.7, z: 1.1 })
+        \\    euler_roundtrip := quat_to_euler(quat_from_euler(0.3, 0.4, 0.5))
+        \\    det_matrix := quat_to_mat3(quat_from_euler(0.3, 0.4, 0.5))
+        \\    if e7_f32_abs(identity_matrix.m00 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m11 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m22 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m01) < 0.0001:
+        \\        score = score + 16384
+        \\    # +90 around Z (right-handed) maps +X to +Y.
+        \\    if e7_f32_abs(yaw_x.y - 1.0) < 0.001 and e7_f32_abs(yaw_x.x) < 0.001:
+        \\        score = score + 32768
+        \\    # +90 around Y (right-handed) maps +X to -Z.
+        \\    if e7_f32_abs(y_axis_x.z + 1.0) < 0.001 and e7_f32_abs(y_axis_x.x) < 0.001:
+        \\        score = score + 262144
+        \\    if e7_f32_abs(by_matrix.x - by_quat.x) < 0.001 and e7_f32_abs(by_matrix.y - by_quat.y) < 0.001 and e7_f32_abs(by_matrix.z - by_quat.z) < 0.001:
+        \\        score = score + 65536
+        \\    if e7_f32_abs(euler_roundtrip.x - 0.3) < 0.01 and e7_f32_abs(euler_roundtrip.y - 0.4) < 0.01 and e7_f32_abs(euler_roundtrip.z - 0.5) < 0.01:
+        \\        score = score + 131072
+        \\    det := det_matrix.m00 * (det_matrix.m11 * det_matrix.m22 - det_matrix.m12 * det_matrix.m21) - det_matrix.m01 * (det_matrix.m10 * det_matrix.m22 - det_matrix.m12 * det_matrix.m20) + det_matrix.m02 * (det_matrix.m10 * det_matrix.m21 - det_matrix.m11 * det_matrix.m20)
+        \\    if e7_f32_abs(det - 1.0) < 0.001:
+        \\        score = score + 524288
         \\    ret score
     ;
     var compiled = try compiler.pipeline.compileProjectFromSources(
@@ -2051,7 +2077,7 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
     try jit.addBytecode(&compiled.bytecode, "physics-quat-obb-capsule");
     const Main = *const fn () callconv(.c) i64;
     const main = try jit.get(Main, "main");
-    try std.testing.expectEqual(@as(i64, 16383), main());
+    try std.testing.expectEqual(@as(i64, 1048575), main());
 }
 
 test "JIT nearest pickup uses distance then body id tie-break" {
