@@ -947,3 +947,80 @@ test "e7 source creates a Vulkan instance and enumerates devices through the C F
     const devices = probe();
     try std.testing.expect(devices >= 0);
 }
+
+test "e7 SDL platform module initializes video, creates, sizes, pumps, and destroys a window" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) {
+        std.debug.print("skipping e7 SDL platform test: libSDL3 unavailable\n", .{});
+        return;
+    }
+
+    const io = std.testing.io;
+    const module_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch {
+        std.debug.print("skipping e7 SDL platform test: engine/platform/sdl.e7 missing\n", .{});
+        return;
+    };
+    defer std.testing.allocator.free(module_source);
+
+    const selftest =
+        \\window_selftest <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        ret -1
+        \\    win := window_create("e7 sdl platform", 64, 48, 8)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret -2
+        \\    out_w := e7_alloc_bytes(4)
+        \\    out_h := e7_alloc_bytes(4)
+        \\    window_size(win, out_w, out_h)
+        \\    width := e7_load_u32(out_w)
+        \\    key := key_down(win, 4)
+        \\    buttons := mouse_buttons(win)
+        \\    mouse := mouse_x(win) + mouse_y(win) + mouse_dx(win) + mouse_dy(win)
+        \\    pump_result := window_pump(win)
+        \\    window_destroy(win)
+        \\    e7_free_ptr(out_w)
+        \\    e7_free_ptr(out_h)
+        \\    video_quit()
+        \\    if width <= 0:
+        \\        ret -3
+        \\    if pump_result != 0:
+        \\        ret -4
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ module_source, selftest });
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |diagnostic| {
+            std.debug.print("e7 SDL parse diagnostic: {s}\n", .{diagnostic.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |diagnostic| {
+            std.debug.print("e7 SDL diagnostic: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-sdl-platform");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "window_selftest");
+    const result = selftest_fn();
+    if (result == -1) {
+        std.debug.print("skipping e7 SDL platform test: SDL video unavailable\n", .{});
+        return;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}

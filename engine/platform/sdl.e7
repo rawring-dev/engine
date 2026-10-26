@@ -1,0 +1,119 @@
+# SDL3 platform layer implemented in e7 through the generic C FFI.
+#
+# No Zig SDL wrapper exists on this path: each function binds its SDL symbols
+# with `e7_cffi_bind` and calls them through `e7_ffi_call*`.  Window state is a
+# raw 256-byte allocation so e7 functions do not need mutable globals.
+#
+# Layout:
+#   0   SDL_Window*        (u64)
+#   8   quit flag          (u32)
+#   12  mouse x            (f32 bits)
+#   16  mouse y            (f32 bits)
+#   20  mouse dx           (f32 bits)
+#   24  mouse dy           (f32 bits)
+#   28  mouse buttons      (u32)
+#   32  keyboard state*    (u64)
+#   40  text buffer*       (u64)
+#   48  numkeys            (u64)
+#   64  SDL_Event buffer   (128 bytes)
+
+bind_sdl <- (name: str) -> u64:
+    ret e7_cffi_bind("SDL3", name)
+
+video_init <- (driver: str) -> i64:
+    key := e7_cstr("SDL_VIDEODRIVER")
+    value := e7_cstr(driver)
+    set_hint := bind_sdl("SDL_SetHint")
+    e7_ffi_call2(set_hint, key, value)
+    e7_free_ptr(key)
+    e7_free_ptr(value)
+    init := bind_sdl("SDL_InitSubSystem")
+    rc := e7_ffi_call1(init, 32)
+    if rc == 0:
+        ret 1
+    ret 0
+
+video_quit <- () -> nil:
+    quit := bind_sdl("SDL_QuitSubSystem")
+    e7_ffi_call1(quit, 32)
+
+window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
+    create := bind_sdl("SDL_CreateWindow")
+    title_z := e7_cstr(title)
+    win := e7_ffi_call4(create, title_z, width, height, flags)
+    e7_free_ptr(title_z)
+    if win == 0:
+        ret 0
+    state := e7_alloc_bytes(256)
+    e7_store_u64(state, win)
+    e7_store_u32(state + 8, 0)
+    ret state
+
+# Poll one event.  Callers pump repeatedly per frame; keeping this loop-free
+# also avoids a known LLVM instcombine non-fixpoint on the generated CFG.
+window_pump <- (state: u64) -> i64:
+    poll := bind_sdl("SDL_PollEvent")
+    event := state + 64
+    rc := e7_ffi_call1(poll, event)
+    if rc != 0:
+        kind := e7_load_u32(event)
+        if kind == 256:
+            e7_store_u32(state + 8, 1)
+        if kind == 528:
+            e7_store_u32(state + 8, 1)
+        if kind == 1024:
+            e7_store_u32(state + 12, e7_load_u32(event + 28))
+            e7_store_u32(state + 16, e7_load_u32(event + 32))
+            e7_store_u32(state + 20, e7_load_u32(event + 36))
+            e7_store_u32(state + 24, e7_load_u32(event + 40))
+    ret e7_load_u32(state + 8)
+
+window_should_close <- (state: u64) -> i64:
+    ret e7_load_u32(state + 8)
+
+window_size <- (state: u64, out_width: u64, out_height: u64) -> i64:
+    win := e7_load_u64(state)
+    size := bind_sdl("SDL_GetWindowSizeInPixels")
+    ret e7_ffi_call3(size, win, out_width, out_height) as i64
+
+window_destroy <- (state: u64) -> nil:
+    win := e7_load_u64(state)
+    destroy := bind_sdl("SDL_DestroyWindow")
+    e7_ffi_call1(destroy, win)
+    e7_free_ptr(state)
+
+key_down <- (state: u64, scancode: i64) -> i64:
+    keyboard := e7_load_u64(state + 32)
+    if keyboard == 0:
+        get_state := bind_sdl("SDL_GetKeyboardState")
+        numkeys := e7_alloc_bytes(8)
+        keyboard = e7_ffi_call1(get_state, numkeys) as i64
+        e7_store_u64(state + 32, keyboard)
+        e7_store_u64(state + 48, e7_load_u64(numkeys))
+        e7_free_ptr(numkeys)
+    if keyboard == 0:
+        ret 0
+    ret e7_load_u8(keyboard + scancode)
+
+mouse_x <- (state: u64) -> i64:
+    ret e7_load_u32(state + 12)
+
+mouse_y <- (state: u64) -> i64:
+    ret e7_load_u32(state + 16)
+
+mouse_dx <- (state: u64) -> i64:
+    ret e7_load_u32(state + 20)
+
+mouse_dy <- (state: u64) -> i64:
+    ret e7_load_u32(state + 24)
+
+mouse_buttons <- (state: u64) -> i64:
+    get_mouse := bind_sdl("SDL_GetMouseState")
+    x := e7_alloc_bytes(4)
+    y := e7_alloc_bytes(4)
+    buttons := e7_ffi_call2(get_mouse, x, y)
+    e7_store_u32(state + 12, e7_load_u32(x))
+    e7_store_u32(state + 16, e7_load_u32(y))
+    e7_free_ptr(x)
+    e7_free_ptr(y)
+    ret buttons as i64

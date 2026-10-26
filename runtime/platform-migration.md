@@ -26,8 +26,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   raw memory, creates a Vulkan instance, calls
   `vkEnumeratePhysicalDevices`, and destroys the instance. Device enumeration is
   treated as zero devices when the headless loader reports no GPU.
-- Remaining: SDL event/input state, Vulkan device/swapchain/present/capture,
-  e7 intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
+- **1c (done):** `engine/platform/sdl.e7` is a real e7 module that initializes
+  SDL video, creates/destroys/sizes windows, polls events into a raw state block,
+  tracks close/quit and mouse motion, and exposes keyboard/mouse queries.  The
+  runtime test reads this module from disk, compiles it through the e7 pipeline,
+  JITs it, and runs it.
+- Remaining: Vulkan device/swapchain/present/capture, e7 intrinsic wrappers,
+  renderer, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
