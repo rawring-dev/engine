@@ -81,7 +81,7 @@ pub PickupState <- struct
 pub PhysicsPlugin <- plugin
     physics_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(PhysicsWorld {
-            gravity_y: -9.81,
+            gravity_y: -30.0, # demo gravity: 30 m/s² downward
             max_step: 0.05,
             grounded: false,
             jump_latched: false,

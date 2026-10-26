@@ -1802,8 +1802,10 @@ test "JIT demo advances broadphase, jump, and pickup state" {
             return @bitCast(aggregate.e7_vec_get(translation, 1));
         }
     };
-    // Ground raises the capsule's centre to 1.0; held-Space jumps afterwards.
-    try std.testing.expect(FloatReader.y(player_transform) > 1.05);
+    // The capsule rests on the plane with its centre at y = 1.0 (radius +
+    // half-height); higher demo gravity must not let it sink through.
+    try std.testing.expect(FloatReader.y(player_transform) >= 0.99);
+    try std.testing.expect(FloatReader.y(player_transform) <= 1.1);
     // The plane is static.
     try std.testing.expectEqual(@as(f64, 0.0), FloatReader.y(plane_transform));
     // The ball was within reach and is held in front of/above the player.
