@@ -267,3 +267,87 @@ scene_destroy <- (scene: u64) -> nil:
     vulkan_surface_destroy(instance, surface)
     vulkan_instance_destroy(instance)
     e7_free_ptr(scene)
+
+# Convert milli-unit eye/yaw/pitch into view/projection matrices and write the
+# engine SceneUniform block.  Matches the host renderer's FPS conventions:
+# yaw 0 looks down -Z, +X right, Vulkan Y-flipped projection.
+scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli: i64, yaw_milli: i64, pitch_milli: i64) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    degree := 0.000017453292519943295
+    yaw := e7_f32_mul(e7_f32_from_i64(yaw_milli), degree)
+    pitch := e7_f32_mul(e7_f32_from_i64(pitch_milli), degree)
+    cos_p := e7_f32_cos(pitch)
+    sin_p := e7_f32_sin(pitch)
+    sin_y := e7_f32_sin(yaw)
+    cos_y := e7_f32_cos(yaw)
+    fx := e7_f32_mul(sin_y, cos_p)
+    fy := sin_p
+    fz := e7_f32_neg(e7_f32_mul(cos_y, cos_p))
+    rx := e7_f32_neg(fz)
+    rz := fx
+    rlen := e7_f32_sqrt(e7_f32_add(e7_f32_mul(rx, rx), e7_f32_mul(rz, rz)))
+    if e7_f32_gt(rlen, 0.0):
+        rx = e7_f32_div(rx, rlen)
+        rz = e7_f32_div(rz, rlen)
+    ux := e7_f32_sub(e7_f32_mul(0.0, fz), e7_f32_mul(rz, fy))
+    uy := e7_f32_sub(e7_f32_mul(rz, fx), e7_f32_mul(rx, fz))
+    uz := e7_f32_sub(e7_f32_mul(rx, fy), e7_f32_mul(0.0, fx))
+    bx := e7_f32_neg(fx)
+    by := e7_f32_neg(fy)
+    bz := e7_f32_neg(fz)
+    ex := e7_f32_div(e7_f32_from_i64(eye_x_milli), 1000.0)
+    ey := e7_f32_div(e7_f32_from_i64(eye_y_milli), 1000.0)
+    ez := e7_f32_div(e7_f32_from_i64(eye_z_milli), 1000.0)
+    dr := e7_f32_add(e7_f32_mul(rx, ex), e7_f32_add(e7_f32_mul(0.0, ey), e7_f32_mul(rz, ez)))
+    du := e7_f32_add(e7_f32_mul(ux, ex), e7_f32_add(e7_f32_mul(uy, ey), e7_f32_mul(uz, ez)))
+    db := e7_f32_add(e7_f32_mul(bx, ex), e7_f32_add(e7_f32_mul(by, ey), e7_f32_mul(bz, ez)))
+    view := ubo + 64
+    e7_store_f32(view, rx)
+    e7_store_f32(view + 4, ux)
+    e7_store_f32(view + 8, bx)
+    e7_store_f32(view + 12, 0.0)
+    e7_store_f32(view + 16, 0.0)
+    e7_store_f32(view + 20, uy)
+    e7_store_f32(view + 24, by)
+    e7_store_f32(view + 28, 0.0)
+    e7_store_f32(view + 32, rz)
+    e7_store_f32(view + 36, uz)
+    e7_store_f32(view + 40, bz)
+    e7_store_f32(view + 44, 0.0)
+    e7_store_f32(view + 48, e7_f32_neg(dr))
+    e7_store_f32(view + 52, e7_f32_neg(du))
+    e7_store_f32(view + 56, e7_f32_neg(db))
+    e7_store_f32(view + 60, 1.0)
+    half_fov := 0.5235987755982988
+    tan_half := e7_f32_div(e7_f32_sin(half_fov), e7_f32_cos(half_fov))
+    f := e7_f32_div(1.0, tan_half)
+    width := e7_f32_from_i64(e7_load_u32(scene + 88))
+    height := e7_f32_from_i64(e7_load_u32(scene + 92))
+    aspect := 1.0
+    if e7_f32_gt(height, 0.0):
+        aspect = e7_f32_div(width, height)
+    near := 0.1
+    far := 100.0
+    proj := ubo + 128
+    e7_store_f32(proj, e7_f32_div(f, aspect))
+    e7_store_f32(proj + 4, 0.0)
+    e7_store_f32(proj + 8, 0.0)
+    e7_store_f32(proj + 12, 0.0)
+    e7_store_f32(proj + 16, 0.0)
+    e7_store_f32(proj + 20, e7_f32_neg(f))
+    e7_store_f32(proj + 24, 0.0)
+    e7_store_f32(proj + 28, 0.0)
+    e7_store_f32(proj + 32, 0.0)
+    e7_store_f32(proj + 36, 0.0)
+    e7_store_f32(proj + 40, e7_f32_div(far, e7_f32_sub(near, far)))
+    e7_store_f32(proj + 44, -1.0)
+    e7_store_f32(proj + 48, 0.0)
+    e7_store_f32(proj + 52, 0.0)
+    e7_store_f32(proj + 56, e7_f32_div(e7_f32_mul(near, far), e7_f32_sub(near, far)))
+    e7_store_f32(proj + 60, 0.0)
+    e7_store_f32(ubo + 192, ex)
+    e7_store_f32(ubo + 196, ey)
+    e7_store_f32(ubo + 200, ez)
+    e7_store_f32(ubo + 204, 1.0)

@@ -1350,7 +1350,7 @@ vulkan_uniform_resources <- (
     out_mapped: u64,
     out_size: u64,
 ) -> i64:
-    uniform_size := 256
+    uniform_size := 320
     buffer_info := e7_alloc_bytes(56)
     e7_store_u32(buffer_info, 12)
     e7_store_u64(buffer_info + 24, uniform_size)

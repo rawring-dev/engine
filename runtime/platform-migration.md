@@ -125,8 +125,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   (CLEAR/STORE, D32_SFLOAT), framebuffers with color+depth views, two clear
   values, and depth test/write/LESS_OR_EQUAL in the mesh pipeline.  The indexed
   cube still renders and captures correctly.  Runtime: **136/136**.
-- Remaining: camera/light updates, full engine renderer/scene API, image/text,
-  and deletion of the Zig layer.
+- **7a (done):** `scene_set_camera` converts milli-unit eye/yaw/pitch into the
+  FPS view matrix and Vulkan Y-flipped perspective projection, writes the full
+  engine `SceneUniform` (UBO expanded to 320 bytes), and the scene test draws a
+  camera-transformed indexed cube. Runtime: **136/136**.
+- Remaining: light uniforms, full engine renderer/scene API, image/text, and
+  deletion of the Zig layer.
 
 ## Migration stages
 
