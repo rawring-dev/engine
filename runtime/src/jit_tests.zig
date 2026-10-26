@@ -884,3 +884,66 @@ test "e7 source creates an SDL window through the C FFI" {
     }
     try std.testing.expectEqual(@as(u64, 1), result);
 }
+
+test "e7 source creates a Vulkan instance and enumerates devices through the C FFI" {
+    if (!canResolve("libvulkan.so", "vkCreateInstance")) {
+        std.debug.print("skipping e7 Vulkan FFI test: libvulkan unavailable\n", .{});
+        return;
+    }
+
+    const source =
+        \\vulkan_probe <- () -> i64:
+        \\    create := e7_cffi_bind("vulkan", "vkCreateInstance")
+        \\    if create == 0:
+        \\        ret -3
+        \\    app_name := e7_cstr("engine7-e7")
+        \\    engine_name := e7_cstr("engine7")
+        \\    app := e7_alloc_bytes(48)
+        \\    e7_store_u32(app, 0)
+        \\    e7_store_u32(app + 24, 1)
+        \\    e7_store_u64(app + 16, app_name)
+        \\    e7_store_u32(app + 24, 1)
+        \\    e7_store_u64(app + 32, engine_name)
+        \\    e7_store_u32(app + 40, 1)
+        \\    e7_store_u32(app + 44, 4198400)
+        \\    info := e7_alloc_bytes(64)
+        \\    e7_store_u32(info, 1)
+        \\    e7_store_u64(info + 24, app)
+        \\    instance_out := e7_alloc_bytes(8)
+        \\    result := e7_ffi_call3(create, info, 0, instance_out)
+        \\    e7_free_ptr(app_name)
+        \\    e7_free_ptr(engine_name)
+        \\    if result != 0:
+        \\        e7_free_ptr(app)
+        \\        e7_free_ptr(info)
+        \\        e7_free_ptr(instance_out)
+        \\        ret -2
+        \\    instance := e7_load_u64(instance_out)
+        \\    enumerate := e7_cffi_bind("vulkan", "vkEnumeratePhysicalDevices")
+        \\    count_out := e7_alloc_bytes(8)
+        \\    e7_store_u32(count_out, 0)
+        \\    enum_result := e7_ffi_call3(enumerate, instance, count_out, 0)
+        \\    count := e7_load_u32(count_out)
+        \\    destroy := e7_cffi_bind("vulkan", "vkDestroyInstance")
+        \\    e7_ffi_call2(destroy, instance, 0)
+        \\    e7_free_ptr(app)
+        \\    e7_free_ptr(info)
+        \\    e7_free_ptr(instance_out)
+        \\    e7_free_ptr(count_out)
+        \\    if enum_result != 0:
+        \\        ret 0
+        \\    ret count
+    ;
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-vulkan-probe");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe = try jit.get(Probe, "vulkan_probe");
+    const devices = probe();
+    try std.testing.expect(devices >= 0);
+}
