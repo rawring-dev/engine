@@ -80,6 +80,10 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   cannot be reimplemented safely without moving scene state, because e7 has no
   mutable globals; the engine port will pass `window.handle` explicitly.
   Verified with lavapipe/SDL: **135/135** runtime tests.
+- **3d (done):** `vulkan_uniform_resources` creates a host-visible 256-byte
+  uniform buffer, a descriptor set layout/pool/set, binds the buffer, and
+  updates the descriptor.  This is the per-frame `SceneUniform` path used by the
+  engine shaders.  Verified with lavapipe: **135/135** runtime tests.
 - Remaining: full engine intrinsic/scene port, image/text, and deletion of the
   Zig layer.
 

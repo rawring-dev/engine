@@ -1263,3 +1263,130 @@ vulkan_draw_triangle_capture <- (
     if memory_type < 0:
         ret 0
     ret 1
+
+# Create a host-visible uniform buffer and a one-binding descriptor set.  The
+# engine shaders use this for the per-frame SceneUniform block.
+vulkan_uniform_resources <- (
+    device: i64,
+    physical: i64,
+    out_set_layout: u64,
+    out_pool: u64,
+    out_set: u64,
+    out_buffer: u64,
+    out_memory: u64,
+    out_mapped: u64,
+    out_size: u64,
+) -> i64:
+    uniform_size := 256
+    buffer_info := e7_alloc_bytes(56)
+    e7_store_u32(buffer_info, 12)
+    e7_store_u64(buffer_info + 16, uniform_size)
+    e7_store_u32(buffer_info + 24, 64)
+    buffer_out := e7_alloc_bytes(8)
+    create_buffer := bind_vk("vkCreateBuffer")
+    e7_ffi_call4(create_buffer, device, buffer_info, 0, buffer_out)
+    buffer := e7_load_u64(buffer_out)
+    requirements := e7_alloc_bytes(24)
+    get_requirements := bind_vk("vkGetBufferMemoryRequirements")
+    e7_ffi_call3(get_requirements, device, buffer, requirements)
+    memory_size := e7_load_u64(requirements)
+    memory_type := find_memory_type(physical, e7_load_u32(requirements + 8))
+    if memory_type < 0:
+        e7_free_ptr(buffer_info)
+        e7_free_ptr(buffer_out)
+        e7_free_ptr(requirements)
+        ret 0
+    alloc_info := e7_alloc_bytes(32)
+    e7_store_u32(alloc_info, 5)
+    e7_store_u64(alloc_info + 16, memory_size)
+    e7_store_u32(alloc_info + 24, memory_type)
+    memory_out := e7_alloc_bytes(8)
+    allocate_memory := bind_vk("vkAllocateMemory")
+    e7_ffi_call4(allocate_memory, device, alloc_info, 0, memory_out)
+    memory := e7_load_u64(memory_out)
+    bind_buffer := bind_vk("vkBindBufferMemory")
+    e7_ffi_call4(bind_buffer, device, buffer, memory, 0)
+    mapped_out := e7_alloc_bytes(8)
+    map_memory := bind_vk("vkMapMemory")
+    e7_ffi_call6(map_memory, device, memory, 0, memory_size, 0, mapped_out)
+    mapped := e7_load_u64(mapped_out)
+
+    binding := e7_alloc_bytes(24)
+    e7_store_u32(binding, 0)
+    e7_store_u32(binding + 4, 6)
+    e7_store_u32(binding + 8, 1)
+    e7_store_u32(binding + 12, 1)
+    layout_info := e7_alloc_bytes(32)
+    e7_store_u32(layout_info, 32)
+    e7_store_u32(layout_info + 20, 1)
+    e7_store_u64(layout_info + 24, binding)
+    create_layout := bind_vk("vkCreateDescriptorSetLayout")
+    e7_ffi_call4(create_layout, device, layout_info, 0, out_set_layout)
+    set_layout := e7_load_u64(out_set_layout)
+
+    pool_size := e7_alloc_bytes(8)
+    e7_store_u32(pool_size, 6)
+    e7_store_u32(pool_size + 4, 1)
+    pool_info := e7_alloc_bytes(40)
+    e7_store_u32(pool_info, 33)
+    e7_store_u32(pool_info + 20, 1)
+    e7_store_u32(pool_info + 24, 1)
+    e7_store_u64(pool_info + 32, pool_size)
+    create_pool := bind_vk("vkCreateDescriptorPool")
+    e7_ffi_call4(create_pool, device, pool_info, 0, out_pool)
+    pool := e7_load_u64(out_pool)
+
+    layouts := e7_alloc_bytes(8)
+    e7_store_u64(layouts, set_layout)
+    allocate_info := e7_alloc_bytes(40)
+    e7_store_u32(allocate_info, 34)
+    e7_store_u64(allocate_info + 16, pool)
+    e7_store_u32(allocate_info + 24, 1)
+    e7_store_u64(allocate_info + 32, layouts)
+    allocate_set := bind_vk("vkAllocateDescriptorSets")
+    e7_ffi_call3(allocate_set, device, allocate_info, out_set)
+    descriptor_set := e7_load_u64(out_set)
+
+    descriptor_buffer := e7_alloc_bytes(24)
+    e7_store_u64(descriptor_buffer, buffer)
+    e7_store_u64(descriptor_buffer + 8, 0)
+    e7_store_u64(descriptor_buffer + 16, uniform_size)
+    write := e7_alloc_bytes(64)
+    e7_store_u32(write, 35)
+    e7_store_u64(write + 16, descriptor_set)
+    e7_store_u32(write + 24, 0)
+    e7_store_u32(write + 32, 1)
+    e7_store_u32(write + 36, 6)
+    e7_store_u64(write + 48, descriptor_buffer)
+    update_sets := bind_vk("vkUpdateDescriptorSets")
+    e7_ffi_call5(update_sets, device, 1, write, 0, 0)
+    e7_store_u64(out_buffer, buffer)
+    e7_store_u64(out_memory, memory)
+    e7_store_u64(out_mapped, mapped)
+    e7_store_u64(out_size, uniform_size)
+
+    e7_free_ptr(buffer_info)
+    e7_free_ptr(buffer_out)
+    e7_free_ptr(requirements)
+    e7_free_ptr(alloc_info)
+    e7_free_ptr(memory_out)
+    e7_free_ptr(mapped_out)
+    e7_free_ptr(binding)
+    e7_free_ptr(layout_info)
+    e7_free_ptr(pool_size)
+    e7_free_ptr(pool_info)
+    e7_free_ptr(layouts)
+    e7_free_ptr(allocate_info)
+    e7_free_ptr(descriptor_buffer)
+    e7_free_ptr(write)
+    ret 1
+
+vulkan_uniform_resources_destroy <- (device: i64, set_layout: i64, pool: i64, buffer: i64, memory: i64) -> nil:
+    destroy_layout := bind_vk("vkDestroyDescriptorSetLayout")
+    e7_ffi_call3(destroy_layout, device, set_layout, 0)
+    destroy_pool := bind_vk("vkDestroyDescriptorPool")
+    e7_ffi_call3(destroy_pool, device, pool, 0)
+    destroy_buffer := bind_vk("vkDestroyBuffer")
+    e7_ffi_call3(destroy_buffer, device, buffer, 0)
+    free_memory := bind_vk("vkFreeMemory")
+    e7_ffi_call3(free_memory, device, memory, 0)
