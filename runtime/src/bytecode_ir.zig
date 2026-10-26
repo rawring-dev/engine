@@ -33,13 +33,7 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     try translator.out.appendSlice(allocator, "declare i64 @e7_trigger_enter(i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_trigger_leave(i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_alloc_i64(i64)\n");
-    try translator.out.appendSlice(allocator, "declare i64 @e7_load_i64(i64)\n");
-    try translator.out.appendSlice(allocator, "declare void @e7_store_i64(i64, i64)\n");
-    try translator.out.appendSlice(allocator, "declare i64 @e7_load_u8(i64)\n");
-    try translator.out.appendSlice(allocator, "declare void @e7_store_u8(i64, i64)\n");
-    try translator.out.appendSlice(allocator, "declare i64 @e7_str_new(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_concat(i64, i64)\n");
-    try translator.out.appendSlice(allocator, "declare i64 @e7_str_len(i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_slice(i64, i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_char_at(i64, i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_str_eq(i64, i64)\n");

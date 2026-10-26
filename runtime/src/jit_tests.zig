@@ -13,6 +13,7 @@ const net = @import("ffi/net.zig");
 const quic = @import("ffi/quic.zig");
 const io_mod = @import("ffi/io.zig");
 const dl = @import("ffi/dl.zig");
+const cbridge = @import("ffi/cbridge.zig");
 const shader_assets = @import("shader_assets");
 const builtin = @import("builtin");
 
@@ -45,6 +46,8 @@ fn makeJit() !orc.Jit {
     var jit = try orc.Jit.init(std.testing.allocator);
     errdefer jit.deinit();
     try jit.defineSymbols(intrinsics.symbols());
+    const ffi_symbols = cbridge.symbols();
+    try jit.defineSymbols(&ffi_symbols);
     return jit;
 }
 

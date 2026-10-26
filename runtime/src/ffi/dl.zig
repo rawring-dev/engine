@@ -319,3 +319,63 @@ test "the process handle resolves libc symbols" {
     try std.testing.expect(call0(address) > 0);
     try std.testing.expect(library.process);
 }
+
+pub fn call7(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6);
+}
+
+pub fn call8(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7);
+}
+
+pub fn call9(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8);
+}
+
+pub fn call10(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+}
+
+pub fn call11(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+}
+
+pub fn call12(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+}
+
+pub fn call13(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize, a12: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12);
+}
+
+pub fn call14(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize, a12: usize, a13: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13);
+}
+
+pub fn call15(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize, a12: usize, a13: usize, a14: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+}
+
+pub fn call16(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize, a6: usize, a7: usize, a8: usize, a9: usize, a10: usize, a11: usize, a12: usize, a13: usize, a14: usize, a15: usize) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
+}

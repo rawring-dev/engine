@@ -276,7 +276,7 @@ pub const functions = [_]Function{
     .{
         // 1 captures/hides the cursor, 0 releases/shows it.
         .name = "e7_engine_capture_mouse",
-        .params = &.{ .i64_ },
+        .params = &.{.i64_},
         .result = .i64_,
         .units = "enabled (nonzero captures; zero releases) -> status",
     },
@@ -351,6 +351,42 @@ pub const functions = [_]Function{
     // Generic vector append: result type matches the vector argument; the
     // value argument is checked against its element type.
     .{ .name = "e7_vec_push", .params = &.{ .any_, .any_ }, .result = .any_ },
+
+    // Generic C FFI bridge used by e7 platform libraries.  Arguments are raw
+    // 64-bit slots, so strings/vectors are passed as their runtime handles.
+    .{ .name = "e7_cffi_bind", .params = &.{ .str_, .str_ }, .result = .u64_ },
+    .{ .name = "e7_str_data", .params = &.{.str_}, .result = .u64_ },
+    .{ .name = "e7_str_len", .params = &.{.str_}, .result = .i64_ },
+    .{ .name = "e7_str_new", .params = &.{ .u64_, .i64_ }, .result = .str_ },
+    .{ .name = "e7_alloc_bytes", .params = &.{.i64_}, .result = .u64_ },
+    .{ .name = "e7_free_ptr", .params = &.{.u64_}, .result = .unit },
+    .{ .name = "e7_load_i64", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_store_i64", .params = &.{ .u64_, .i64_ }, .result = .unit },
+    .{ .name = "e7_load_u8", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_store_u8", .params = &.{ .u64_, .i64_ }, .result = .unit },
+    .{ .name = "e7_load_u16", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_store_u16", .params = &.{ .u64_, .i64_ }, .result = .unit },
+    .{ .name = "e7_load_u32", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_store_u32", .params = &.{ .u64_, .i64_ }, .result = .unit },
+    .{ .name = "e7_load_u64", .params = &.{.u64_}, .result = .i64_ },
+    .{ .name = "e7_store_u64", .params = &.{ .u64_, .i64_ }, .result = .unit },
+    .{ .name = "e7_ffi_call0", .params = &.{}, .result = .u64_ },
+    .{ .name = "e7_ffi_call1", .params = &.{.any_}, .result = .u64_ },
+    .{ .name = "e7_ffi_call2", .params = &.{ .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call3", .params = &.{ .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call4", .params = &.{ .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call5", .params = &.{ .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call6", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call7", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call8", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call9", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call10", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call11", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call12", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call13", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call14", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call15", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call16", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
 };
 
 pub fn lookup(name: []const u8) ?Function {

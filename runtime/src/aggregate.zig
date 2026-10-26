@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [35]Symbol {
+pub fn symbols() [44]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -610,6 +610,15 @@ pub fn symbols() [35]Symbol {
         .{ .name = "e7_str_slice", .address = @intFromPtr(&e7_str_slice) },
         .{ .name = "e7_str_char_at", .address = @intFromPtr(&e7_str_char_at) },
         .{ .name = "e7_str_eq", .address = @intFromPtr(&e7_str_eq) },
+        .{ .name = "e7_str_data", .address = @intFromPtr(&e7_str_data) },
+        .{ .name = "e7_alloc_bytes", .address = @intFromPtr(&e7_alloc_bytes) },
+        .{ .name = "e7_free_ptr", .address = @intFromPtr(&e7_free_ptr) },
+        .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
+        .{ .name = "e7_store_u16", .address = @intFromPtr(&e7_store_u16) },
+        .{ .name = "e7_load_u32", .address = @intFromPtr(&e7_load_u32) },
+        .{ .name = "e7_store_u32", .address = @intFromPtr(&e7_store_u32) },
+        .{ .name = "e7_load_u64", .address = @intFromPtr(&e7_load_u64) },
+        .{ .name = "e7_store_u64", .address = @intFromPtr(&e7_store_u64) },
         .{ .name = "e7_vec_new", .address = @intFromPtr(&e7_vec_new) },
         .{ .name = "e7_vec_len", .address = @intFromPtr(&e7_vec_len) },
         .{ .name = "e7_vec_get", .address = @intFromPtr(&e7_vec_get) },
@@ -763,4 +772,56 @@ test "text helpers parse numbers and push vector elements" {
     const from_missing = e7_vec_push(0, 7);
     try std.testing.expectEqual(@as(i64, 1), e7_vec_len(from_missing));
     try std.testing.expectEqual(@as(i64, 7), e7_vec_get(from_missing, 0));
+}
+
+/// Raw byte allocation (`malloc`), distinct from slot-oriented `e7_alloc_i64`.
+pub export fn e7_alloc_bytes(size: i64) callconv(.c) i64 {
+    if (size <= 0) return 0;
+    const bytes = @as(usize, @intCast(size));
+    const ptr = std.c.malloc(bytes) orelse return 0;
+    @memset(@as([*]u8, @ptrCast(ptr))[0..bytes], 0);
+    return @intCast(@intFromPtr(ptr));
+}
+
+pub export fn e7_free_ptr(ptr: i64) callconv(.c) void {
+    if (ptr == 0) return;
+    std.c.free(@ptrFromInt(@as(usize, @intCast(ptr))));
+}
+
+/// Pointer to a string aggregate's first byte (not NUL-terminated).
+pub export fn e7_str_data(str: i64) callconv(.c) i64 {
+    if (str == 0) return 0;
+    const len = slots(str)[0];
+    if (len <= 0) return 0;
+    return str + 8;
+}
+
+pub export fn e7_load_u16(ptr: i64) callconv(.c) i64 {
+    if (ptr == 0) return 0;
+    return @as(*align(1) const u16, @ptrFromInt(@as(usize, @intCast(ptr)))).*;
+}
+
+pub export fn e7_store_u16(ptr: i64, value: i64) callconv(.c) void {
+    if (ptr == 0) return;
+    @as(*align(1) u16, @ptrFromInt(@as(usize, @intCast(ptr)))).* = @truncate(@as(u64, @bitCast(value)));
+}
+
+pub export fn e7_load_u32(ptr: i64) callconv(.c) i64 {
+    if (ptr == 0) return 0;
+    return @as(*align(1) const u32, @ptrFromInt(@as(usize, @intCast(ptr)))).*;
+}
+
+pub export fn e7_store_u32(ptr: i64, value: i64) callconv(.c) void {
+    if (ptr == 0) return;
+    @as(*align(1) u32, @ptrFromInt(@as(usize, @intCast(ptr)))).* = @truncate(@as(u64, @bitCast(value)));
+}
+
+pub export fn e7_load_u64(ptr: i64) callconv(.c) i64 {
+    if (ptr == 0) return 0;
+    return @bitCast(@as(*align(1) const u64, @ptrFromInt(@as(usize, @intCast(ptr)))).*);
+}
+
+pub export fn e7_store_u64(ptr: i64, value: i64) callconv(.c) void {
+    if (ptr == 0) return;
+    @as(*align(1) u64, @ptrFromInt(@as(usize, @intCast(ptr)))).* = @bitCast(value);
 }

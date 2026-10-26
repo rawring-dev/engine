@@ -1225,7 +1225,7 @@ pub export fn e7_ffi_write(address: u64, data: ?[*]const u8, len: usize) callcon
 
 // ------------------------------------------------------------- manifest ------
 
-var symbol_table: [100]Symbol = undefined;
+var symbol_table: [93]Symbol = undefined;
 var symbol_state = std.atomic.Value(u8).init(0);
 
 pub fn symbols() []const Symbol {
@@ -1250,13 +1250,6 @@ pub fn symbols() []const Symbol {
             .{ .name = "e7_dl_has_symbol", .address = @intFromPtr(&e7_dl_has_symbol) },
             .{ .name = "e7_dl_close", .address = @intFromPtr(&e7_dl_close) },
             .{ .name = "e7_dl_path", .address = @intFromPtr(&e7_dl_path) },
-            .{ .name = "e7_ffi_call0", .address = @intFromPtr(&e7_ffi_call0) },
-            .{ .name = "e7_ffi_call1", .address = @intFromPtr(&e7_ffi_call1) },
-            .{ .name = "e7_ffi_call2", .address = @intFromPtr(&e7_ffi_call2) },
-            .{ .name = "e7_ffi_call3", .address = @intFromPtr(&e7_ffi_call3) },
-            .{ .name = "e7_ffi_call4", .address = @intFromPtr(&e7_ffi_call4) },
-            .{ .name = "e7_ffi_call5", .address = @intFromPtr(&e7_ffi_call5) },
-            .{ .name = "e7_ffi_call6", .address = @intFromPtr(&e7_ffi_call6) },
             .{ .name = "e7_ffi_call_f64_0", .address = @intFromPtr(&e7_ffi_call_f64_0) },
             .{ .name = "e7_ffi_call_f64_1", .address = @intFromPtr(&e7_ffi_call_f64_1) },
             .{ .name = "e7_ffi_call_f64_2", .address = @intFromPtr(&e7_ffi_call_f64_2) },
@@ -1375,6 +1368,32 @@ pub const declarations =
     \\declare double @e7_ffi_call_f64_4(i64, double, double, double, double)
     \\declare i32 @e7_ffi_read(i64, ptr, i64)
     \\declare i32 @e7_ffi_write(i64, ptr, i64)
+    \\declare i64 @e7_ffi_call7(i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call8(i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call9(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call10(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call11(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call12(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call13(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call14(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call15(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call16(i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_cffi_bind(i64, i64)
+    \\declare i64 @e7_str_data(i64)
+    \\declare i64 @e7_str_len(i64)
+    \\declare i64 @e7_str_new(i64, i64)
+    \\declare i64 @e7_alloc_bytes(i64)
+    \\declare void @e7_free_ptr(i64)
+    \\declare i64 @e7_load_i64(i64)
+    \\declare void @e7_store_i64(i64, i64)
+    \\declare i64 @e7_load_u8(i64)
+    \\declare void @e7_store_u8(i64, i64)
+    \\declare i64 @e7_load_u16(i64)
+    \\declare void @e7_store_u16(i64, i64)
+    \\declare i64 @e7_load_u32(i64)
+    \\declare void @e7_store_u32(i64, i64)
+    \\declare i64 @e7_load_u64(i64)
+    \\declare void @e7_store_u64(i64, i64)
     \\declare i64 @e7_window_create(ptr, i64, i32, i32, i64, ptr, i64)
     \\declare i32 @e7_window_destroy(i64)
     \\declare i32 @e7_window_show(i64)
