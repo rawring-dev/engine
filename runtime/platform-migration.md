@@ -74,7 +74,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   rendered image back, and verifies the center pixel is the shader's green.
   Added `e7_store_f32` for viewport/scissor state.  Verified with lavapipe:
   the e7-built pipeline rasterizes the triangle, not just clears the frame.
-- Remaining: e7 intrinsic wrappers, image/text, and deletion of the Zig layer.
+- **4a (done):** `engine/platform/input.e7` provides explicit-handle input
+  (action-key scancode mapping, mouse position/motion/buttons, relative capture,
+  text placeholder) over the e7 SDL module.  The old zero-argument intrinsics
+  cannot be reimplemented safely without moving scene state, because e7 has no
+  mutable globals; the engine port will pass `window.handle` explicitly.
+  Verified with lavapipe/SDL: **135/135** runtime tests.
+- Remaining: full engine intrinsic/scene port, image/text, and deletion of the
+  Zig layer.
 
 ## Migration stages
 

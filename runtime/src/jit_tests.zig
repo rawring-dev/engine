@@ -1344,3 +1344,49 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
+
+test "e7 input module maps actions and mouse state through SDL" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
+    const io = std.testing.io;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const input_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/input.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(input_source);
+
+    const selftest =
+        \\input_selftest <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        ret -1
+        \\    win := window_create("e7 input", 64, 48, 8)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret 0
+        \\    key := key_action_down(win, 0)
+        \\    mouse := mouse_position_x(win) + mouse_position_y(win)
+        \\    captured := capture_mouse(win, 1)
+        \\    is_captured := is_mouse_captured(win)
+        \\    capture_mouse(win, 0)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if key != 0:
+        \\        ret -2
+        \\    if captured != 0:
+        \\        ret -3
+        \\    if is_captured == 0:
+        \\        ret -4
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, input_source, selftest });
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-input");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "input_selftest");
+    const result = selftest_fn();
+    if (result == -1) return;
+    try std.testing.expectEqual(@as(i64, 1), result);
+}

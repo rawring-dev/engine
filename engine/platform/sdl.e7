@@ -117,3 +117,28 @@ mouse_buttons <- (state: u64) -> i64:
     e7_free_ptr(x)
     e7_free_ptr(y)
     ret buttons as i64
+
+# Start SDL video without forcing a driver (real window on a desktop session).
+video_start <- () -> i64:
+    init := bind_sdl("SDL_InitSubSystem")
+    rc := e7_ffi_call1(init, 32)
+    if rc == 0:
+        ret 1
+    ret 0
+
+# Relative mouse capture / cursor visibility for engine input.
+set_relative_mouse <- (state: u64, enabled: i64) -> nil:
+    window := e7_load_u64(state)
+    set_mode := bind_sdl("SDL_SetWindowRelativeMouseMode")
+    e7_ffi_call2(set_mode, window, enabled)
+    if enabled != 0:
+        hide := bind_sdl("SDL_HideCursor")
+        e7_ffi_call0(hide)
+        e7_store_u32(state + 60, 1)
+    else:
+        show := bind_sdl("SDL_ShowCursor")
+        e7_ffi_call0(show)
+        e7_store_u32(state + 60, 0)
+
+mouse_captured <- (state: u64) -> i64:
+    ret e7_load_u32(state + 60)

@@ -1,0 +1,70 @@
+# Explicit-handle input layer implemented in e7 over SDL.
+#
+# e7 has no mutable module globals, so the window handle carries all state.
+# Engine systems pass `window.handle`; the eventual engine port will replace the
+# old zero-argument compiler intrinsics with these calls.
+
+scancode_for_action <- (code: i64) -> i64:
+    if code == 0:
+        ret 26
+    if code == 1:
+        ret 22
+    if code == 2:
+        ret 4
+    if code == 3:
+        ret 7
+    if code == 4:
+        ret 8
+    if code == 5:
+        ret 20
+    if code == 6:
+        ret 225
+    if code == 7:
+        ret 82
+    if code == 8:
+        ret 81
+    if code == 9:
+        ret 80
+    if code == 10:
+        ret 79
+    if code == 11:
+        ret 44
+    ret -1
+
+key_action_down <- (handle: u64, code: i64) -> i64:
+    scancode := scancode_for_action(code)
+    if scancode < 0:
+        ret 0
+    ret key_down(handle, scancode)
+
+mouse_position_x <- (handle: u64) -> i64:
+    ret mouse_x(handle)
+
+mouse_position_y <- (handle: u64) -> i64:
+    ret mouse_y(handle)
+
+mouse_motion_x <- (handle: u64) -> i64:
+    ret mouse_dx(handle)
+
+mouse_motion_y <- (handle: u64) -> i64:
+    ret mouse_dy(handle)
+
+mouse_button_down <- (handle: u64, button: i64) -> i64:
+    buttons := mouse_buttons(handle)
+    if button == 0:
+        ret buttons % 2
+    if button == 1:
+        ret (buttons / 2) % 2
+    if button == 2:
+        ret (buttons / 4) % 2
+    ret 0
+
+capture_mouse <- (handle: u64, enabled: i64) -> i64:
+    set_relative_mouse(handle, enabled)
+    ret 0
+
+is_mouse_captured <- (handle: u64) -> i64:
+    ret mouse_captured(handle)
+
+text_input <- (handle: u64) -> str:
+    ret e7_str_new(0, 0)
