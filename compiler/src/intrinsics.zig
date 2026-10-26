@@ -269,6 +269,11 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
+        .name = "e7_engine_mouse_captured",
+        .params = &.{},
+        .result = .i64_,
+    },
+    .{
         // 1 captures/hides the cursor, 0 releases/shows it.
         .name = "e7_engine_capture_mouse",
         .params = &.{ .i64_ },

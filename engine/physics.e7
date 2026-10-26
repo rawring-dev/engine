@@ -238,6 +238,7 @@ pub physics_step <- sys (
     pickup_state: res &mut PickupState,
 ):
     dt := 0.016
+    captured := input.mouse_captured()
     cell_size := spatial.cell_size
     plane_x := world.plane_normal[0]
     plane_y := world.plane_normal[1]
@@ -485,21 +486,21 @@ pub physics_step <- sys (
                 right_z := sin_yaw
                 wish_x := 0.0
                 wish_z := 0.0
-                if input.move_forward:
+                if captured and input.move_forward:
                     wish_x = wish_x + forward_x
                     wish_z = wish_z + forward_z
-                if input.move_backward:
+                if captured and input.move_backward:
                     wish_x = wish_x - forward_x
                     wish_z = wish_z - forward_z
-                if input.move_right:
+                if captured and input.move_right:
                     wish_x = wish_x + right_x
                     wish_z = wish_z + right_z
-                if input.move_left:
+                if captured and input.move_left:
                     wish_x = wish_x - right_x
                     wish_z = wish_z - right_z
                 length := e7_f32_sqrt(wish_x * wish_x + wish_z * wish_z)
                 speed := world.move_speed
-                if input.sprint:
+                if captured and input.sprint:
                     speed = speed * 2.5
                 if length > 0.000001:
                     scale := speed / length
@@ -512,7 +513,7 @@ pub physics_step <- sys (
                 player_on_ground := transform.translation[1] <= capsule_bottom + 0.02
                 if not input.jump_down:
                     world.jump_latched = false
-                if input.jump_down and player_on_ground and not world.jump_latched:
+                if captured and input.jump_down and player_on_ground and not world.jump_latched:
                     body.velocity[1] = 5.2
                     world.jump_latched = true
                     world.grounded = false
@@ -922,7 +923,7 @@ pub physics_step <- sys (
     # ------------------------------------------------------- nearest pickup
     released := false
     released_id := 0
-    if input.interact_pressed:
+    if captured and input.interact_pressed:
         if pickup_state.held_id != 0:
             released_id = pickup_state.held_id
             pickup_state.held_id = 0
@@ -982,17 +983,20 @@ pub physics_step <- sys (
 
     # ------------------------------------------- camera look + follow (same step)
     for (camera, controller) in cameras:
-        camera.yaw = camera.yaw + input.look_dx * controller.look_speed
-        camera.pitch = camera.pitch - input.look_dy * controller.look_speed
-        keyboard_look := 1.6 * dt
-        if input.look_left:
-            camera.yaw = camera.yaw - keyboard_look
-        if input.look_right:
-            camera.yaw = camera.yaw + keyboard_look
-        if input.look_up:
-            camera.pitch = camera.pitch + keyboard_look
-        if input.look_down:
-            camera.pitch = camera.pitch - keyboard_look
+        # Look input only owns the camera while the pointer is captured.  When
+        # the cursor is free (Esc/UI), the mouse must not rotate the view.
+        if captured:
+            camera.yaw = camera.yaw + input.look_dx * controller.look_speed
+            camera.pitch = camera.pitch - input.look_dy * controller.look_speed
+            keyboard_look := 1.6 * dt
+            if input.look_left:
+                camera.yaw = camera.yaw - keyboard_look
+            if input.look_right:
+                camera.yaw = camera.yaw + keyboard_look
+            if input.look_up:
+                camera.pitch = camera.pitch + keyboard_look
+            if input.look_down:
+                camera.pitch = camera.pitch - keyboard_look
         camera.pitch = e7_f32_clamp(camera.pitch, -1.5533430343, 1.5533430343)
         camera.position[0] = world.player_x
         camera.position[1] = world.player_y + 1.55

@@ -79,6 +79,10 @@ const InputState = struct {
     mouse_y: f32 = 0.0,
     /// Left / right / middle button state.
     mouse_buttons: [3]bool = [_]bool{false} ** 3,
+    /// Relative mouse mode is active (first-person look owns the pointer).
+    /// Defaults to captured so headless tests and pre-window setup behave like
+    /// the normal interactive path; Escape clears it.
+    mouse_captured: bool = true,
     /// UTF-8 bytes delivered by SDL_EVENT_TEXT_INPUT since the last pump.
     text_input: [text_input_capacity]u8 = undefined,
     text_input_len: usize = 0,
@@ -269,6 +273,11 @@ fn pumpEventsLocked(window_handle: i64) void {
                 state.input.mouse_dx = 0.0;
                 state.input.mouse_dy = 0.0;
             },
+            c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                if (event.window.windowID == window.id and !state.headless) {
+                    _ = c.SDL_StartTextInput(window.handle);
+                }
+            },
             c.SDL_EVENT_KEY_DOWN, c.SDL_EVENT_KEY_UP => {
                 if (event.key.windowID != window.id) continue;
                 const pressed = event.key.down;
@@ -278,6 +287,8 @@ fn pumpEventsLocked(window_handle: i64) void {
                     if (pressed) {
                         _ = c.SDL_SetWindowRelativeMouseMode(window.handle, false);
                         _ = c.SDL_ShowCursor();
+                        state.input.mouse_captured = false;
+                        _ = c.SDL_StartTextInput(window.handle);
                     }
                     continue;
                 }
@@ -541,6 +552,8 @@ pub export fn e7_engine_window_create(title: i64, width: i64, height: i64) callc
         var created = window;
         created.show();
         _ = c.SDL_SetWindowRelativeMouseMode(created.handle, true);
+        state.input.mouse_captured = true;
+        _ = c.SDL_StartTextInput(created.handle);
     }
     return @intCast(handle);
 }
@@ -591,6 +604,13 @@ pub export fn e7_engine_mouse_y() callconv(.c) i64 {
     return @intFromFloat(state.input.mouse_y);
 }
 
+/// 1 when relative mouse capture is active.
+pub export fn e7_engine_mouse_captured() callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    return @intFromBool(state.input.mouse_captured);
+}
+
 /// Mouse button state: 0 left, 1 right, 2 middle; anything else returns 0.
 /// Enable/disable relative mouse capture.  `enabled != 0` hides the cursor and
 /// recaptures the pointer for first-person look; zero releases it.
@@ -600,10 +620,13 @@ pub export fn e7_engine_capture_mouse(enabled: i64) callconv(.c) i64 {
     const window = window_mod.registry.get(@intCast(state.last_window)) orelse return -1;
     const active = enabled != 0;
     _ = c.SDL_SetWindowRelativeMouseMode(window.handle, active);
+    state.input.mouse_captured = active;
     if (active) {
         _ = c.SDL_HideCursor();
+        _ = c.SDL_StopTextInput(window.handle);
     } else {
         _ = c.SDL_ShowCursor();
+        _ = c.SDL_StartTextInput(window.handle);
     }
     return 0;
 }
@@ -1091,7 +1114,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [34]Symbol {
+pub fn symbols() [35]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_capture_mouse", .address = @intFromPtr(&e7_engine_capture_mouse) },
@@ -1125,6 +1148,7 @@ pub fn symbols() [34]Symbol {
         .{ .name = "e7_engine_mouse_x", .address = @intFromPtr(&e7_engine_mouse_x) },
         .{ .name = "e7_engine_mouse_y", .address = @intFromPtr(&e7_engine_mouse_y) },
         .{ .name = "e7_engine_mouse_down", .address = @intFromPtr(&e7_engine_mouse_down) },
+        .{ .name = "e7_engine_mouse_captured", .address = @intFromPtr(&e7_engine_mouse_captured) },
         .{ .name = "e7_engine_text_input", .address = @intFromPtr(&e7_engine_text_input) },
         .{ .name = "e7_engine_scene_draw_ui_quad", .address = @intFromPtr(&e7_engine_scene_draw_ui_quad) },
     };

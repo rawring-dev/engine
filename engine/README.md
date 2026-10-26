@@ -125,7 +125,7 @@ zig build run-engine -- --headless --capture /tmp/engine.ppm
 
 Controls: WASD moves the player capsule horizontally, Space jumps, Shift
 sprints, mouse/arrows look, E picks up/drops the nearest body; Esc frees the
-mouse; clicking the 3D world (outside UI widgets) recaptures it, window close exits.
+mouse; camera look and WASD movement only run while captured; clicking the 3D world (outside UI widgets) recaptures, window close exits.
 
 ## Shaders
 

@@ -58,6 +58,9 @@ impl Input:
         e7_engine_capture_mouse(1)
         ret
 
+    pub mouse_captured <- (input: &Input) -> bool:
+        ret e7_engine_mouse_captured() != 0
+
 
 pub InputPlugin <- plugin
     input_plugin_init <- sys (commands: &mut Commands):
