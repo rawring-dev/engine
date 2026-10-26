@@ -142,10 +142,11 @@ shaders` (or `shaders/build.sh`, which delegates to the engine build) runs the
 e7s transpiler to produce Slang and compiles it with `slangc`.  This directory
 keeps only the generated SPIR-V (embedded by `assets.zig`) and falls back to
 the checked-in `.spv` files when no shader compiler is installed (verified for
-the SPIR-V magic number).  Its 256-byte uniform block stores matrices as
+the SPIR-V magic number).  Its 272-byte uniform block stores matrices as
 column-major `[f32; 4, 4]` fields (e7s emits `column_major float4x4`), so host
-`Mat4[col][row]` data uploads directly; see `shaders/README.md` and
-`../engine/shaders/README.md` for the layout.
+`Mat4[col][row]` data uploads directly; the trailing `tint` field multiplies
+the mesh's vertex colour so every object can have its own colour.  See
+`shaders/README.md` and `../engine/shaders/README.md` for the layout.
 
 The scene ABI is:
 
@@ -159,11 +160,19 @@ The scene ABI is:
 | `e7_scene_capture(handle, out_ptr, out_len, out_w, out_h) -> i32` | malloc-owned RGBA8 pixels for headless checks; release with `e7_free` |
 
 The e7 engine host uses a higher-level per-object ABI in
-`runtime/src/engine.zig`: `e7_engine_scene_draw_box(handle, x, y, z, sx, sy, sz,
-angle_milli_radians)` (position/scale in milli-units, Y rotation in
-milli-radians) between `e7_engine_scene_begin_frame` and
-`e7_engine_scene_end_frame`.  It returns `0` on success and `-1` when no frame
-is active or the 64-object limit is exceeded.
+`runtime/src/engine.zig` between `e7_engine_scene_begin_frame` and
+`e7_engine_scene_end_frame`:
+
+| Function | Notes |
+| --- | --- |
+| `e7_engine_scene_draw_box(handle, x, y, z, sx, sy, sz, angle_milli_radians) -> i64` | legacy box draw; white tint |
+| `e7_engine_scene_draw_shape(handle, kind, x, y, z, sx, sy, sz, angle_milli_radians, r, g, b) -> i64` | `kind` 0 box / 1 sphere / 2 capsule / 3 plane; position/scale in milli-units, Y rotation in milli-radians, RGB tint in milli (1000 = 1.0) |
+
+Both return `0` on success and `-1` when no frame is active, the kind is
+invalid, or the 64-object limit is exceeded.  The renderer owns one
+vertex/index mesh per shape kind (`cube`, UV sphere, capsule with hemispherical
+caps, flat XZ plane), so every object shares one pipeline and one dynamic
+uniform slot while selecting its geometry per draw.
 
 The `i64`-bitcast convention exists because all JIT ABI values are `i64`. For
 example `1.0f` is `0x3F800000` = `1065353216`; helpers truncate to 32 bits, so

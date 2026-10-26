@@ -6,6 +6,7 @@ SceneUniform <- struct
     light_pos: [f32; 4]
     light_color: [f32; 4]
     params: [f32; 4]
+    tint: [f32; 4]
 
 @binding(0, 0)
 scene: SceneUniform
@@ -32,5 +33,6 @@ main <- (input: VSOutput) -> [f32; 4]:
     # params.rgb * params.w is the ambient colour.
     ambient := scene.params.rgb * scene.params.w
 
-    lit := input.color * (ambient + light * diffuse)
+    # Per-object tint multiplies the mesh's base (vertex) colour.
+    lit := input.color * scene.tint.rgb * (ambient + light * diffuse)
     ret [lit.x, lit.y, lit.z, 1.0]

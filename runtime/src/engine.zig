@@ -601,10 +601,12 @@ pub export fn e7_engine_scene_draw_mesh(handle: i64) callconv(.c) i64 {
     return 0;
 }
 
-/// Draw one box in the frame opened by `e7_engine_scene_begin_frame`.
-/// Position and scale are milli-units (world units x1000), the Y rotation is
-/// milli-radians.  Returns 0 on success, -1 when there is no active frame or
-/// the per-frame object limit (`renderer.max_objects`, 64) is reached.
+/// Draw one procedural shape in the frame opened by
+/// `e7_engine_scene_begin_frame`.  `kind` selects box=0, sphere=1, capsule=2,
+/// plane=3.  Position, scale, and RGB tint are milli-units (world units /
+/// colour x1000); the Y rotation is milli-radians.  Returns 0 on success, -1
+/// for an invalid kind, no active frame, or the per-frame object limit
+/// (`renderer.max_objects`, 64).
 pub export fn e7_engine_scene_draw_box(
     handle: i64,
     x_milli: i64,
@@ -623,6 +625,33 @@ pub export fn e7_engine_scene_draw_box(
         .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
         .angle = milli(angle_milli_radians),
     }) catch return -1;
+    state.scene_boxes += 1;
+    return 0;
+}
+
+pub export fn e7_engine_scene_draw_shape(
+    handle: i64,
+    shape_kind: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    angle_milli_radians: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    const shape = renderer.shapeFromInt(shape_kind) orelse return -1;
+    scene.drawShape(shape, .{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .angle = milli(angle_milli_radians),
+    }, .{ milli(r_milli), milli(g_milli), milli(b_milli) }) catch return -1;
     state.scene_boxes += 1;
     return 0;
 }
@@ -650,7 +679,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [20]Symbol {
+pub fn symbols() [21]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -667,6 +696,7 @@ pub fn symbols() [20]Symbol {
         .{ .name = "e7_engine_scene_begin_frame", .address = @intFromPtr(&e7_engine_scene_begin_frame) },
         .{ .name = "e7_engine_scene_draw_mesh", .address = @intFromPtr(&e7_engine_scene_draw_mesh) },
         .{ .name = "e7_engine_scene_draw_box", .address = @intFromPtr(&e7_engine_scene_draw_box) },
+        .{ .name = "e7_engine_scene_draw_shape", .address = @intFromPtr(&e7_engine_scene_draw_shape) },
         .{ .name = "e7_engine_scene_end_frame", .address = @intFromPtr(&e7_engine_scene_end_frame) },
         .{ .name = "e7_engine_should_close", .address = @intFromPtr(&e7_engine_should_close) },
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
@@ -775,8 +805,67 @@ test "engine draw_box records one draw per box and captures them" {
             box[6],
         ));
     }
+    // Procedural shapes: sphere (kind 1), capsule (kind 2), plane (kind 3).
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_shape(
+        scene,
+        1,
+        1600,
+        2000,
+        4000,
+        500,
+        500,
+        500,
+        0,
+        1000,
+        550,
+        220,
+    ));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_shape(
+        scene,
+        2,
+        0,
+        1200,
+        5000,
+        400,
+        600,
+        400,
+        0,
+        400,
+        600,
+        1000,
+    ));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_shape(
+        scene,
+        3,
+        0,
+        0,
+        0,
+        50000,
+        100,
+        50000,
+        0,
+        450,
+        500,
+        450,
+    ));
+    // Invalid kinds are rejected.
+    try std.testing.expectEqual(@as(i64, -1), e7_engine_scene_draw_shape(
+        scene,
+        9,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        1000,
+        1000,
+        1000,
+    ));
+
     const stats = renderStats();
-    try std.testing.expectEqual(@as(i64, 6), stats.scene_boxes);
+    try std.testing.expectEqual(@as(i64, 9), stats.scene_boxes);
     try std.testing.expectEqual(@as(i64, 1), stats.scene_draws);
 
     try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));

@@ -6,6 +6,7 @@ SceneUniform <- struct
     light_pos: [f32; 4]
     light_color: [f32; 4]
     params: [f32; 4]
+    tint: [f32; 4]
 
 @binding(0, 0)
 scene: SceneUniform

@@ -49,6 +49,9 @@ pub const scene_draw_units = "delta_ms, cube angle milli-radians, light xyz mill
 /// Per-object box draw: position/scale in milli-units, Y rotation in
 /// milli-radians.
 pub const scene_box_units = "position/scale milli-units, angle milli-radians";
+/// Per-object shape draw: kind (0 box, 1 sphere, 2 capsule, 3 plane),
+/// position/scale milli-units, Y rotation milli-radians, RGB tint milli.
+pub const scene_shape_units = "kind, position/scale milli-units, angle milli-radians, rgb tint milli";
 
 pub const functions = [_]Function{
     .{
@@ -131,6 +134,15 @@ pub const functions = [_]Function{
         .params = &.{ .u64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_ },
         .result = .i64_,
         .units = scene_box_units,
+    },
+    .{
+        .name = "e7_engine_scene_draw_shape",
+        .params = &.{
+            .u64_, .i32_, .i64_, .i64_, .i64_, .i64_,
+            .i64_, .i64_, .i64_, .i64_, .i64_, .i64_,
+        },
+        .result = .i64_,
+        .units = scene_shape_units,
     },
     .{
         .name = "e7_engine_scene_end_frame",
@@ -229,4 +241,8 @@ test "compiler-known intrinsics map to bytecode runtime calls with matching arit
     const draw_box = lookup("e7_engine_scene_draw_box").?;
     try std.testing.expectEqual(@as(usize, 8), draw_box.params.len);
     try std.testing.expectEqual(ValueType.i64_, draw_box.result);
+    // handle + kind + position xyz + scale xyz + angle + rgb tint.
+    const draw_shape = lookup("e7_engine_scene_draw_shape").?;
+    try std.testing.expectEqual(@as(usize, 12), draw_shape.params.len);
+    try std.testing.expectEqual(ValueType.i64_, draw_shape.result);
 }

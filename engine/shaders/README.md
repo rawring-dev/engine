@@ -37,7 +37,7 @@ runtime package's dependency on `transpiler/`.
 
 ## Uniform layout
 
-`SceneUniform` is 256 bytes, std140-compatible, and matches
+`SceneUniform` is 272 bytes, std140-compatible, and matches
 `renderer.Uniforms`:
 
 | Offset | Field | Meaning |
@@ -49,6 +49,11 @@ runtime package's dependency on `transpiler/`.
 | 208 | `light_pos` | world-space point light position |
 | 224 | `light_color` | rgb = colour, w = intensity |
 | 240 | `params` | rgb = ambient colour, w = ambient scale |
+| 256 | `tint` | rgb = per-object tint (multiplies the vertex colour); a unused |
+
+The fragment shader multiplies each mesh's base (vertex) colour by
+`scene.tint.rgb`, so procedural shapes share one pipeline/material while each
+object can have its own colour.
 
 The e7s source declares regular matrix fields (`model: [f32; 4, 4]`) and
 uses matrix products (`scene.model * position`).  The transpiler emits

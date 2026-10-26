@@ -70,12 +70,14 @@ engine/
   `physics.e7` from the player capsule, and PostUpdate follows the player with
   the first-person Camera eye. `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
-  one `draw_box` per `Renderable` + `Transform` + `BodyBounds` row (up to the
+  one `draw_shape` per `Renderable` + `Transform` + `BodyBounds` row (up to the
   renderer limit of 64 objects), and `end_frame`.
-- `Renderable { kind }` marks drawable rows: 0 box, 1 sphere, 2 capsule,
-  3 plane.  All kinds are currently box-proxied (sphere uses its largest
-  half-extent uniformly); the plane is a wide/thin box.  `CubeMesh` carries a
-  per-cube spin phase so the stacked proxies read as separate cubes.
+- `Renderable { kind, colour }` marks drawable rows and selects a procedural
+  mesh: 0 box, 1 sphere, 2 capsule, 3 plane.  `colour` is the per-object RGB
+  tint multiplied into the mesh's vertex colour, so the ball, plane, and each
+  stacked cube are visually distinct.  The player capsule is deliberately not
+  renderable in the first-person demo.  `CubeMesh` carries a per-cube spin
+  phase.
 
 ## Running
 
@@ -100,8 +102,8 @@ them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
 `runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
 window lifecycle/event pumping, scene create/destroy/resize, per-frame scene
 state (`set_camera`/`set_cube_angle`/`set_light`/`begin_frame`/`draw_mesh`/
-`draw_box`/`end_frame`), time, raw key/mouse queries, a raw asset read, and the
-host frame limiter/capture. Engine policy — shader asset selection/loading, input
+`draw_box`/`draw_shape`/`end_frame`), time, raw key/mouse queries, a raw asset
+read, and the host frame limiter/capture. Engine policy — shader asset selection/loading, input
 mapping, camera look/movement, time updates, cube spin, light animation, frame
 phases, ECS queries, plugins and Commands — lives in `main.e7`.
 

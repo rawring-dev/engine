@@ -55,27 +55,39 @@ pub render_scene <- sys (
         )
 
     # Frame submission is e7 policy: configure camera/light, begin the frame,
-    # draw one box per renderable, then end/present it.
+    # draw one procedural shape per renderable, then end/present it.
     e7_engine_scene_begin_frame(gpu.scene)
     for (transform, renderable, bounds) in renderables:
-        # Physics bodies keep their visual size in BodyBounds; the built-in
-        # unit cube spans [-1, 1], so the box scale equals the half-extents.
+        # Physics bodies keep their visual size in BodyBounds; the procedural
+        # meshes are unit-sized, so the scale is half-extent based.
         sx := bounds.half_extents[0]
         sy := bounds.half_extents[1]
         sz := bounds.half_extents[2]
         if renderable.kind == 1:
-            # Sphere proxy: use the largest half-extent on every axis so the
-            # box reads as a cube around the ball.
-            radius := bounds.half_extents[0]
-            if bounds.half_extents[1] > radius:
-                radius = bounds.half_extents[1]
-            if bounds.half_extents[2] > radius:
-                radius = bounds.half_extents[2]
+            # Sphere: radius is the largest half-extent on every axis.
+            radius := sx
+            if sy > radius:
+                radius = sy
+            if sz > radius:
+                radius = sz
             sx = radius
             sy = radius
             sz = radius
-        e7_engine_scene_draw_box(
+        if renderable.kind == 2:
+            # Capsule geometry: scale x/z is the radius, scale y is the
+            # cylinder half-height (see runtime renderer.capsule_vertices).
+            radius := sx
+            if sz > radius:
+                radius = sz
+            cylinder_half := sy - radius
+            if cylinder_half < 0.0:
+                cylinder_half = 0.0
+            sx = radius
+            sy = cylinder_half
+            sz = radius
+        e7_engine_scene_draw_shape(
             gpu.scene,
+            renderable.kind,
             e7_f32_to_milli(transform.translation[0]),
             e7_f32_to_milli(transform.translation[1]),
             e7_f32_to_milli(transform.translation[2]),
@@ -83,6 +95,9 @@ pub render_scene <- sys (
             e7_f32_to_milli(sy),
             e7_f32_to_milli(sz),
             e7_f32_to_milli(transform.rotation[1]),
+            e7_f32_to_milli(renderable.colour[0]),
+            e7_f32_to_milli(renderable.colour[1]),
+            e7_f32_to_milli(renderable.colour[2]),
         )
     e7_engine_scene_end_frame(gpu.scene)
 

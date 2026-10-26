@@ -57,7 +57,7 @@ pub const index_count = 36;
 /// so a frame can draw up to this many boxes with distinct model matrices.
 pub const max_objects = 64;
 
-/// Uniform block, std140-compatible and 256 bytes.  Matrices are stored as
+/// Uniform block, std140-compatible and 272 bytes.  Matrices are stored as
 /// four contiguous columns (`Mat4[col][row]`), matching the `column_major`
 /// `[f32; 4, 4]` fields in `engine/shaders/cube.{vert,frag}.e7`.
 pub const Uniforms = extern struct {
@@ -68,6 +68,8 @@ pub const Uniforms = extern struct {
     light_pos: [4]f32,
     light_color: [4]f32,
     params: [4]f32,
+    /// Per-object tint (rgb multiplies the mesh's vertex colour; a = unused).
+    tint: [4]f32,
 };
 
 pub const Mat4 = [4][4]f32;
@@ -89,6 +91,36 @@ pub const Box = struct {
     position: Vec3 = .{ 0.0, 0.0, 0.0 },
     scale: Vec3 = .{ 1.0, 1.0, 1.0 },
     angle: f32 = 0.0,
+};
+
+/// Shape kinds understood by `drawShape`.  Numeric values match the e7
+/// `Renderable.kind` field and the `kind` argument of
+/// `e7_engine_scene_draw_shape`.
+pub const Shape = enum(u8) {
+    box = 0,
+    sphere = 1,
+    capsule = 2,
+    plane = 3,
+};
+
+pub const shape_count = std.meta.fields(Shape).len;
+
+pub fn shapeFromInt(value: i64) ?Shape {
+    return switch (value) {
+        0 => .box,
+        1 => .sphere,
+        2 => .capsule,
+        3 => .plane,
+        else => null,
+    };
+}
+
+pub const default_tint = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+
+const RecordedObject = struct {
+    model: Mat4,
+    tint: [4]f32,
+    shape: Shape,
 };
 
 pub const default_light_color = [4]f32{ 1.0, 0.94, 0.86, 4.0 };
@@ -147,6 +179,164 @@ pub const cube_indices: [index_count]u16 = blk: {
     }
     break :blk indices;
 };
+
+/// UV sphere, radius 1.  Smooth normals; neutral vertex colour multiplied by the
+/// per-object tint in the fragment shader.
+pub const sphere_stacks = 16;
+pub const sphere_slices = 24;
+pub const sphere_vertex_count = (sphere_stacks + 1) * (sphere_slices + 1);
+pub const sphere_index_count = sphere_stacks * sphere_slices * 6;
+
+pub const sphere_vertices: [sphere_vertex_count]Vertex = blk: {
+    @setEvalBranchQuota(200_000);
+    var vertices: [sphere_vertex_count]Vertex = undefined;
+    const row_stride = sphere_slices + 1;
+    for (0..sphere_stacks + 1) |stack| {
+        const theta = (@as(f32, @floatFromInt(stack)) / sphere_stacks) * std.math.pi;
+        const sin_theta = @sin(theta);
+        const cos_theta = @cos(theta);
+        for (0..sphere_slices + 1) |slice| {
+            const phi = (@as(f32, @floatFromInt(slice)) / sphere_slices) * 2.0 * std.math.pi;
+            const position = Vec3{ sin_theta * @cos(phi), cos_theta, sin_theta * @sin(phi) };
+            vertices[stack * row_stride + slice] = .{
+                .position = position,
+                .normal = position,
+                .color = .{ 1.0, 1.0, 1.0 },
+            };
+        }
+    }
+    break :blk vertices;
+};
+
+pub const sphere_indices: [sphere_index_count]u16 = blk: {
+    @setEvalBranchQuota(200_000);
+    var indices: [sphere_index_count]u16 = undefined;
+    const row_stride = sphere_slices + 1;
+    var at: usize = 0;
+    for (0..sphere_stacks) |stack| {
+        for (0..sphere_slices) |slice| {
+            const a: u16 = @intCast(stack * row_stride + slice);
+            const b: u16 = a + 1;
+            const row_below: u16 = @intCast((stack + 1) * row_stride + slice);
+            const d: u16 = row_below + 1;
+            indices[at + 0] = a;
+            indices[at + 1] = row_below;
+            indices[at + 2] = b;
+            indices[at + 3] = b;
+            indices[at + 4] = row_below;
+            indices[at + 5] = d;
+            at += 6;
+        }
+    }
+    break :blk indices;
+};
+
+/// Capsule along Y: hemispherical caps at y=+/-1 with radius 1, so the full
+/// mesh spans y in [-2, 2].  Scale (x, y, z) means radius on x/z and cylinder
+/// half-height on y: a capsule with radius 0.4 and cylinder half-height 0.6
+/// uses scale (0.4, 0.6, 0.4) and spans y in [-1, 1].
+pub const capsule_slices = 24;
+pub const capsule_cap_stacks = 8;
+pub const capsule_rows = capsule_cap_stacks + 1;
+pub const capsule_vertex_count = 2 * capsule_rows * (capsule_slices + 1);
+pub const capsule_index_count = (2 * capsule_cap_stacks + 1) * capsule_slices * 6;
+
+pub const capsule_vertices: [capsule_vertex_count]Vertex = blk: {
+    @setEvalBranchQuota(300_000);
+    var vertices: [capsule_vertex_count]Vertex = undefined;
+    const row_stride = capsule_slices + 1;
+    var row_base: usize = 0;
+    // Top hemisphere: theta 0 (pole, y=2) .. pi/2 (ring, y=1).
+    for (0..capsule_rows) |stack| {
+        const theta = (@as(f32, @floatFromInt(stack)) / capsule_cap_stacks) * (std.math.pi * 0.5);
+        const sin_theta = @sin(theta);
+        const cos_theta = @cos(theta);
+        for (0..capsule_slices + 1) |slice| {
+            const phi = (@as(f32, @floatFromInt(slice)) / capsule_slices) * 2.0 * std.math.pi;
+            const x = sin_theta * @cos(phi);
+            const z = sin_theta * @sin(phi);
+            const y = 1.0 + cos_theta;
+            vertices[row_base + slice] = .{
+                .position = .{ x, y, z },
+                .normal = .{ x, y - 1.0, z },
+                .color = .{ 1.0, 1.0, 1.0 },
+            };
+        }
+        row_base += row_stride;
+    }
+    // Bottom hemisphere: pole y=-2 .. ring y=-1.
+    for (0..capsule_rows) |stack| {
+        const theta = (@as(f32, @floatFromInt(stack)) / capsule_cap_stacks) * (std.math.pi * 0.5);
+        const sin_theta = @sin(theta);
+        const cos_theta = @cos(theta);
+        for (0..capsule_slices + 1) |slice| {
+            const phi = (@as(f32, @floatFromInt(slice)) / capsule_slices) * 2.0 * std.math.pi;
+            const x = sin_theta * @cos(phi);
+            const z = sin_theta * @sin(phi);
+            const y = -1.0 - cos_theta;
+            vertices[row_base + slice] = .{
+                .position = .{ x, y, z },
+                .normal = .{ x, y + 1.0, z },
+                .color = .{ 1.0, 1.0, 1.0 },
+            };
+        }
+        row_base += row_stride;
+    }
+    break :blk vertices;
+};
+
+pub const capsule_indices: [capsule_index_count]u16 = blk: {
+    @setEvalBranchQuota(400_000);
+    var indices: [capsule_index_count]u16 = undefined;
+    const row_stride = capsule_slices + 1;
+    var at: usize = 0;
+    var cap_base: u16 = 0;
+    for (0..2) |_| {
+        for (0..capsule_cap_stacks) |stack| {
+            for (0..capsule_slices) |slice| {
+                const a: u16 = cap_base + @as(u16, @intCast(stack * row_stride + slice));
+                const b: u16 = a + 1;
+                const row_below: u16 = a + @as(u16, @intCast(row_stride));
+                const d: u16 = row_below + 1;
+                indices[at + 0] = a;
+                indices[at + 1] = row_below;
+                indices[at + 2] = b;
+                indices[at + 3] = b;
+                indices[at + 4] = row_below;
+                indices[at + 5] = d;
+                at += 6;
+            }
+        }
+        cap_base += @intCast(capsule_rows * row_stride);
+    }
+    // Cylinder band between the y=1 ring of the top cap and the y=-1 ring of
+    // the bottom cap (the last row of each hemisphere).
+    const top_ring: u16 = @intCast((capsule_rows - 1) * row_stride);
+    const bottom_ring: u16 = @intCast(capsule_rows * row_stride);
+    for (0..capsule_slices) |slice| {
+        const a: u16 = top_ring + @as(u16, @intCast(slice));
+        const b: u16 = a + 1;
+        const below: u16 = bottom_ring + @as(u16, @intCast(slice));
+        const d: u16 = below + 1;
+        indices[at + 0] = a;
+        indices[at + 1] = below;
+        indices[at + 2] = b;
+        indices[at + 3] = b;
+        indices[at + 4] = below;
+        indices[at + 5] = d;
+        at += 6;
+    }
+    break :blk indices;
+};
+
+/// Flat XZ plane spanning [-1, 1] with a +Y normal; the Y scale is ignored.
+pub const plane_vertices = [4]Vertex{
+    .{ .position = .{ -1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
+    .{ .position = .{ 1.0, 0.0, -1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
+    .{ .position = .{ 1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
+    .{ .position = .{ -1.0, 0.0, 1.0 }, .normal = .{ 0, 1, 0 }, .color = .{ 1, 1, 1 } },
+};
+pub const plane_indices = [6]u16{ 0, 1, 2, 0, 2, 3 };
 
 // ------------------------------------------------------------- vector math --
 
@@ -317,6 +507,12 @@ const BufferAllocation = struct {
     mapped: ?[*]u8 = null,
 };
 
+const Mesh = struct {
+    vertex: BufferAllocation = .{},
+    index: BufferAllocation = .{},
+    index_count: u32 = 0,
+};
+
 pub const Scene = struct {
     allocator: std.mem.Allocator,
     surface: vulkan.Surface,
@@ -332,15 +528,15 @@ pub const Scene = struct {
     /// its render pass on window resize, which requires rebuilding the pipeline.
     pipeline_render_pass: ?c.VkRenderPass = null,
 
-    vertex: BufferAllocation = .{},
-    index: BufferAllocation = .{},
+    /// One vertex/index mesh per `Shape` (box, sphere, capsule, plane).
+    meshes: [shape_count]Mesh = [_]Mesh{.{}} ** shape_count,
     uniform: BufferAllocation = .{},
     /// Bytes between per-object uniform slots (a multiple of the device's
     /// minUniformBufferOffsetAlignment and of @sizeOf(Uniforms)).
     uniform_stride: u32 = @sizeOf(Uniforms),
-    /// Model matrices recorded by the current/last frame, replayed by
+    /// Draws recorded by the current/last frame, replayed by
     /// `captureRecordedFrame` so headless captures include every object.
-    recorded_models: [max_objects]Mat4 = undefined,
+    recorded_objects: [max_objects]RecordedObject = undefined,
     recorded_count: usize = 0,
 
     camera: Camera = .{},
@@ -390,8 +586,10 @@ pub const Scene = struct {
             if (self.descriptor_set_layout) |v| c.vkDestroyDescriptorSetLayout(device, v, null);
             if (self.vert_module) |v| c.vkDestroyShaderModule(device, v, null);
             if (self.frag_module) |v| c.vkDestroyShaderModule(device, v, null);
-            destroyBuffer(device, &self.vertex);
-            destroyBuffer(device, &self.index);
+            for (&self.meshes) |*mesh| {
+                destroyBuffer(device, &mesh.vertex);
+                destroyBuffer(device, &mesh.index);
+            }
             destroyBuffer(device, &self.uniform);
         }
         self.pipeline = null;
@@ -481,27 +679,40 @@ pub const Scene = struct {
         allocation.* = .{};
     }
 
-    fn createBuffers(self: *Scene, device: c.VkDevice) Error!void {
-        self.vertex = try self.createHostBuffer(
+    fn createMesh(self: *Scene, device: c.VkDevice, vertices: []const Vertex, indices: []const u16) Error!Mesh {
+        var mesh = Mesh{};
+        errdefer {
+            destroyBuffer(device, &mesh.vertex);
+            destroyBuffer(device, &mesh.index);
+        }
+        mesh.vertex = try self.createHostBuffer(
             device,
-            @sizeOf(Vertex) * vertex_count,
+            @sizeOf(Vertex) * vertices.len,
             c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         );
-        self.index = try self.createHostBuffer(
+        mesh.index = try self.createHostBuffer(
             device,
-            @sizeOf(u16) * index_count,
+            @sizeOf(u16) * indices.len,
             c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         );
+        const vertex_target: [*]Vertex = @ptrCast(@alignCast(mesh.vertex.mapped.?));
+        @memcpy(vertex_target[0..vertices.len], vertices);
+        const index_target: [*]u16 = @ptrCast(@alignCast(mesh.index.mapped.?));
+        @memcpy(index_target[0..indices.len], indices);
+        mesh.index_count = @intCast(indices.len);
+        return mesh;
+    }
+
+    fn createBuffers(self: *Scene, device: c.VkDevice) Error!void {
+        self.meshes[@intFromEnum(Shape.box)] = try self.createMesh(device, &cube_vertices, &cube_indices);
+        self.meshes[@intFromEnum(Shape.sphere)] = try self.createMesh(device, &sphere_vertices, &sphere_indices);
+        self.meshes[@intFromEnum(Shape.capsule)] = try self.createMesh(device, &capsule_vertices, &capsule_indices);
+        self.meshes[@intFromEnum(Shape.plane)] = try self.createMesh(device, &plane_vertices, &plane_indices);
         self.uniform = try self.createHostBuffer(
             device,
             @as(usize, self.uniform_stride) * max_objects,
             c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         );
-
-        const vertex_target: *[vertex_count]Vertex = @ptrCast(@alignCast(self.vertex.mapped.?));
-        vertex_target.* = cube_vertices;
-        const index_target: *[index_count]u16 = @ptrCast(@alignCast(self.index.mapped.?));
-        index_target.* = cube_indices;
     }
 
     fn computeUniformStride(self: *Scene) u32 {
@@ -747,7 +958,7 @@ pub const Scene = struct {
         self.light_color = color;
     }
 
-    fn writeUniformSlot(self: *Scene, slot: usize, model: Mat4) void {
+    fn writeUniformSlot(self: *Scene, slot: usize, model: Mat4, tint: [4]f32) void {
         const extent = self.surface.extent;
         const aspect = if (extent.height == 0)
             1.0
@@ -765,6 +976,7 @@ pub const Scene = struct {
             .light_pos = .{ self.light_position[0], self.light_position[1], self.light_position[2], 1.0 },
             .light_color = self.light_color,
             .params = self.ambient,
+            .tint = tint,
         };
     }
 
@@ -787,11 +999,6 @@ pub const Scene = struct {
         var scissor = std.mem.zeroes(c.VkRect2D);
         scissor.extent = extent;
         c.vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        var vertex_buffer = self.vertex.buffer.?;
-        var vertex_offset: c.VkDeviceSize = 0;
-        c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
-        c.vkCmdBindIndexBuffer(cmd, self.index.buffer.?, 0, c.VK_INDEX_TYPE_UINT16);
     }
 
     /// Reset the recorded-object list and bind the shared pipeline state for
@@ -801,15 +1008,27 @@ pub const Scene = struct {
         self.recordFrameSetup(cmd);
     }
 
-    /// Write `model` into the next per-object uniform slot and record one
-    /// indexed cube draw with that slot bound as a dynamic UBO offset.
-    /// Returns false when the per-frame object limit is reached.
-    fn recordObject(self: *Scene, cmd: c.VkCommandBuffer, model: Mat4) bool {
+    /// Write `model`/`tint` into the next per-object uniform slot and record
+    /// one indexed draw of `shape`'s mesh with that slot bound as a dynamic
+    /// UBO offset.  Returns false when the per-frame object limit is reached.
+    fn recordObject(
+        self: *Scene,
+        cmd: c.VkCommandBuffer,
+        model: Mat4,
+        tint: [4]f32,
+        shape: Shape,
+    ) bool {
         if (self.recorded_count >= max_objects) return false;
         const slot = self.recorded_count;
-        self.writeUniformSlot(slot, model);
-        self.recorded_models[slot] = model;
+        self.writeUniformSlot(slot, model, tint);
+        self.recorded_objects[slot] = .{ .model = model, .tint = tint, .shape = shape };
         self.recorded_count += 1;
+
+        const mesh = &self.meshes[@intFromEnum(shape)];
+        var vertex_buffer = mesh.vertex.buffer.?;
+        var vertex_offset: c.VkDeviceSize = 0;
+        c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
+        c.vkCmdBindIndexBuffer(cmd, mesh.index.buffer.?, 0, c.VK_INDEX_TYPE_UINT16);
 
         var descriptor_set = self.descriptor_set.?;
         var dynamic_offset: u32 = @intCast(slot * self.uniform_stride);
@@ -823,7 +1042,7 @@ pub const Scene = struct {
             1,
             &dynamic_offset,
         );
-        c.vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
+        c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, 0, 0, 0);
         return true;
     }
 
@@ -849,17 +1068,24 @@ pub const Scene = struct {
     }
 
     /// Draw one box (position, scale, Y angle) in the frame opened by
-    /// `beginFrame`.  Every box shares the frame's camera and light.
+    /// `beginFrame`.  Every object shares the frame's camera and light.
     pub fn drawBox(self: *Scene, box: Box) Error!void {
+        return self.drawShape(.box, box, .{ 1.0, 1.0, 1.0 });
+    }
+
+    /// Draw one procedural shape (box/sphere/capsule/plane) with a per-object
+    /// RGB tint in the frame opened by `beginFrame`.
+    pub fn drawShape(self: *Scene, shape: Shape, box: Box, tint: Vec3) Error!void {
         const cmd = self.frame_cmd orelse return error.FrameNotActive;
-        if (!self.recordObject(cmd, boxModel(box))) return error.ObjectLimit;
+        const tint4 = [4]f32{ tint[0], tint[1], tint[2], 1.0 };
+        if (!self.recordObject(cmd, boxModel(box), tint4, shape)) return error.ObjectLimit;
     }
 
     /// Record the built-in single cube for the frame opened by `beginFrame`.
     /// Kept for the pre-multi-object path and back-compat tests.
     pub fn drawMesh(self: *Scene) void {
         const cmd = self.frame_cmd orelse return;
-        _ = self.recordObject(cmd, self.legacyCubeModel());
+        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
     }
 
     /// Close the render pass and present the acquired image.
@@ -889,7 +1115,7 @@ pub const Scene = struct {
         try self.ensurePipeline();
         const cmd = try self.surface.beginScene(self.clear_color, default_clear_depth);
         self.beginRecordedFrame(cmd);
-        _ = self.recordObject(cmd, self.legacyCubeModel());
+        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
         try self.surface.endScenePresent(index);
     }
 
@@ -907,7 +1133,7 @@ pub const Scene = struct {
         const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
         try self.ensurePipeline();
         self.beginRecordedFrame(cmd);
-        _ = self.recordObject(cmd, self.legacyCubeModel());
+        _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
         return self.surface.endSceneCapture();
     }
 
@@ -921,11 +1147,11 @@ pub const Scene = struct {
         try self.ensurePipeline();
         self.beginRecordedFrame(cmd);
         if (saved_count == 0) {
-            _ = self.recordObject(cmd, self.legacyCubeModel());
+            _ = self.recordObject(cmd, self.legacyCubeModel(), default_tint, .box);
         } else {
             for (0..saved_count) |slot| {
-                const model = self.recorded_models[slot];
-                _ = self.recordObject(cmd, model);
+                const object = self.recorded_objects[slot];
+                _ = self.recordObject(cmd, object.model, object.tint, object.shape);
             }
         }
         return self.surface.endSceneCapture();
@@ -1030,7 +1256,30 @@ test "view matrix is right-handed and rotates around the camera eye" {
 test "cube geometry is consistent" {
     try std.testing.expectEqual(@as(usize, 24), cube_vertices.len);
     try std.testing.expectEqual(@as(usize, 36), cube_indices.len);
-    try std.testing.expectEqual(@as(usize, 256), @sizeOf(Uniforms));
+    try std.testing.expectEqual(@as(usize, 272), @sizeOf(Uniforms));
+    try std.testing.expectEqual(@as(usize, 4), shape_count);
+    // Procedural meshes are non-empty and every index is in range.
+    try std.testing.expect(sphere_indices.len > 0 and capsule_indices.len > 0);
+    for (sphere_indices) |index| try std.testing.expect(index < sphere_vertex_count);
+    for (capsule_indices) |index| try std.testing.expect(index < capsule_vertex_count);
+    for (plane_indices) |index| try std.testing.expect(index < plane_vertices.len);
+    // Unit sphere vertices sit on the unit sphere with outward normals.
+    for (sphere_vertices) |vertex| {
+        const length_squared = vertex.position[0] * vertex.position[0] +
+            vertex.position[1] * vertex.position[1] +
+            vertex.position[2] * vertex.position[2];
+        try std.testing.expectApproxEqAbs(@as(f32, 1.0), length_squared, 1e-5);
+    }
+    // Capsule spans y in [-2, 2] and radius 1 on the cylinder.
+    var min_y: f32 = 1e9;
+    var max_y: f32 = -1e9;
+    for (capsule_vertices) |vertex| {
+        min_y = @min(min_y, vertex.position[1]);
+        max_y = @max(max_y, vertex.position[1]);
+    }
+    try std.testing.expectApproxEqAbs(@as(f32, -2.0), min_y, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), max_y, 1e-5);
+    for (plane_vertices) |vertex| try std.testing.expectEqual(@as(f32, 0.0), vertex.position[1]);
     for (cube_indices) |index| try std.testing.expect(index < vertex_count);
     for (cube_vertices) |vertex| {
         // Every corner sits on the [-1, 1] cube.
@@ -1211,4 +1460,99 @@ test "scene draws multiple boxes at distinct positions" {
     try std.testing.expectError(error.ObjectLimit, scene.drawBox(.{}));
     try std.testing.expectEqual(@as(usize, max_objects), scene.recordedObjectCount());
     try scene.endFrame();
+}
+
+test "scene renders sphere, capsule, and plane geometry with per-object tint" {
+    var window = window_mod.Window.create("engine7 shape test", 256, 192, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping shape render test (no display): {s}\n", .{@errorName(err)});
+        window_mod.shutdownVideo();
+        return;
+    };
+    defer window_mod.shutdownVideo();
+    defer window.destroy();
+
+    var scene = Scene.init(
+        std.testing.allocator,
+        &window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping shape render test (no Vulkan): {s} ({s})\n", .{ @errorName(err), abi.lastError() });
+        return;
+    };
+    defer scene.deinit();
+    scene.setCamera(.{ 0.0, 1.8, 5.5 }, 0.0, -0.35);
+    scene.setLight(.{ 2.0, 4.0, 3.0 }, .{ 1.0, 0.95, 0.9, 2.5 });
+
+    const Capture = struct {
+        fn single(
+            target: *Scene,
+            shape: Shape,
+            box: Box,
+            tint: Vec3,
+        ) Error![]u8 {
+            try target.beginFrame();
+            try target.drawShape(shape, box, tint);
+            try target.endFrame();
+            return target.captureRecordedFrame();
+        }
+    };
+
+    const unit_box = Box{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.8, 0.8, 0.8 } };
+    const white = Vec3{ 1.0, 1.0, 1.0 };
+    const box_frame = try Capture.single(&scene, .box, unit_box, white);
+    defer std.testing.allocator.free(box_frame);
+    const sphere_frame = try Capture.single(&scene, .sphere, unit_box, white);
+    defer std.testing.allocator.free(sphere_frame);
+    const capsule_frame = try Capture.single(&scene, .capsule, unit_box, white);
+    defer std.testing.allocator.free(capsule_frame);
+    const plane_frame = try Capture.single(&scene, .plane, .{
+        .position = .{ 0.0, 0.0, 0.0 },
+        .scale = .{ 4.0, 0.1, 4.0 },
+    }, white);
+    defer std.testing.allocator.free(plane_frame);
+
+    // Real geometry differs from the box proxy (not a silhouette swap).
+    try std.testing.expect(!std.mem.eql(u8, box_frame, sphere_frame));
+    try std.testing.expect(!std.mem.eql(u8, box_frame, capsule_frame));
+    try std.testing.expect(!std.mem.eql(u8, box_frame, plane_frame));
+    try std.testing.expect(!std.mem.eql(u8, sphere_frame, capsule_frame));
+
+    const background: u32 = @as(u32, sphere_frame[0]) + sphere_frame[1] + sphere_frame[2];
+    for ([_][]const u8{ box_frame, sphere_frame, capsule_frame, plane_frame }) |frame| {
+        var lit: usize = 0;
+        var at: usize = 0;
+        while (at + 3 < frame.len) : (at += 4) {
+            const sum: u32 = @as(u32, frame[at]) + frame[at + 1] + frame[at + 2];
+            if (sum > background + 60) lit += 1;
+        }
+        try std.testing.expect(lit > 200);
+    }
+
+    // Per-object tint changes the rendered pixels: red vs blue sphere.
+    const red_frame = try Capture.single(&scene, .sphere, unit_box, .{ 1.0, 0.1, 0.1 });
+    defer std.testing.allocator.free(red_frame);
+    const blue_frame = try Capture.single(&scene, .sphere, unit_box, .{ 0.1, 0.1, 1.0 });
+    defer std.testing.allocator.free(blue_frame);
+    try std.testing.expect(!std.mem.eql(u8, red_frame, blue_frame));
+
+    const ChannelSums = struct {
+        fn sums(frame: []const u8) struct { r: usize, b: usize } {
+            var r: usize = 0;
+            var b: usize = 0;
+            var at: usize = 0;
+            while (at + 3 < frame.len) : (at += 4) {
+                r += frame[at];
+                b += frame[at + 2];
+            }
+            return .{ .r = r, .b = b };
+        }
+    };
+    const red = ChannelSums.sums(red_frame);
+    const blue = ChannelSums.sums(blue_frame);
+    try std.testing.expect(red.r > red.b);
+    try std.testing.expect(blue.b > blue.r);
 }

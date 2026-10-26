@@ -611,19 +611,22 @@ pub physics_step <- sys (
         world.camera_pitch = camera.pitch
         world.move_speed = controller.move_speed
 
-# Cosmetic marker sync: ECS cannot remove components, so Held.by is kept in
-# sync with the core pickup state for renderers/tools.  Pickup timing itself is
-# in physics_step above; this system is not on the gameplay path.
+# Surface the core pickup state as an actual ECS `Held` marker: add it to the
+# held entity and remove it from every other pickup entity.  Removal is deferred
+# through Commands, so this runs in PostUpdate as a cosmetic/tooling view; the
+# gameplay pickup/hold itself is inside the deterministic physics step.
 @trigger(PostUpdate)
 pub physics_held_marker <- sys (
     state: res &PickupState,
-    held_components: select &mut Held, &Pickup from Components,
+    commands: &mut Commands,
+    rows: select &Pickup, &BodyFlags from Components,
 ):
-    for (held, pickup) in held_components:
-        if pickup.body_id == state.held_id:
-            held.by = 1
+    for (pickup, flags) in rows:
+        entity := rows.entity()
+        if flags.target_id == state.held_id:
+            commands.add_component::<Held>(entity, Held { by: 1 })
         else:
-            held.by = 0
+            commands.remove_component::<Held>(entity)
 
 # Camera-space debug raycast against box colliders (cosmetic/resource only).
 @trigger(PostUpdate)

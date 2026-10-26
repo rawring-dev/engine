@@ -103,7 +103,7 @@ pub DemoPlugin <- plugin
             target_id: 1,
             held_by: 0,
         }
-        plane_renderable := Renderable { kind: 3 }
+        plane_renderable := Renderable { kind: 3, colour: [0.42, 0.48, 0.42] }
         commands.add_row(Components, {
             plane_transform,
             plane_id,
@@ -142,8 +142,7 @@ pub DemoPlugin <- plugin
             held_by: 0,
         }
         ball_pickup := Pickup { body_id: 3 }
-        ball_held := Held { by: 0 }
-        ball_renderable := Renderable { kind: 1 }
+        ball_renderable := Renderable { kind: 1, colour: [1.0, 0.55, 0.22] }
         commands.add_row(Components, {
             ball_transform,
             ball_id,
@@ -152,7 +151,6 @@ pub DemoPlugin <- plugin
             ball_collider,
             ball_flags,
             ball_pickup,
-            ball_held,
             ball_renderable,
         })
 
@@ -188,9 +186,10 @@ pub DemoPlugin <- plugin
                 target_id: 4 + stack_index,
                 held_by: 0,
             }
-            cube_renderable := Renderable { kind: 0 }
+            cube_tint := e7_f32_from_i64(stack_index)
+            cube_colour := [0.95 - cube_tint * 0.2, 0.85 + cube_tint * 0.05, 0.65 + cube_tint * 0.2]
+            cube_renderable := Renderable { kind: 0, colour: cube_colour }
             cube_pickup := Pickup { body_id: 4 + stack_index }
-            cube_held := Held { by: 0 }
             commands.add_row(Components, {
                 cube_transform,
                 cube_id,
@@ -200,7 +199,6 @@ pub DemoPlugin <- plugin
                 cube_flags,
                 cube_renderable,
                 cube_pickup,
-                cube_held,
             })
             cube_y = cube_y + 1.0
             stack_index = stack_index + 1
@@ -248,7 +246,7 @@ pub DemoPlugin <- plugin
         light := PointLight {
             position: [2.0, 3.0, 4.0],
             colour: [1.0, 0.9, 0.8],
-            intensity: 2.0,
+            intensity: 2.8,
         }
         commands.add_row(Components, { light })
 
