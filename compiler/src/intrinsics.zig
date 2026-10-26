@@ -269,6 +269,13 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
+        // 1 captures/hides the cursor, 0 releases/shows it.
+        .name = "e7_engine_capture_mouse",
+        .params = &.{ .i64_ },
+        .result = .i64_,
+        .units = "enabled (nonzero captures; zero releases) -> status",
+    },
+    .{
         // This frame's SDL_EVENT_TEXT_INPUT bytes as an e7 `str`.
         .name = "e7_engine_text_input",
         .params = &.{},

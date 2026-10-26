@@ -54,6 +54,10 @@ impl Input:
     pub text_input <- (input: &Input) -> str:
         ret e7_engine_text_input()
 
+    pub capture_mouse <- (input: &Input) -> nil:
+        e7_engine_capture_mouse(1)
+        ret
+
 
 pub InputPlugin <- plugin
     input_plugin_init <- sys (commands: &mut Commands):

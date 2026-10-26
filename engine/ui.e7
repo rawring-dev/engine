@@ -172,12 +172,15 @@ pub ui_interact <- sys (
     state.mouse_y = mouse_y
     state.hover_entity = 0
     clicked_field := false
+    clicked_ui := false
 
     for (rect, panel, label, button, field) in widgets:
         entity := widgets.entity()
         hit := mouse_x >= rect.x and mouse_x <= rect.x + rect.w and mouse_y >= rect.y and mouse_y <= rect.y + rect.h
         if hit:
             state.hover_entity = entity
+            if clicked:
+                clicked_ui = true
 
         if label.text.len() > 0:
             ensure_cached_text(gpu, state, entity, label.text, label.colour)
@@ -214,6 +217,9 @@ pub ui_interact <- sys (
 
     if clicked and not clicked_field:
         state.focused_entity = 0
+    # A click on the world (not any widget) recaptures the first-person mouse.
+    if clicked and not clicked_ui:
+        input.capture_mouse()
     state.mouse_down = down
     state.mouse_was_down = down
 

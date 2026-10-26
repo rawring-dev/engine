@@ -592,6 +592,22 @@ pub export fn e7_engine_mouse_y() callconv(.c) i64 {
 }
 
 /// Mouse button state: 0 left, 1 right, 2 middle; anything else returns 0.
+/// Enable/disable relative mouse capture.  `enabled != 0` hides the cursor and
+/// recaptures the pointer for first-person look; zero releases it.
+pub export fn e7_engine_capture_mouse(enabled: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const window = window_mod.registry.get(@intCast(state.last_window)) orelse return -1;
+    const active = enabled != 0;
+    _ = c.SDL_SetWindowRelativeMouseMode(window.handle, active);
+    if (active) {
+        _ = c.SDL_HideCursor();
+    } else {
+        _ = c.SDL_ShowCursor();
+    }
+    return 0;
+}
+
 pub export fn e7_engine_mouse_down(button: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
@@ -1075,9 +1091,10 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [33]Symbol {
+pub fn symbols() [34]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
+        .{ .name = "e7_engine_capture_mouse", .address = @intFromPtr(&e7_engine_capture_mouse) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
         .{ .name = "e7_engine_window_should_close", .address = @intFromPtr(&e7_engine_window_should_close) },
         .{ .name = "e7_engine_window_destroy", .address = @intFromPtr(&e7_engine_window_destroy) },
