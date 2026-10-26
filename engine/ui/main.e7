@@ -8,10 +8,10 @@
 #   - UITextField.max_len > 0            -> editable field
 # The demo follows this convention; queries stay to one projection list.
 
-use ecs::*;
-use events::*;
-use gfx::*;
-use input::*;
+use core::ecs::*;
+use core::events::*;
+use gfx::gpu::*;
+use core::input::*;
 
 @Components
 pub UIRect <- struct

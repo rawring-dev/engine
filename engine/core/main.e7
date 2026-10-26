@@ -1,0 +1,10 @@
+# Core runtime-facing libraries: triggers, ECS, time, window, input, camera,
+# and the engine bootstrap system.  Everything in this module is reusable by
+# an e7 game; demo-specific policy lives in engine/main.e7.
+mod events
+mod ecs
+mod camera
+mod input
+mod time
+mod window
+mod bootstrap

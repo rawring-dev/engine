@@ -1,7 +1,7 @@
-use ecs::*;
-use events::*;
-use gfx::*;
-use time::*;
+use core::ecs::*;
+use core::events::*;
+use gfx::gpu::*;
+use core::time::*;
 use ui::*;
 
 @trigger(Update)

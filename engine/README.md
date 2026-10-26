@@ -5,33 +5,50 @@ the JIT host: `zig build run-engine`.
 
 ```
 engine/
-├── main.e7        imports modules, runs the frame loop
-├── events.e7      Init/DeInit/FrameInit/PreUpdate/Update/PostUpdate/Render triggers
-├── ecs.e7         @Components types and the Components table
-├── gfx.e7         Gpu/shader/pipeline/mesh resources and deployment API
-├── time.e7        Time resource + tick_time system
-├── window.e7      Window resource + event pump system
-├── input.e7       Input resource + gather_input/reset_input systems
-├── camera.e7      Camera movement/look system
-├── scene.e7       light animation, render submission (rotation is physics-driven)
-├── physics.e7     physics plugin + fixed-step integration/pickup/camera follow
-├── physics_broadphase.e7  spatial grid and aggregated region/ray queries
-├── physics_narrowphase.e7 box/sphere/capsule/plane tests and resolution
-├── obj.e7         pure-e7 Wavefront OBJ parser
-├── assets.e7      PNG/JPEG image + OBJ asset resources/plugin
-├── assets/        cube.obj and image test fixtures
-├── bootstrap.e7   Init window/scene/shaders and DeInit teardown
-├── ui.e7          UI font/text, panels, labels, buttons, text fields, triggers
-└── shaders/       e7s shader sources + generated SPIR-V
+├── main.e7              demo-only: demo plugin/assets/settings, UI handler, frame loop
+├── core/
+│   ├── main.e7          core prelude (events, ecs, camera, input, time, window, bootstrap)
+│   ├── events.e7        Init/FrameInit/PreUpdate/Update/PostUpdate/Render/DeInit triggers
+│   ├── ecs.e7           @Components types, Commands, Components table
+│   ├── window.e7        Window resource/methods + event pump
+│   ├── input.e7         Input resource, key/mouse/text methods, gather/reset systems
+│   ├── time.e7          Time resource/methods + tick system
+│   ├── camera.e7        Camera resource/plugin
+│   └── bootstrap.e7     Init window/scene/shader setup + DeInit teardown
+├── gfx/
+│   ├── main.e7          rendering prelude
+│   ├── gpu.e7           Gpu, Material, renderer methods, GfxPlugin
+│   └── scene.e7         world + UI render submission
+├── physics/
+│   ├── main.e7          PhysicsWorld, fixed-step solver, pickup/camera systems
+│   ├── broadphase.e7    spatial grid + aggregated region/ray queries
+│   └── narrowphase.e7   quaternion/OBB/capsule/plane collision + raycasts
+├── assets/
+│   ├── main.e7          Image/Assets resources, AssetsPlugin, GPU upload
+│   ├── obj.e7           pure-e7 Wavefront OBJ parser
+│   ├── cube.obj         demo mesh asset
+│   └── testdata/        PNG/JPEG fixtures
+├── ui/
+│   └── main.e7          font/text rendering, panels, labels, buttons, text fields,
+│                        UIState, UIButtonPressed trigger
+└── shaders/             e7s shader sources + generated SPIR-V
 ```
 
 ## Developer-facing model
 
-- `mod ui` loads sibling `engine/ui.e7`; items are module-qualified (`ui::Ui`).
-- Each library exposes its behavior as plugins (`WindowPlugin`,
-  `InputPlugin`, `TimePlugin`, `GfxPlugin`, `CameraPlugin`, `PhysicsPlugin`,
-  `AssetsPlugin`), plus the demo `DemoPlugin` in `main.e7` and `ui::Ui`
-  (`DemoPlugin` also derives a `DemoSettings` config serialized through JSON).
+- Modules are nested: `mod ui` loads `engine/ui/main.e7`; nested declarations load
+  submodules relative to their file (`core/window.e7`, `physics/broadphase.e7`).
+  Items are module-qualified (`ui::Ui`, `core::window::Window`,
+  `physics::broadphase::SpatialMap`).  Use the nested preludes (`core`, `gfx`,
+  `physics`, `assets`, `ui`) from `main.e7`; reusable libraries never import
+  demo-specific code.
+- Each library exposes its behavior as plugins (`core::window::WindowPlugin`,
+  `core::input::InputPlugin`, `core::time::TimePlugin`, `gfx::gpu::GfxPlugin`,
+  `core::camera::CameraPlugin`, `physics::PhysicsPlugin`,
+  `physics::broadphase::BroadphasePlugin`,
+  `physics::narrowphase::NarrowphasePlugin`, `assets::AssetsPlugin`, `ui::Ui`),
+  plus the demo `DemoPlugin` in `main.e7` (`DemoPlugin` also derives a
+  `DemoSettings` config serialized through JSON).
   `main.e7` is the only
   demo-specific file: it adds plugins, describes the cube/light entities, and
   runs the frame loop.
@@ -82,7 +99,7 @@ engine/
   one `draw_custom_rot` per uploaded OBJ mesh row, calls the `ui_render`
   hook, and `end_frame`.  The draw calls receive the full `Transform.rotation`
   XYZ Euler triple, so physics rotation around any axis is rendered.
-- `ui_render(gpu)` in `engine/scene.e7` calls `ui::draw_widget(...)` after the
+- `ui_render(gpu)` in `engine/gfx/scene.e7` calls `ui::draw_widget(...)` after the
   3D draws while the frame is still open. UI panels/buttons/text use
   `Gpu.draw_ui_quad(texture, x, y, w, h, r, g, b, a)` (pixels from top-left,
   RGBA 0..255, straight alpha over the 3D scene).

@@ -1279,6 +1279,30 @@ test "compileProject loads sibling modules and prefixes their items" {
     try std.testing.expectEqualStrings("ui::Ui::init", result.analysis.plugins[0].init.?);
 }
 
+test "compileProject loads nested module directories relative to their file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "nested");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "main.e7", .data =
+        \\mod nested
+        \\main <- () -> i32 = nested::child::value()
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/main.e7", .data =
+        \\mod child
+        \\pub root_value <- () -> i32 = 3
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/child.e7", .data =
+        \\pub value <- () -> i32 = 7
+    });
+    const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.e7", std.testing.allocator);
+    defer std.testing.allocator.free(root_path);
+    var result = try compileProject(std.testing.allocator, root_path, .{});
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try std.testing.expect(result.functionNamed("nested::child::value") != null);
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+}
+
 test "lowers compiler-known engine intrinsics to runtime calls" {
     var result = try compile(
         std.testing.allocator,
@@ -1520,25 +1544,22 @@ test "lowers image and generic text intrinsics to runtime calls" {
 }
 
 test "compiles the engine OBJ and asset libraries from sources" {
-    const obj_source = readRepoText("engine/obj.e7") orelse return error.SkipZigTest;
+    const obj_source = readRepoText("engine/assets/obj.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(obj_source);
-    const assets_source = readRepoText("engine/assets.e7") orelse return error.SkipZigTest;
+    const assets_source = readRepoText("engine/assets/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(assets_source);
-    const ecs_source = readRepoText("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoText("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const gfx_source = readRepoText("engine/gfx.e7") orelse return error.SkipZigTest;
+    const gfx_source = readRepoText("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoText("engine/window.e7") orelse return error.SkipZigTest;
+    const window_source = readRepoText("engine/core/window.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(window_source);
-    const events_source = readRepoText("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoText("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
 
     const root_source =
-        \\mod events
-        \\mod window
-        \\mod ecs
+        \\mod core
         \\mod gfx
-        \\mod obj
         \\mod assets
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
@@ -1550,10 +1571,12 @@ test "compiles the engine OBJ and asset libraries from sources" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "core", .source = "mod events\nmod window\nmod ecs\n" },
             .{ .name = "events", .source = events_source },
             .{ .name = "window", .source = window_source },
             .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "gfx", .source = gfx_source },
+            .{ .name = "gfx", .source = "mod gpu\n" },
+            .{ .name = "gpu", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
             .{ .name = "assets", .source = assets_source },
         },
@@ -1572,8 +1595,8 @@ test "compiles the engine OBJ and asset libraries from sources" {
     try std.testing.expect(result.analysis.ok());
     try bytecode.verify(std.testing.allocator, &result.bytecode);
     try std.testing.expect(result.functionNamed("main") != null);
-    try std.testing.expect(result.functionNamed("obj::parse_obj") != null);
-    try std.testing.expect(result.functionNamed("obj::load_obj") != null);
+    try std.testing.expect(result.functionNamed("assets::obj::parse_obj") != null);
+    try std.testing.expect(result.functionNamed("assets::obj::load_obj") != null);
     try std.testing.expect(result.functionNamed("assets::load_image") != null);
 
     var found_assets_plugin = false;

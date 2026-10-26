@@ -13,7 +13,7 @@
 # ignored.  Malformed face/index data aborts the parse and returns an empty mesh
 # rather than panicking; callers can check `indices.len() == 0`.
 
-use gfx::*;
+use gfx::gpu::*;
 
 pub ObjMesh <- struct
     positions: [f32]

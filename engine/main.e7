@@ -1,36 +1,27 @@
 # engine7 entry point. All engine behavior lives in the imported libraries:
 # events, ecs, gfx, time, window, input, camera, scene, bootstrap and ui.
-mod events
-mod ecs
+mod core
 mod gfx
-mod time
-mod window
-mod input
-mod camera
-mod scene
-mod bootstrap
-mod physics_broadphase
-mod physics_narrowphase
 mod physics
 mod assets
 mod ui
-mod obj
 
-use events::*;
-use ecs::*;
-use gfx::*;
-use time::*;
-use window::*;
-use input::*;
-use camera::*;
-use scene::*;
-use bootstrap::*;
-use physics_broadphase::*;
-use physics_narrowphase::*;
+use core::events::*;
+use core::ecs::*;
+use core::time::*;
+use core::window::*;
+use core::input::*;
+use core::camera::*;
+use core::bootstrap::*;
+use gfx::gpu::*;
+use gfx::scene::*;
 use physics::*;
+use physics::broadphase::*;
+use physics::narrowphase::*;
 use assets::*;
-use obj::*;
+use assets::obj::*;
 use ui::*;
+
 
 # Demo-specific configuration serialized through the engine's JSON derive.
 @resource
@@ -393,13 +384,13 @@ pub demo_ui_actions <- sys (
 pub main <- async () -> i32:
     commands := await query &mut Commands
 
-    commands.add_plugin(window::WindowPlugin)
-    commands.add_plugin(input::InputPlugin)
-    commands.add_plugin(time::TimePlugin)
-    commands.add_plugin(gfx::GfxPlugin)
-    commands.add_plugin(camera::CameraPlugin)
-    commands.add_plugin(physics_broadphase::BroadphasePlugin)
-    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+    commands.add_plugin(core::window::WindowPlugin)
+    commands.add_plugin(core::input::InputPlugin)
+    commands.add_plugin(core::time::TimePlugin)
+    commands.add_plugin(gfx::gpu::GfxPlugin)
+    commands.add_plugin(core::camera::CameraPlugin)
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
     commands.add_plugin(physics::PhysicsPlugin)
     commands.add_plugin(assets::AssetsPlugin)
     commands.add_plugin(DemoPlugin)

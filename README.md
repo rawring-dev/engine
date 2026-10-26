@@ -76,6 +76,7 @@ it through the iterative pass pipeline and LLJIT.
         │   ├── vulkan.zig instance/device/swapchain + RGBA capture
         │   ├── fs.zig     sandbox rooted at the executable directory
         │   ├── stdio.zig  stdin/stdout/stderr reads, writes, and line input
+        │   ├── dl.zig     dlopen/LoadLibrary, symbols, trampolines, data I/O
         │   ├── net.zig    TCP/UDP over std.Io.net
         │   ├── http.zig   HTTP/HTTPS through libcurl
         │   ├── quic.zig   QUIC client/server over ngtcp2 + OpenSSL
@@ -241,8 +242,8 @@ are e7 attributes (`@binding(binding, set)`, `@push_constant`, `@vertex`,
 `@fragment`, `@compute(x, y, z)`, `@location`, `@builtin`, `@flat`, `@inline`),
 and resources are ordinary top-level `name: Type` declarations carrying binding
 attributes.  Traits and `impl` blocks lower to Slang interfaces and extensions;
-generics, bounds, and modules are preserved (external `mod foo` loads sibling
-`foo.e7` and emits `foo.slang` + `import foo;`; inline modules become Slang
+generics, bounds, and modules are preserved (external `mod foo` loads nested
+`foo/main.e7` (or sibling `foo.e7`) and emits `foo.slang` + `import foo;`; inline modules become Slang
 namespaces).  Where the two languages differ, e7s takes the Slang meaning:
 vectors are `float3`-style values, `[f32; 4, 4]` is `float4x4`, struct literals
 reorder to declaration order, and matrix `*` is emitted as `mul(...)`.
@@ -445,7 +446,7 @@ sample UI/ECS surface:
 - [`engine/main.e7`](engine/main.e7) — resources (`Window`, `Input`, `Time`,
   `Gpu`), `@Components` component structs, an auto-collected `Components` table,
   `Commands`, systems, plugins, and the frame loop.
-- [`engine/ui.e7`](engine/ui.e7) — the `Ui` plugin, trait dependencies and
+- [`engine/ui/`](engine/ui) — the `Ui` plugin, trait dependencies and
   required methods: `UIRenderable <- trait : UIElement` with
   `render <- async (&self, &mut Gpu) -> !nil`, plus `res`/`select` sys
   parameters, `@plugin`, and `Commands` resource insertion.
@@ -497,7 +498,7 @@ Pickup, hold, and camera follow share that step. The demo starts with a static
 plane, a rotation-locked capsule player, a dynamic ball, and three stacked
 cubes.
 
-The UI library (`engine/ui.e7`) provides font-backed text rendering, panels,
+The UI library (`engine/ui/`) provides font-backed text rendering, panels,
 labels, buttons with action IDs and a `UIButtonPressed` trigger, and editable
 text fields with mouse focus/typing/Backspace/Enter. Text rasterizes through
 SDL3_ttf into image handles, uploads via `Gpu.upload_texture`, and is cached in
@@ -520,7 +521,7 @@ append-only rows.
 Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
 rigid-body rotation, light animation, ECS queries, and render submission all live in the
-`engine/*.e7` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
+the nested `engine/` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
 window/scene/time/raw input/asset-read/frame-state/frame-limit and capture
 facilities; `e7_engine_scene_draw` has been replaced by separate
 `set_cube_angle`, `set_light`, `begin_frame`, `draw_mesh`, and `end_frame`
@@ -540,7 +541,11 @@ its module live until `Jit.deinit`.
 
 `Jit.defineSymbols` publishes host entry points as ORC absolute symbols, so
 JITed code can call runtime services without relying on `-rdynamic` or on the
-host executable exporting them. [`intrinsics.zig`](runtime/src/intrinsics.zig)
+host executable exporting them. `Jit.addLibrary` installs LLVM's dynamic
+library search generator for a specific shared object, so IR can declare an
+ordinary C function (`declare double @cos(double)`) and have ORC resolve it
+from that `.so`/`.dylib`/`.dll`; `Jit.addProcessSymbols` additionally reflects
+symbols already loaded into the process. [`intrinsics.zig`](runtime/src/intrinsics.zig)
 maintains the complete `e7_*` manifest (`symbols()`) and a matching LLVM IR
 declaration block (`declarations`). [`jit_tests.zig`](runtime/src/jit_tests.zig)
 compiles IR that calls the filesystem, TCP, UDP, HTTP, SDL window, Vulkan probe,
@@ -554,6 +559,7 @@ The FFI layer under `runtime/src/ffi/` provides:
 | Vulkan surface + capture | Vulkan | `e7_vk_*` |
 | filesystem | Zig `std.Io.Dir` | `e7_fs_*` |
 | standard I/O | Zig `std.Io.File` | `e7_stdio_*` |
+| dynamic C libraries | `dlopen`/`LoadLibrary` + ORC generators | `e7_dl_*`, `e7_ffi_call*`, `e7_ffi_read/write` |
 | TCP/UDP | Zig `std.Io.net` | `e7_tcp_*`, `e7_udp_*` |
 | HTTP/HTTPS | libcurl | `e7_http_*` |
 | QUIC | ngtcp2 + OpenSSL | `e7_quic_*` |
@@ -569,7 +575,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 354 tests: scheduler 8, compiler 206, runtime 117,
+`zig build test` runs 355 tests: scheduler 8, compiler 207, runtime 117,
 transpiler 23.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
@@ -605,7 +611,9 @@ transpiler 23.
   capture and JIT scene ABI), ECS resources/rows/Commands/plugins/queries,
   executable e7 engine project (headless capture + injected input/camera),
   filesystem sandbox
-  escapes, STDIO file/line handling and JITed stderr writes, TCP/UDP loopback,
+  escapes, STDIO file/line handling and JITed stderr writes, shared-library
+  loading, symbol resolution, `cos`/`strlen` calls, data-symbol access,
+  JIT-callback `qsort`, TCP/UDP loopback,
   HTTP request/response, SDL window lifecycle, Vulkan device probing, QUIC
   client/server handshake and stream exchange, WebRTC
   offer/answer/data-channel loopback, and JITed IR calling each of those

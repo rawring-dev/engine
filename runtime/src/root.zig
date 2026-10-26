@@ -1536,16 +1536,16 @@ test "JIT loads an image through the e7 image intrinsics" {
     try std.testing.expectEqual(@as(i64, 22), main());
 }
 
-test "JIT executes the compiled e7 OBJ parser from engine/obj.e7" {
-    const obj_source = readRepoTextForTest("engine/obj.e7") orelse return error.SkipZigTest;
+test "JIT executes the compiled e7 OBJ parser from engine/assets/obj.e7" {
+    const obj_source = readRepoTextForTest("engine/assets/obj.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(obj_source);
-    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(window_source);
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
 
     const root_source =
@@ -1599,25 +1599,22 @@ test "JIT executes the compiled e7 OBJ parser from engine/obj.e7" {
 }
 
 test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
-    const obj_source = readRepoTextForTest("engine/obj.e7") orelse return error.SkipZigTest;
+    const obj_source = readRepoTextForTest("engine/assets/obj.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(obj_source);
-    const assets_source = readRepoTextForTest("engine/assets.e7") orelse return error.SkipZigTest;
+    const assets_source = readRepoTextForTest("engine/assets/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(assets_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(window_source);
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
 
     const root_source =
-        \\mod events
-        \\mod window
-        \\mod ecs
+        \\mod core
         \\mod gfx
-        \\mod obj
         \\mod assets
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
@@ -1629,10 +1626,12 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "core", .source = "mod events\nmod window\nmod ecs\n" },
             .{ .name = "events", .source = events_source },
             .{ .name = "window", .source = window_source },
             .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "gfx", .source = gfx_source },
+            .{ .name = "gfx", .source = "mod gpu\n" },
+            .{ .name = "gpu", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
             .{ .name = "assets", .source = assets_source },
         },
@@ -1682,9 +1681,9 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
 }
 
 test "JIT executes broadphase aggregation and narrowphase helpers" {
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
 
     // Minimal shared type surface; the real engine uses physics.e7's copies.
@@ -1994,9 +1993,9 @@ test "JIT removes, re-adds, and despawns dynamic ECS markers" {
 }
 
 test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
 
     const root_source =
@@ -2128,39 +2127,33 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
 }
 
 test "JIT nearest pickup uses distance then body id tie-break" {
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(physics_source);
 
     const root_source =
-        \\mod events
-        \\mod ecs
-        \\mod time
-        \\mod input
-        \\mod camera
-        \\mod physics_broadphase
-        \\mod physics_narrowphase
+        \\mod core
         \\mod physics
-        \\use ecs::*;
-        \\use events::*;
-        \\use time::*;
-        \\use input::*;
-        \\use camera::*;
-        \\use physics_broadphase::*;
-        \\use physics_narrowphase::*;
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
         \\use physics::*;
         \\@resource
         \\pub Probe <- struct
@@ -2321,8 +2314,8 @@ test "JIT nearest pickup uses distance then body id tie-break" {
         \\    probe.second = state.held_id
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
-        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
-        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
         \\    commands.add_plugin(physics::PhysicsPlugin)
         \\    commands.add_plugin(PickupScene)
         \\    disown commands
@@ -2344,8 +2337,9 @@ test "JIT nearest pickup uses distance then body id tie-break" {
             .{ .name = "time", .source = time_source },
             .{ .name = "input", .source = input_source },
             .{ .name = "camera", .source = camera_source },
-            .{ .name = "physics_broadphase", .source = broad_source },
-            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
+            .{ .name = "broadphase", .source = broad_source },
+            .{ .name = "narrowphase", .source = narrow_source },
             .{ .name = "physics", .source = physics_source },
         },
         .{},
@@ -2382,39 +2376,33 @@ test "JIT nearest pickup uses distance then body id tie-break" {
 }
 
 test "JIT contact friction slows and tips boxes" {
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(physics_source);
 
     const root_source =
-        \\mod events
-        \\mod ecs
-        \\mod time
-        \\mod input
-        \\mod camera
-        \\mod physics_broadphase
-        \\mod physics_narrowphase
+        \\mod core
         \\mod physics
-        \\use ecs::*;
-        \\use events::*;
-        \\use time::*;
-        \\use input::*;
-        \\use camera::*;
-        \\use physics_broadphase::*;
-        \\use physics_narrowphase::*;
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
         \\use physics::*;
         \\@resource
         \\pub Probe <- struct
@@ -2491,8 +2479,8 @@ test "JIT contact friction slows and tips boxes" {
         \\            probe.rot_z = e7_f32_to_milli(transform.rotation[2])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
-        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
-        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
         \\    commands.add_plugin(physics::PhysicsPlugin)
         \\    commands.add_plugin(ContactScene)
         \\    disown commands
@@ -2539,8 +2527,9 @@ test "JIT contact friction slows and tips boxes" {
             .{ .name = "time", .source = time_source },
             .{ .name = "input", .source = input_source },
             .{ .name = "camera", .source = camera_source },
-            .{ .name = "physics_broadphase", .source = broad_source },
-            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
+            .{ .name = "broadphase", .source = broad_source },
+            .{ .name = "narrowphase", .source = narrow_source },
             .{ .name = "physics", .source = physics_source },
         },
         .{},
@@ -2684,9 +2673,9 @@ test "JIT demo box stack stays upright and settles" {
 }
 
 test "JIT rotates body inverse inertia by quaternion" {
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
     const root_source =
         \\mod physics_broadphase
@@ -2748,39 +2737,33 @@ test "JIT rotates body inverse inertia by quaternion" {
 }
 
 test "JIT body pairs exchange equal and opposite impulses" {
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(physics_source);
 
     const root_source =
-        \\mod events
-        \\mod ecs
-        \\mod time
-        \\mod input
-        \\mod camera
-        \\mod physics_broadphase
-        \\mod physics_narrowphase
+        \\mod core
         \\mod physics
-        \\use ecs::*;
-        \\use events::*;
-        \\use time::*;
-        \\use input::*;
-        \\use camera::*;
-        \\use physics_broadphase::*;
-        \\use physics_narrowphase::*;
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
         \\use physics::*;
         \\@resource
         \\pub Probe <- struct
@@ -2841,8 +2824,8 @@ test "JIT body pairs exchange equal and opposite impulses" {
         \\            probe.bwz = e7_f32_to_milli(body.angular_velocity[2])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
-        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
-        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
         \\    commands.add_plugin(physics::PhysicsPlugin)
         \\    commands.add_plugin(PairScene)
         \\    disown commands
@@ -2860,8 +2843,9 @@ test "JIT body pairs exchange equal and opposite impulses" {
             .{ .name = "time", .source = time_source },
             .{ .name = "input", .source = input_source },
             .{ .name = "camera", .source = camera_source },
-            .{ .name = "physics_broadphase", .source = broad_source },
-            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
+            .{ .name = "broadphase", .source = broad_source },
+            .{ .name = "narrowphase", .source = narrow_source },
             .{ .name = "physics", .source = physics_source },
         },
         .{},
@@ -2902,39 +2886,33 @@ test "JIT body pairs exchange equal and opposite impulses" {
 }
 
 test "JIT sleeping body wakes on contact" {
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/time.e7") orelse return error.SkipZigTest;
+    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/camera.e7") orelse return error.SkipZigTest;
+    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics.e7") orelse return error.SkipZigTest;
+    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(physics_source);
 
     const root_source =
-        \\mod events
-        \\mod ecs
-        \\mod time
-        \\mod input
-        \\mod camera
-        \\mod physics_broadphase
-        \\mod physics_narrowphase
+        \\mod core
         \\mod physics
-        \\use ecs::*;
-        \\use events::*;
-        \\use time::*;
-        \\use input::*;
-        \\use camera::*;
-        \\use physics_broadphase::*;
-        \\use physics_narrowphase::*;
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
         \\use physics::*;
         \\@resource
         \\pub Probe <- struct
@@ -2997,8 +2975,8 @@ test "JIT sleeping body wakes on contact" {
         \\            probe.avx = e7_f32_to_milli(body.velocity[0])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
-        \\    commands.add_plugin(physics_broadphase::BroadphasePlugin)
-        \\    commands.add_plugin(physics_narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
         \\    commands.add_plugin(physics::PhysicsPlugin)
         \\    commands.add_plugin(WakeScene)
         \\    disown commands
@@ -3035,8 +3013,9 @@ test "JIT sleeping body wakes on contact" {
             .{ .name = "time", .source = time_source },
             .{ .name = "input", .source = input_source },
             .{ .name = "camera", .source = camera_source },
-            .{ .name = "physics_broadphase", .source = broad_source },
-            .{ .name = "physics_narrowphase", .source = narrow_source },
+            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
+            .{ .name = "broadphase", .source = broad_source },
+            .{ .name = "narrowphase", .source = narrow_source },
             .{ .name = "physics", .source = physics_source },
         },
         .{},
@@ -3293,17 +3272,17 @@ test "text-image textures render as screen-space UI quads" {
 }
 
 test "JIT UI button click and text field typing" {
-    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
-    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(window_source);
-    const input_source = readRepoTextForTest("engine/input.e7") orelse return error.SkipZigTest;
+    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(input_source);
-    const ui_source = readRepoTextForTest("engine/ui.e7") orelse return error.SkipZigTest;
+    const ui_source = readRepoTextForTest("engine/ui/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ui_source);
 
     const root_source =

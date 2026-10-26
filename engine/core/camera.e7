@@ -5,8 +5,8 @@
 # step), so the camera cannot race or lag the physics core by a full frame.
 # Rendering reads the resulting Camera component in the Render phase.
 
-use ecs::*;
-use events::*;
-use input::*;
+use core::ecs::*;
+use core::events::*;
+use core::input::*;
 
 pub CameraPlugin <- plugin

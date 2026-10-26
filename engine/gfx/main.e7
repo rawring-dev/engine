@@ -1,0 +1,3 @@
+# Rendering library: GPU/scene wrappers and the world/UI render submission.
+mod gpu
+mod scene

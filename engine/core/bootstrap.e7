@@ -1,8 +1,8 @@
-use ecs::*;
-use events::*;
-use gfx::*;
-use time::*;
-use window::*;
+use core::ecs::*;
+use core::events::*;
+use gfx::gpu::*;
+use core::time::*;
+use core::window::*;
 
 @trigger(Init)
 pub init_window <- sys (

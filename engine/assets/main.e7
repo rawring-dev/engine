@@ -1,10 +1,12 @@
+mod obj
+
 # Asset library: images (PNG/JPEG through the low-level runtime loader) and
 # parsed OBJ meshes.  The runtime only decodes files; all loading policy and
 # resource ownership lives here.
 
-use ecs::*;
-use events::*;
-use gfx::*;
+use core::ecs::*;
+use core::events::*;
+use gfx::gpu::*;
 
 @resource
 pub Image <- struct

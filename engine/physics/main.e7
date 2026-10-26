@@ -1,3 +1,6 @@
+mod broadphase
+mod narrowphase
+
 # Physics library: vector/ray primitives, plugin resources, and the single
 # fixed-step Update system that composes broadphase and narrowphase modules.
 #
@@ -19,9 +22,9 @@
 # Euler mirror used by rendering/tools.  Pickup and camera follow observe the
 # same step's transforms instead of lagging a phase behind.
 
-use ecs::*;
-use events::*;
-use time::*;
+use core::ecs::*;
+use core::events::*;
+use core::time::*;
 
 pub Vec3 <- struct
     x: f32
