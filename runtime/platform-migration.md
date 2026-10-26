@@ -108,8 +108,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `usage` at 32) and `VkMemoryRequirements.memoryTypeBits` (offset 16) in all
   e7 buffer/readback/uniform paths.  Buffers were previously tiny/invalid, which
   explained the capture crashes.  Runtime: **136/136**.
-- Remaining: descriptor-bound UBO draw, full engine renderer/scene API,
-  image/text, and deletion of the Zig layer.
+- **5f (done):** the e7 scene now creates a UBO + descriptor set, writes
+  identity model/view/projection matrices, builds the UBO mesh pipeline, binds
+  the descriptor set and vertex buffer, draws, and captures.  Verified with
+  lavapipe: **136/136** runtime tests.  Fence waits now use a 1-second timeout
+  and return an error instead of hanging.
+- Remaining: depth buffer, cube meshes, camera/light updates, full engine
+  renderer/scene API, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 

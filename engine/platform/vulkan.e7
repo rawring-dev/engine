@@ -498,7 +498,9 @@ vulkan_present_clear <- (device: i64, queue: i64, queue_family: i64, swapchain: 
     fence_array := e7_alloc_bytes(8)
     e7_store_u64(fence_array, fence)
     wait_fences := bind_vk("vkWaitForFences")
-    e7_ffi_call5(wait_fences, device, 1, fence_array, 1, -1)
+    wait_result := e7_ffi_call5(wait_fences, device, 1, fence_array, 1, 1000000000)
+    if wait_result != 0:
+        ret -30
 
     swapchains := e7_alloc_bytes(8)
     e7_store_u64(swapchains, swapchain)
@@ -746,7 +748,9 @@ vulkan_capture_clear <- (
     fence_array := e7_alloc_bytes(8)
     e7_store_u64(fence_array, fence)
     wait_fences := bind_vk("vkWaitForFences")
-    e7_ffi_call5(wait_fences, device, 1, fence_array, 1, -1)
+    wait_result := e7_ffi_call5(wait_fences, device, 1, fence_array, 1, 1000000000)
+    if wait_result != 0:
+        ret -30
 
     pixels := e7_alloc_bytes(pixel_size)
     e7_memcpy(pixels, mapped, pixel_size)
@@ -1063,6 +1067,8 @@ vulkan_draw_triangle_capture <- (
     width: i64,
     height: i64,
     vertex_buffer: i64,
+    descriptor_set: i64,
+    pipeline_layout: i64,
     out_pixels: u64,
     out_size: u64,
 ) -> i64:
@@ -1174,6 +1180,11 @@ vulkan_draw_triangle_capture <- (
         e7_store_u64(vertex_buffers, vertex_buffer)
         bind_vertex := bind_vk("vkCmdBindVertexBuffers")
         e7_ffi_call5(bind_vertex, command, 0, 1, vertex_buffers, vertex_offsets)
+    descriptor_sets := e7_alloc_bytes(8)
+    if descriptor_set != 0:
+        e7_store_u64(descriptor_sets, descriptor_set)
+        bind_descriptor := bind_vk("vkCmdBindDescriptorSets")
+        e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 0, 0)
     draw := bind_vk("vkCmdDraw")
     e7_ffi_call5(draw, command, 3, 1, 0, 0)
     end_render_pass := bind_vk("vkCmdEndRenderPass")
@@ -1215,7 +1226,9 @@ vulkan_draw_triangle_capture <- (
     fence_array := e7_alloc_bytes(8)
     e7_store_u64(fence_array, fence)
     wait_fences := bind_vk("vkWaitForFences")
-    e7_ffi_call5(wait_fences, device, 1, fence_array, 1, -1)
+    wait_result := e7_ffi_call5(wait_fences, device, 1, fence_array, 1, 1000000000)
+    if wait_result != 0:
+        ret -30
 
     pixels := e7_alloc_bytes(pixel_size)
     e7_memcpy(pixels, mapped, pixel_size)
@@ -1258,6 +1271,7 @@ vulkan_draw_triangle_capture <- (
     e7_free_ptr(region)
     e7_free_ptr(vertex_buffers)
     e7_free_ptr(vertex_offsets)
+    e7_free_ptr(descriptor_sets)
     e7_free_ptr(wait_stage)
     e7_free_ptr(wait_sem)
     e7_free_ptr(command_buffers)

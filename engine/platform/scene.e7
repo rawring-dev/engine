@@ -6,7 +6,7 @@
 # The scene owns everything except the SDL window.
 
 scene_create <- (window_state: u64, requested_width: i64, requested_height: i64) -> u64:
-    scene := e7_alloc_bytes(128)
+    scene := e7_alloc_bytes(256)
     e7_store_u64(scene, window_state)
 
     ext_count := e7_alloc_bytes(4)
@@ -121,6 +121,70 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_free_ptr(vert_handle)
     e7_free_ptr(frag_handle)
 
+    ubo_layout_out := e7_alloc_bytes(8)
+    ubo_pool_out := e7_alloc_bytes(8)
+    ubo_set_out := e7_alloc_bytes(8)
+    ubo_buffer_out := e7_alloc_bytes(8)
+    ubo_memory_out := e7_alloc_bytes(8)
+    ubo_mapped_out := e7_alloc_bytes(8)
+    ubo_size_out := e7_alloc_bytes(8)
+    if vulkan_uniform_resources(device, physical, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
+        ret 0
+    ubo_layout := e7_load_u64(ubo_layout_out)
+    ubo_mapped := e7_load_u64(ubo_mapped_out)
+    e7_store_u64(scene + 112, ubo_layout)
+    e7_store_u64(scene + 120, e7_load_u64(ubo_pool_out))
+    e7_store_u64(scene + 128, e7_load_u64(ubo_set_out))
+    e7_store_u64(scene + 136, e7_load_u64(ubo_buffer_out))
+    e7_store_u64(scene + 144, e7_load_u64(ubo_memory_out))
+    e7_store_u64(scene + 152, ubo_mapped)
+    if ubo_mapped != 0:
+        e7_store_f32(ubo_mapped, 1.0)
+        e7_store_f32(ubo_mapped + 20, 1.0)
+        e7_store_f32(ubo_mapped + 40, 1.0)
+        e7_store_f32(ubo_mapped + 60, 1.0)
+        e7_store_f32(ubo_mapped + 64, 1.0)
+        e7_store_f32(ubo_mapped + 84, 1.0)
+        e7_store_f32(ubo_mapped + 104, 1.0)
+        e7_store_f32(ubo_mapped + 124, 1.0)
+        e7_store_f32(ubo_mapped + 128, 1.0)
+        e7_store_f32(ubo_mapped + 148, 1.0)
+        e7_store_f32(ubo_mapped + 168, 1.0)
+        e7_store_f32(ubo_mapped + 188, 1.0)
+    vertex_buffer_out := e7_alloc_bytes(8)
+    vertex_memory_out := e7_alloc_bytes(8)
+    vertex_mapped_out := e7_alloc_bytes(8)
+    if vulkan_vertex_buffer(device, physical, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+        ret 0
+    e7_store_u64(scene + 176, e7_load_u64(vertex_buffer_out))
+    e7_store_u64(scene + 184, e7_load_u64(vertex_memory_out))
+    mesh_vert := e7_engine_read_shader("engine/platform/shaders/mesh.vert.spv")
+    mesh_frag := e7_engine_read_shader("engine/platform/shaders/mesh.frag.spv")
+    mesh_vert_handle := e7_handle(mesh_vert)
+    mesh_frag_handle := e7_handle(mesh_frag)
+    mesh_pipeline_out := e7_alloc_bytes(8)
+    mesh_layout_out := e7_alloc_bytes(8)
+    if mesh_vert_handle == 0 or mesh_frag_handle == 0:
+        ret 0
+    if vulkan_mesh_pipeline_simple(device, render_pass, mesh_vert_handle, mesh_frag_handle, ubo_layout, mesh_pipeline_out, mesh_layout_out) == 0:
+        ret 0
+    e7_store_u64(scene + 160, e7_load_u64(mesh_pipeline_out))
+    e7_store_u64(scene + 168, e7_load_u64(mesh_layout_out))
+    e7_free_ptr(mesh_vert_handle)
+    e7_free_ptr(mesh_frag_handle)
+    e7_free_ptr(ubo_layout_out)
+    e7_free_ptr(ubo_pool_out)
+    e7_free_ptr(ubo_set_out)
+    e7_free_ptr(ubo_buffer_out)
+    e7_free_ptr(ubo_memory_out)
+    e7_free_ptr(ubo_mapped_out)
+    e7_free_ptr(ubo_size_out)
+    e7_free_ptr(vertex_buffer_out)
+    e7_free_ptr(vertex_memory_out)
+    e7_free_ptr(vertex_mapped_out)
+    e7_free_ptr(mesh_pipeline_out)
+    e7_free_ptr(mesh_layout_out)
+
     e7_free_ptr(ext_count)
     e7_free_ptr(ext_array)
     e7_free_ptr(instance_out)
@@ -156,12 +220,14 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         e7_load_u64(scene + 24),
         e7_load_u64(scene + 56),
         e7_load_u64(scene + 64),
-        e7_load_u64(scene + 72),
+        e7_load_u64(scene + 160),
         e7_load_u64(scene + 80),
         e7_load_u32(scene + 52),
         e7_load_u32(scene + 88),
         e7_load_u32(scene + 92),
-        0,
+        e7_load_u64(scene + 176),
+        e7_load_u64(scene + 128),
+        e7_load_u64(scene + 168),
         out_pixels,
         out_size,
     )
@@ -171,6 +237,9 @@ scene_destroy <- (scene: u64) -> nil:
     instance := e7_load_u64(scene + 8)
     surface := e7_load_u64(scene + 16)
     vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 72), e7_load_u64(scene + 104))
+    vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 160), e7_load_u64(scene + 168))
+    vulkan_uniform_resources_destroy(device, e7_load_u64(scene + 112), e7_load_u64(scene + 120), e7_load_u64(scene + 136), e7_load_u64(scene + 144))
+    vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 176), e7_load_u64(scene + 184))
     vulkan_render_targets_destroy(device, e7_load_u64(scene + 64), e7_load_u64(scene + 96), e7_load_u64(scene + 80), e7_load_u32(scene + 52))
     vulkan_swapchain_destroy(device, e7_load_u64(scene + 56))
     vulkan_device_destroy(device)
