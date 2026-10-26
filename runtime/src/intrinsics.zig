@@ -22,6 +22,7 @@ const http = @import("ffi/http.zig");
 const quic = @import("ffi/quic.zig");
 const webrtc = @import("ffi/webrtc.zig");
 const stdio = @import("ffi/stdio.zig");
+const dl = @import("ffi/dl.zig");
 
 pub const Symbol = abi.Symbol;
 
@@ -1083,9 +1084,148 @@ pub export fn e7_rtc_close(peer_handle: u64) callconv(.c) i32 {
     return ok();
 }
 
+// ------------------------------------------------------- dynamic FFI --------
+
+pub export fn e7_dl_open(path: ?[*]const u8, path_len: usize, flags_bits: u32) callconv(.c) u64 {
+    begin();
+    const name = input(path, path_len) orelse return 0;
+    var flags = dl.OpenFlags{
+        .lazy = (flags_bits & 1) != 0,
+        .global = (flags_bits & 2) != 0,
+        .now = (flags_bits & 4) != 0,
+    };
+    if (!flags.lazy and !flags.now) flags.lazy = true;
+
+    const library = dl.Library.open(name, flags) catch |err| {
+        _ = fail(err);
+        return 0;
+    };
+    return dl.registry.create(library) catch |err| {
+        var copy = library;
+        copy.close();
+        _ = fail(err);
+        return 0;
+    };
+}
+
+pub export fn e7_dl_open_self(flags_bits: u32) callconv(.c) u64 {
+    return e7_dl_open("".ptr, 0, flags_bits);
+}
+
+pub export fn e7_dl_symbol(handle: u64, name: ?[*]const u8, name_len: usize) callconv(.c) u64 {
+    begin();
+    const library = dl.registry.get(handle) orelse {
+        _ = fail(error.InvalidHandle);
+        return 0;
+    };
+    const symbol_name = input(name, name_len) orelse return 0;
+    const address = library.symbol(symbol_name) catch |err| {
+        _ = fail(err);
+        return 0;
+    };
+    return address;
+}
+
+pub export fn e7_dl_has_symbol(handle: u64, name: ?[*]const u8, name_len: usize) callconv(.c) i32 {
+    begin();
+    const library = dl.registry.get(handle) orelse return -1;
+    const symbol_name = input(name, name_len) orelse return -1;
+    const address = library.symbol(symbol_name) catch return 0;
+    return if (address != 0) 1 else 0;
+}
+
+pub export fn e7_dl_close(handle: u64) callconv(.c) i32 {
+    begin();
+    const value = dl.registry.remove(handle) orelse return fail(error.InvalidHandle);
+    var library = value;
+    library.close();
+    return ok();
+}
+
+pub export fn e7_dl_path(handle: u64, out_ptr: ?*?[*]u8, out_len: ?*usize) callconv(.c) i32 {
+    begin();
+    const library = dl.registry.get(handle) orelse return fail(error.InvalidHandle);
+    return output(library.path, out_ptr, out_len);
+}
+
+pub export fn e7_ffi_call0(address: u64) callconv(.c) u64 {
+    begin();
+    return dl.call0(@intCast(address));
+}
+
+pub export fn e7_ffi_call1(address: u64, a0: u64) callconv(.c) u64 {
+    begin();
+    return dl.call1(@intCast(address), @intCast(a0));
+}
+
+pub export fn e7_ffi_call2(address: u64, a0: u64, a1: u64) callconv(.c) u64 {
+    begin();
+    return dl.call2(@intCast(address), @intCast(a0), @intCast(a1));
+}
+
+pub export fn e7_ffi_call3(address: u64, a0: u64, a1: u64, a2: u64) callconv(.c) u64 {
+    begin();
+    return dl.call3(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2));
+}
+
+pub export fn e7_ffi_call4(address: u64, a0: u64, a1: u64, a2: u64, a3: u64) callconv(.c) u64 {
+    begin();
+    return dl.call4(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2), @intCast(a3));
+}
+
+pub export fn e7_ffi_call5(address: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) callconv(.c) u64 {
+    begin();
+    return dl.call5(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2), @intCast(a3), @intCast(a4));
+}
+
+pub export fn e7_ffi_call6(address: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) callconv(.c) u64 {
+    begin();
+    return dl.call6(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2), @intCast(a3), @intCast(a4), @intCast(a5));
+}
+
+pub export fn e7_ffi_call_f64_0(address: u64) callconv(.c) f64 {
+    begin();
+    return dl.callF64_0(@intCast(address));
+}
+
+pub export fn e7_ffi_call_f64_1(address: u64, a0: f64) callconv(.c) f64 {
+    begin();
+    return dl.callF64_1(@intCast(address), a0);
+}
+
+pub export fn e7_ffi_call_f64_2(address: u64, a0: f64, a1: f64) callconv(.c) f64 {
+    begin();
+    return dl.callF64_2(@intCast(address), a0, a1);
+}
+
+pub export fn e7_ffi_call_f64_3(address: u64, a0: f64, a1: f64, a2: f64) callconv(.c) f64 {
+    begin();
+    return dl.callF64_3(@intCast(address), a0, a1, a2);
+}
+
+pub export fn e7_ffi_call_f64_4(address: u64, a0: f64, a1: f64, a2: f64, a3: f64) callconv(.c) f64 {
+    begin();
+    return dl.callF64_4(@intCast(address), a0, a1, a2, a3);
+}
+
+pub export fn e7_ffi_read(address: u64, buffer: ?[*]u8, len: usize) callconv(.c) i32 {
+    begin();
+    if (len == 0) return ok();
+    const dest = mutable(buffer, len) orelse return invalid();
+    dl.readBytes(@intCast(address), dest) catch |err| return fail(err);
+    return ok();
+}
+
+pub export fn e7_ffi_write(address: u64, data: ?[*]const u8, len: usize) callconv(.c) i32 {
+    begin();
+    const source = input(data, len) orelse return invalid();
+    dl.writeBytes(@intCast(address), source) catch |err| return fail(err);
+    return ok();
+}
+
 // ------------------------------------------------------------- manifest ------
 
-var symbol_table: [80]Symbol = undefined;
+var symbol_table: [100]Symbol = undefined;
 var symbol_state = std.atomic.Value(u8).init(0);
 
 pub fn symbols() []const Symbol {
@@ -1104,6 +1244,26 @@ pub fn symbols() []const Symbol {
             .{ .name = "e7_stdio_read_line", .address = @intFromPtr(&e7_stdio_read_line) },
             .{ .name = "e7_stdio_is_tty", .address = @intFromPtr(&e7_stdio_is_tty) },
             .{ .name = "e7_stdio_flush", .address = @intFromPtr(&e7_stdio_flush) },
+            .{ .name = "e7_dl_open", .address = @intFromPtr(&e7_dl_open) },
+            .{ .name = "e7_dl_open_self", .address = @intFromPtr(&e7_dl_open_self) },
+            .{ .name = "e7_dl_symbol", .address = @intFromPtr(&e7_dl_symbol) },
+            .{ .name = "e7_dl_has_symbol", .address = @intFromPtr(&e7_dl_has_symbol) },
+            .{ .name = "e7_dl_close", .address = @intFromPtr(&e7_dl_close) },
+            .{ .name = "e7_dl_path", .address = @intFromPtr(&e7_dl_path) },
+            .{ .name = "e7_ffi_call0", .address = @intFromPtr(&e7_ffi_call0) },
+            .{ .name = "e7_ffi_call1", .address = @intFromPtr(&e7_ffi_call1) },
+            .{ .name = "e7_ffi_call2", .address = @intFromPtr(&e7_ffi_call2) },
+            .{ .name = "e7_ffi_call3", .address = @intFromPtr(&e7_ffi_call3) },
+            .{ .name = "e7_ffi_call4", .address = @intFromPtr(&e7_ffi_call4) },
+            .{ .name = "e7_ffi_call5", .address = @intFromPtr(&e7_ffi_call5) },
+            .{ .name = "e7_ffi_call6", .address = @intFromPtr(&e7_ffi_call6) },
+            .{ .name = "e7_ffi_call_f64_0", .address = @intFromPtr(&e7_ffi_call_f64_0) },
+            .{ .name = "e7_ffi_call_f64_1", .address = @intFromPtr(&e7_ffi_call_f64_1) },
+            .{ .name = "e7_ffi_call_f64_2", .address = @intFromPtr(&e7_ffi_call_f64_2) },
+            .{ .name = "e7_ffi_call_f64_3", .address = @intFromPtr(&e7_ffi_call_f64_3) },
+            .{ .name = "e7_ffi_call_f64_4", .address = @intFromPtr(&e7_ffi_call_f64_4) },
+            .{ .name = "e7_ffi_read", .address = @intFromPtr(&e7_ffi_read) },
+            .{ .name = "e7_ffi_write", .address = @intFromPtr(&e7_ffi_write) },
             .{ .name = "e7_window_create", .address = @intFromPtr(&e7_window_create) },
             .{ .name = "e7_window_destroy", .address = @intFromPtr(&e7_window_destroy) },
             .{ .name = "e7_window_show", .address = @intFromPtr(&e7_window_show) },
@@ -1195,6 +1355,26 @@ pub const declarations =
     \\declare i32 @e7_stdio_read_line(i32, ptr, i64, ptr, ptr)
     \\declare i32 @e7_stdio_is_tty(i32)
     \\declare i32 @e7_stdio_flush(i32)
+    \\declare i64 @e7_dl_open(ptr, i64, i32)
+    \\declare i64 @e7_dl_open_self(i32)
+    \\declare i64 @e7_dl_symbol(i64, ptr, i64)
+    \\declare i32 @e7_dl_has_symbol(i64, ptr, i64)
+    \\declare i32 @e7_dl_close(i64)
+    \\declare i32 @e7_dl_path(i64, ptr, ptr)
+    \\declare i64 @e7_ffi_call0(i64)
+    \\declare i64 @e7_ffi_call1(i64, i64)
+    \\declare i64 @e7_ffi_call2(i64, i64, i64)
+    \\declare i64 @e7_ffi_call3(i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call4(i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call5(i64, i64, i64, i64, i64, i64)
+    \\declare i64 @e7_ffi_call6(i64, i64, i64, i64, i64, i64, i64)
+    \\declare double @e7_ffi_call_f64_0(i64)
+    \\declare double @e7_ffi_call_f64_1(i64, double)
+    \\declare double @e7_ffi_call_f64_2(i64, double, double)
+    \\declare double @e7_ffi_call_f64_3(i64, double, double, double)
+    \\declare double @e7_ffi_call_f64_4(i64, double, double, double, double)
+    \\declare i32 @e7_ffi_read(i64, ptr, i64)
+    \\declare i32 @e7_ffi_write(i64, ptr, i64)
     \\declare i64 @e7_window_create(ptr, i64, i32, i32, i64, ptr, i64)
     \\declare i32 @e7_window_destroy(i64)
     \\declare i32 @e7_window_show(i64)

@@ -12,7 +12,34 @@ const fs = @import("ffi/fs.zig");
 const net = @import("ffi/net.zig");
 const quic = @import("ffi/quic.zig");
 const io_mod = @import("ffi/io.zig");
+const dl = @import("ffi/dl.zig");
 const shader_assets = @import("shader_assets");
+const builtin = @import("builtin");
+
+fn mathLibraryPath() ?[]const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "libm.so.6",
+        .macos, .ios, .tvos, .watchos, .visionos, .maccatalyst, .driverkit => "libSystem.B.dylib",
+        .windows => "msvcrt.dll",
+        else => null,
+    };
+}
+
+fn cLibraryPath() ?[]const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "libc.so.6",
+        .macos, .ios, .tvos, .watchos, .visionos, .maccatalyst, .driverkit => "libSystem.B.dylib",
+        .windows => "msvcrt.dll",
+        else => null,
+    };
+}
+
+fn canResolve(library_path: []const u8, symbol_name: []const u8) bool {
+    var library = dl.Library.open(library_path, .{}) catch return false;
+    defer library.close();
+    _ = library.symbol(symbol_name) catch return false;
+    return true;
+}
 
 fn makeJit() !orc.Jit {
     var jit = try orc.Jit.init(std.testing.allocator);
@@ -559,4 +586,204 @@ test "JIT executes compiled ECS setup, Commands, and plugin activation" {
     try std.testing.expectEqual(@as(i64, 7), aggregate.e7_load_i64(resource_ptr));
     try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_entity_count());
     try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_plugin_active(0));
+}
+
+test "JITed IR loads a shared library and calls cos through the FFI trampoline" {
+    const library_path = mathLibraryPath() orelse return;
+    if (!canResolve(library_path, "cos")) {
+        std.debug.print("skipping JIT dynamic FFI test: cos unavailable\n", .{});
+        return;
+    }
+
+    var jit = try makeJit();
+    defer jit.deinit();
+
+    const ir =
+        \\declare i64 @e7_dl_open(ptr, i64, i32)
+        \\declare i64 @e7_dl_symbol(i64, ptr, i64)
+        \\declare double @e7_ffi_call_f64_1(i64, double)
+        \\declare i32 @e7_dl_close(i64)
+        \\define double @jit_dynlib(ptr %lib, i64 %liblen, ptr %sym, i64 %symlen, double %x) {
+        \\entry:
+        \\  %h = call i64 @e7_dl_open(ptr %lib, i64 %liblen, i32 1)
+        \\  %hbad = icmp eq i64 %h, 0
+        \\  br i1 %hbad, label %fail, label %have
+        \\have:
+        \\  %s = call i64 @e7_dl_symbol(i64 %h, ptr %sym, i64 %symlen)
+        \\  %sbad = icmp eq i64 %s, 0
+        \\  br i1 %sbad, label %closefail, label %call
+        \\closefail:
+        \\  %c1 = call i32 @e7_dl_close(i64 %h)
+        \\  ret double 0.0
+        \\call:
+        \\  %r = call double @e7_ffi_call_f64_1(i64 %s, double %x)
+        \\  %c = call i32 @e7_dl_close(i64 %h)
+        \\  ret double %r
+        \\fail:
+        \\  ret double 0.0
+        \\}
+    ;
+    try jit.addIr(ir, "jit-dynamic-ffi");
+    const DynFn = *const fn ([*]const u8, i64, [*]const u8, i64, f64) callconv(.c) f64;
+    const jit_dynlib = try jit.get(DynFn, "jit_dynlib");
+
+    const symbol = "cos";
+    const value = jit_dynlib(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len, 0.0);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), value, 1e-12);
+}
+
+test "JITed IR calls strlen from the C library through an integer trampoline" {
+    const library_path = cLibraryPath() orelse return;
+    if (!canResolve(library_path, "strlen")) {
+        std.debug.print("skipping JIT dynamic FFI test: strlen unavailable\n", .{});
+        return;
+    }
+
+    var jit = try makeJit();
+    defer jit.deinit();
+
+    const ir =
+        \\declare i64 @e7_dl_open(ptr, i64, i32)
+        \\declare i64 @e7_dl_symbol(i64, ptr, i64)
+        \\declare i64 @e7_ffi_call1(i64, i64)
+        \\declare i32 @e7_dl_close(i64)
+        \\define i64 @jit_strlen(ptr %lib, i64 %liblen, ptr %sym, i64 %symlen, ptr %text) {
+        \\entry:
+        \\  %h = call i64 @e7_dl_open(ptr %lib, i64 %liblen, i32 1)
+        \\  %hbad = icmp eq i64 %h, 0
+        \\  br i1 %hbad, label %fail, label %have
+        \\have:
+        \\  %s = call i64 @e7_dl_symbol(i64 %h, ptr %sym, i64 %symlen)
+        \\  %sbad = icmp eq i64 %s, 0
+        \\  br i1 %sbad, label %closefail, label %call
+        \\closefail:
+        \\  %c1 = call i32 @e7_dl_close(i64 %h)
+        \\  ret i64 0
+        \\call:
+        \\  %text_addr = ptrtoint ptr %text to i64
+        \\  %r = call i64 @e7_ffi_call1(i64 %s, i64 %text_addr)
+        \\  %c = call i32 @e7_dl_close(i64 %h)
+        \\  ret i64 %r
+        \\fail:
+        \\  ret i64 0
+        \\}
+    ;
+    try jit.addIr(ir, "jit-strlen");
+    const StrlenFn = *const fn ([*]const u8, i64, [*]const u8, i64, [*]const u8) callconv(.c) u64;
+    const jit_strlen = try jit.get(StrlenFn, "jit_strlen");
+
+    const symbol = "strlen";
+    const text = "hello";
+    const length = jit_strlen(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len, text.ptr);
+    try std.testing.expectEqual(@as(u64, 5), length);
+}
+
+test "JITed IR passes a JIT callback into libc qsort" {
+    const library_path = cLibraryPath() orelse return;
+    if (!canResolve(library_path, "qsort")) {
+        std.debug.print("skipping JIT qsort callback test: qsort unavailable\n", .{});
+        return;
+    }
+
+    var jit = try makeJit();
+    defer jit.deinit();
+
+    const ir =
+        \\declare i64 @e7_dl_open(ptr, i64, i32)
+        \\declare i64 @e7_dl_symbol(i64, ptr, i64)
+        \\declare i64 @e7_ffi_call4(i64, i64, i64, i64, i64)
+        \\declare i32 @e7_dl_close(i64)
+        \\define i32 @compare_ints(ptr %a, ptr %b) {
+        \\entry:
+        \\  %av = load i32, ptr %a
+        \\  %bv = load i32, ptr %b
+        \\  %lt = icmp slt i32 %av, %bv
+        \\  %gt = icmp sgt i32 %av, %bv
+        \\  %ltv = zext i1 %lt to i32
+        \\  %gtv = zext i1 %gt to i32
+        \\  %r = sub i32 %gtv, %ltv
+        \\  ret i32 %r
+        \\}
+        \\define i32 @jit_qsort(ptr %lib, i64 %liblen, ptr %sym, i64 %symlen) {
+        \\entry:
+        \\  %h = call i64 @e7_dl_open(ptr %lib, i64 %liblen, i32 1)
+        \\  %hbad = icmp eq i64 %h, 0
+        \\  br i1 %hbad, label %fail, label %have
+        \\have:
+        \\  %s = call i64 @e7_dl_symbol(i64 %h, ptr %sym, i64 %symlen)
+        \\  %arr = alloca [4 x i32]
+        \\  store i32 3, ptr %arr
+        \\  %p1 = getelementptr i32, ptr %arr, i64 1
+        \\  store i32 1, ptr %p1
+        \\  %p2 = getelementptr i32, ptr %arr, i64 2
+        \\  store i32 4, ptr %p2
+        \\  %p3 = getelementptr i32, ptr %arr, i64 3
+        \\  store i32 2, ptr %p3
+        \\  %base = ptrtoint ptr %arr to i64
+        \\  %cmp = ptrtoint ptr @compare_ints to i64
+        \\  %call = call i64 @e7_ffi_call4(i64 %s, i64 %base, i64 4, i64 4, i64 %cmp)
+        \\  %v0 = load i32, ptr %arr
+        \\  %v3 = load i32, ptr %p3
+        \\  %scaled = mul i32 %v0, 1000
+        \\  %result = add i32 %scaled, %v3
+        \\  %c = call i32 @e7_dl_close(i64 %h)
+        \\  ret i32 %result
+        \\fail:
+        \\  ret i32 -1
+        \\}
+    ;
+    try jit.addIr(ir, "jit-qsort-callback");
+    const SortFn = *const fn ([*]const u8, i64, [*]const u8, i64) callconv(.c) i32;
+    const jit_qsort = try jit.get(SortFn, "jit_qsort");
+
+    const symbol = "qsort";
+    const result = jit_qsort(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len);
+    try std.testing.expectEqual(@as(i32, 1004), result);
+}
+
+test "JITed IR resolves and reads a C data symbol" {
+    const library_path = cLibraryPath() orelse return;
+    if (!canResolve(library_path, "stdout")) {
+        std.debug.print("skipping JIT data-symbol test: stdout unavailable\n", .{});
+        return;
+    }
+
+    var jit = try makeJit();
+    defer jit.deinit();
+
+    const ir =
+        \\declare i64 @e7_dl_open(ptr, i64, i32)
+        \\declare i64 @e7_dl_symbol(i64, ptr, i64)
+        \\declare i32 @e7_ffi_read(i64, ptr, i64)
+        \\declare i32 @e7_dl_close(i64)
+        \\define i64 @jit_data_symbol(ptr %lib, i64 %liblen, ptr %sym, i64 %symlen) {
+        \\entry:
+        \\  %h = call i64 @e7_dl_open(ptr %lib, i64 %liblen, i32 1)
+        \\  %hbad = icmp eq i64 %h, 0
+        \\  br i1 %hbad, label %fail, label %have
+        \\have:
+        \\  %s = call i64 @e7_dl_symbol(i64 %h, ptr %sym, i64 %symlen)
+        \\  %sbad = icmp eq i64 %s, 0
+        \\  br i1 %sbad, label %closefail, label %read
+        \\closefail:
+        \\  %c1 = call i32 @e7_dl_close(i64 %h)
+        \\  ret i64 0
+        \\read:
+        \\  %buffer = alloca i64
+        \\  store i64 0, ptr %buffer
+        \\  %r = call i32 @e7_ffi_read(i64 %s, ptr %buffer, i64 8)
+        \\  %value = load i64, ptr %buffer
+        \\  %c = call i32 @e7_dl_close(i64 %h)
+        \\  ret i64 %value
+        \\fail:
+        \\  ret i64 0
+        \\}
+    ;
+    try jit.addIr(ir, "jit-data-symbol");
+    const DataFn = *const fn ([*]const u8, i64, [*]const u8, i64) callconv(.c) u64;
+    const jit_data = try jit.get(DataFn, "jit_data_symbol");
+
+    const symbol = "stdout";
+    const value = jit_data(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len);
+    try std.testing.expect(value != 0);
 }

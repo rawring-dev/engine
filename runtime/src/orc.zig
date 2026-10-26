@@ -13,6 +13,7 @@
 //!          "LLVM-C: C API to LLVM" (LLJIT.h, Orc.h).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const compiler = @import("compiler");
 const bytecode_ir = @import("bytecode_ir.zig");
 const task = @import("task.zig");
@@ -40,6 +41,7 @@ pub const Error = error{
     AddModuleFailed,
     LookupFailed,
     DefineFailed,
+    AddLibraryFailed,
     OutOfMemory,
     InvalidBytecode,
     OptimizationFailed,
@@ -206,6 +208,60 @@ pub const Jit = struct {
         }
     }
 
+    /// Resolve undefined symbols in subsequently added modules from `path`.
+    ///
+    /// This installs LLVM's dynamic-library search generator for one shared
+    /// object (`.so`, `.dylib`, or `.dll`).  JITed IR can then declare a C
+    /// function normally and ORC resolves it when the module is materialized:
+    ///
+    /// ```llvm
+    /// declare double @cos(double)
+    /// ```
+    ///
+    /// The library remains loaded for the lifetime of the JIT.
+    pub fn addLibrary(self: *Jit, path: []const u8) Error!void {
+        const path_z = self.allocator.dupeZ(u8, path) catch return error.OutOfMemory;
+        defer self.allocator.free(path_z);
+
+        var generator: c.LLVMOrcDefinitionGeneratorRef = null;
+        const prefix: u8 = if (builtin.os.tag.isDarwin()) '_' else 0;
+        const err = c.LLVMOrcCreateDynamicLibrarySearchGeneratorForPath(
+            &generator,
+            path_z.ptr,
+            @intCast(prefix),
+            null,
+            null,
+        );
+        if (err != null) {
+            disposeError(err);
+            if (generator != null) c.LLVMOrcDisposeDefinitionGenerator(generator);
+            return error.AddLibraryFailed;
+        }
+        if (generator == null) return error.AddLibraryFailed;
+        c.LLVMOrcJITDylibAddGenerator(c.LLVMOrcLLJITGetMainJITDylib(self.handle), generator);
+    }
+
+    /// Resolve undefined symbols from libraries already loaded into this
+    /// process.  This is LLVM's equivalent of `dlsym(RTLD_DEFAULT, ...)` and
+    /// complements `addLibrary` for libraries loaded globally.
+    pub fn addProcessSymbols(self: *Jit) Error!void {
+        var generator: c.LLVMOrcDefinitionGeneratorRef = null;
+        const prefix: u8 = if (builtin.os.tag.isDarwin()) '_' else 0;
+        const err = c.LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(
+            &generator,
+            @intCast(prefix),
+            null,
+            null,
+        );
+        if (err != null) {
+            disposeError(err);
+            if (generator != null) c.LLVMOrcDisposeDefinitionGenerator(generator);
+            return error.AddLibraryFailed;
+        }
+        if (generator == null) return error.AddLibraryFailed;
+        c.LLVMOrcJITDylibAddGenerator(c.LLVMOrcLLJITGetMainJITDylib(self.handle), generator);
+    }
+
     /// Resolve a symbol to an executable address.
     pub fn lookup(self: *Jit, name: []const u8) Error!usize {
         const c_name = self.allocator.dupeZ(u8, name) catch return error.OutOfMemory;
@@ -285,4 +341,59 @@ test "host symbols can be registered and called from JITed IR" {
     const CallHost = *const fn () callconv(.c) i32;
     const call_host = try jit.get(CallHost, "call_host");
     try std.testing.expectEqual(@as(i32, 42), call_host());
+}
+
+test "ORC resolves C symbols from an explicit shared library" {
+    const library = switch (builtin.os.tag) {
+        .linux => "libm.so.6",
+        .macos, .ios, .tvos, .watchos, .visionos, .maccatalyst, .driverkit => "libSystem.B.dylib",
+        .windows => "msvcrt.dll",
+        else => {
+            std.debug.print("skipping ORC dynamic library test on this target\n", .{});
+            return;
+        },
+    };
+
+    var jit = try Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    jit.addLibrary(library) catch |err| {
+        std.debug.print("skipping ORC dynamic library test: {s}\n", .{@errorName(err)});
+        return;
+    };
+
+    const ir =
+        \\declare double @cos(double)
+        \\define double @jit_cos(double %x) {
+        \\entry:
+        \\  %r = call double @cos(double %x)
+        \\  ret double %r
+        \\}
+    ;
+    try jit.addIr(ir, "dynamic-library");
+    const Cos = *const fn (f64) callconv(.c) f64;
+    const jit_cos = try jit.get(Cos, "jit_cos");
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), jit_cos(0.0), 1e-12);
+}
+
+test "ORC reflects symbols already loaded into the process" {
+    if (builtin.os.tag == .windows) return;
+    var jit = try Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    jit.addProcessSymbols() catch |err| {
+        std.debug.print("skipping process-symbol test: {s}\n", .{@errorName(err)});
+        return;
+    };
+
+    const ir =
+        \\declare i32 @getpid()
+        \\define i32 @jit_getpid() {
+        \\entry:
+        \\  %pid = call i32 @getpid()
+        \\  ret i32 %pid
+        \\}
+    ;
+    try jit.addIr(ir, "process-symbols");
+    const GetPid = *const fn () callconv(.c) i32;
+    const jit_getpid = try jit.get(GetPid, "jit_getpid");
+    try std.testing.expect(jit_getpid() > 0);
 }
