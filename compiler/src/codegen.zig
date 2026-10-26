@@ -2671,6 +2671,34 @@ const Builder = struct {
 
     /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,
     /// vector, and map values.  Returns false for any other call.
+    /// Receiver-call sugar for inherent `impl Type:` methods.  The receiver is
+    /// passed as the first argument; aggregate references already use the
+    /// pointer representation, so no extra conversion is needed for `&T`/`&mut T`.
+    fn lowerInherentMethodCall(self: *Builder, call: ast.Call) Error!bool {
+        if (call.callee.* != .field) return false;
+        const field = call.callee.field;
+        const receiver_ty = self.exprType(field.target) orelse return false;
+        const method = self.analysis.inherentMethod(receiver_ty, field.name) orelse return false;
+        const first_param_is_reference = method.decl.params.len > 0 and
+            method.decl.params[0].ty.* == .reference;
+        if (first_param_is_reference and !self.isAggregateType(receiver_ty) and
+            self.resolvedType(receiver_ty).* != .reference)
+        {
+            // Implicit borrow of a scalar place.
+            if (!try self.lowerAddress(field.target)) {
+                const slot = try self.allocLocal("<receiver>");
+                try self.lowerExpr(field.target);
+                try self.emit(.{ .store_local = slot });
+                try self.emit(.{ .local_addr = slot });
+            }
+        } else {
+            try self.lowerExpr(field.target);
+        }
+        for (call.args) |arg| try self.lowerExpr(arg);
+        try self.methodCall(method, @intCast(1 + call.args.len));
+        return true;
+    }
+
     fn lowerBuiltinMethodCall(self: *Builder, call: ast.Call) Error!bool {
         if (call.callee.* != .field) return false;
         const field = call.callee.field;
@@ -2746,6 +2774,7 @@ const Builder = struct {
         if (try self.lowerIntrinsicCall(call)) return;
         if (call.callee.* == .field) {
             if (try self.lowerBuiltinMethodCall(call)) return;
+            if (try self.lowerInherentMethodCall(call)) return;
         }
         if (call.callee.* != .path) return error.UnsupportedFeature;
         const path = call.callee.path;

@@ -13,12 +13,20 @@
 # ignored.  Malformed face/index data aborts the parse and returns an empty mesh
 # rather than panicking; callers can check `indices.len() == 0`.
 
+use gfx::*;
+
 pub ObjMesh <- struct
     positions: [f32]
     normals: [f32]
     uvs: [f32]
     vertices: [f32]
     indices: [i32]
+
+# Inherent ObjMesh method: upload the parsed buffers through the Gpu wrapper.
+impl ObjMesh:
+    pub upload <- (mesh: ObjMesh, gpu: &mut Gpu) -> u64:
+        ret gpu.upload_mesh(mesh.vertices, mesh.indices, 0)
+
 
 pub empty_mesh <- () -> ObjMesh:
     positions: [f32] := []
@@ -163,5 +171,5 @@ pub parse_obj <- (text: str) -> ObjMesh:
 
 # Read an OBJ file through the engine asset reader and parse it.
 pub load_obj <- (path: str) -> ObjMesh:
-    text := e7_engine_read_shader(path)
+    text := read_asset(path)
     ret parse_obj(text)

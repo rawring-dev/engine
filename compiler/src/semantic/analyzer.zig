@@ -48,6 +48,9 @@ pub const ImplMethod = struct {
     type_name: []const u8,
     method_name: []const u8,
     decl: *const ast.FunctionDecl,
+    /// True for `impl Type:` methods (receiver-call sugar is available);
+    /// operators/Index methods come from trait impls and stay trait-only.
+    inherent: bool = false,
 };
 
 /// One `@resource` struct registered with the ECS world.
@@ -201,6 +204,19 @@ pub const Analysis = struct {
         return false;
     }
 
+    /// Resolve an inherent (`impl Type:`) method for receiver-call sugar.
+    pub fn inherentMethod(self: *const Analysis, ty: *types.Type, method_name: []const u8) ?ImplMethod {
+        var resolved = self.store.resolve(ty);
+        while (resolved.* == .reference) resolved = self.store.resolve(resolved.reference.child);
+        if (resolved.* != .named) return null;
+        for (self.impl_methods) |method| {
+            if (!method.inherent) continue;
+            if (std.mem.eql(u8, method.type_name, resolved.named.name) and
+                std.mem.eql(u8, method.method_name, method_name)) return method;
+        }
+        return null;
+    }
+
     /// Resolve a method declared for the concrete named type, if any.
     pub fn implMethod(self: *const Analysis, ty: *types.Type, method_name: []const u8) ?ImplMethod {
         const resolved = self.store.resolve(ty);
@@ -278,6 +294,8 @@ const TypeDef = struct {
     variants: []ast.Variant = &.{},
     systems: std.ArrayList(*Callable) = .empty,
     methods: std.StringHashMapUnmanaged(*Callable) = .empty,
+    /// Methods from inherent `impl Type:` blocks (receiver-call sugar).
+    inherent_methods: std.StringHashMapUnmanaged(*Callable) = .empty,
     synthetic_fields: ?std.StringHashMapUnmanaged(*types.Type) = null,
     /// `@derive(Serialize)` / `@derive(Deserialize)` flags.
     derive_serialize: bool = false,
@@ -420,7 +438,7 @@ const Checker = struct {
         try self.collectImpls();
         try self.collectUses(module.items, "");
         self.checkModuleItems(module.items, "") catch |err| switch (err) {
-            error.OutOfMemory => return err,
+            error.OutOfMemory => return error.OutOfMemory,
         };
         try self.validateDerives();
         self.leaveScope();
@@ -905,10 +923,14 @@ const Checker = struct {
                     .owner = def,
                 };
                 try def.methods.put(self.allocator, method.function.name, callable);
+                if (decl.trait_ty == null) {
+                    try def.inherent_methods.put(self.allocator, method.function.name, callable);
+                }
                 try self.impl_methods.append(self.allocator, .{
                     .type_name = def.qualified_name,
                     .method_name = method.function.name,
                     .decl = &method.function,
+                    .inherent = decl.trait_ty == null,
                 });
             }
         }
@@ -4204,6 +4226,7 @@ const Checker = struct {
         if (try self.checkCommandsMethodCall(call)) |result| return result;
         if (try self.checkIntrinsicCall(call)) |result| return result;
         if (try self.checkJsonBuiltinCall(call)) |result| return result;
+        if (try self.checkInherentMethodCall(call)) |result| return result;
         if (try self.checkBuiltinMethodCall(call)) |result| return result;
         if (call.callee.* == .path and call.callee.path.segments.len == 1) {
             const name = call.callee.path.segments[0].name;
@@ -4297,6 +4320,67 @@ const Checker = struct {
     /// `text.len()`, `text.slice(start, end)`, `text.char_at(i)`,
     /// `vector.len()`, and `map.len()`.  Returns null when the call is not one of
     /// these (so the ordinary call path keeps diagnosing it).
+    /// Receiver-style call sugar for inherent `impl Type:` methods:
+    /// `window.pump()` is `Window::pump(window)`.  The first declared parameter
+    /// is the receiver; `&mut T` receivers require a mutable place while `&T`
+    /// and by-value receivers use the normal assignability rules.
+    fn checkInherentMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .field) return null;
+        const field = call.callee.field;
+        const receiver_ty = try self.checkExpr(field.target, null);
+        const base = self.unwrapReferences(receiver_ty);
+        const def = self.namedDef(base) orelse return null;
+        const callable = def.inherent_methods.get(field.name) orelse return null;
+
+        const explicit = if (call.type_args.len > 0) try self.resolveTypeArgs(call.type_args) else null;
+        const instantiation = try self.instantiateCallable(callable, explicit);
+        const signature = self.store.resolve(instantiation.ty);
+        if (signature.* != .function) return null;
+        const params = signature.function.params;
+        if (params.len == 0) {
+            try self.report("method `{s}::{s}` must declare a receiver as its first parameter", .{ def.name, field.name });
+            return null;
+        }
+        if (call.args.len + 1 != params.len) {
+            try self.report("method `{s}::{s}` expects {d} argument(s) after the receiver, found {d}", .{
+                def.name, field.name, params.len - 1, call.args.len,
+            });
+        }
+
+        const expected_receiver = self.store.resolve(params[0]);
+        if (expected_receiver.* == .reference) {
+            var direct = true;
+            self.store.assignable(params[0], receiver_ty) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => direct = false,
+            };
+            if (!direct) {
+                // Implicit borrow of the receiver value: compare the receiver's
+                // underlying type with the referenced child type.
+                try self.expectAssignable(expected_receiver.reference.child, self.unwrapReferences(receiver_ty), field.name);
+                if (expected_receiver.reference.mutable) {
+                    if (try self.placeOf(field.target)) |place| {
+                        try self.checkRead(place);
+                        if (!try self.placeMutable(place)) {
+                            try self.report("method `{s}::{s}` requires a mutable receiver, but it is immutable", .{ def.name, field.name });
+                        }
+                    } else {
+                        try self.report("method `{s}::{s}` requires a mutable place receiver", .{ def.name, field.name });
+                    }
+                }
+            }
+        } else {
+            try self.expectAssignable(params[0], receiver_ty, field.name);
+        }
+
+        for (call.args, 0..) |argument, index| {
+            const actual = try self.checkMoveExpr(argument, null);
+            if (index + 1 >= params.len) continue;
+            try self.expectAssignable(params[index + 1], actual, field.name);
+        }
+        return signature.function.result;
+    }
+
     fn checkBuiltinMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
         if (call.callee.* != .field) return null;
         const field = call.callee.field;

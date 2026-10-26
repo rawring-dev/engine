@@ -13,9 +13,19 @@ pub TimePlugin <- plugin
     time_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(Time { delta: 0.0, elapsed: 0.0, now_ms: 0, start_ms: 0 })
 
+impl Time:
+    pub now_ms <- (time: &Time) -> i64:
+        ret e7_engine_time_now_ms()
+
+    pub start <- (time: &mut Time) -> nil:
+        time.start_ms = e7_engine_time_now_ms()
+        time.now_ms = time.start_ms
+        ret
+
+
 @trigger(PreUpdate)
 pub tick_time <- sys (time: res &mut Time):
-    now := e7_engine_time_now_ms()
+    now := time.now_ms()
     time.now_ms = now
     time.elapsed = e7_f32_from_i64(now - time.start_ms) / 1000.0
     time.delta = 0.016

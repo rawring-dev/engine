@@ -1790,3 +1790,52 @@ test "checks ECS component removal, re-add, and despawn Commands methods" {
         \\        commands.add_component(counters.entity(), Counter { b: 1 })
     , "expects exactly one component type argument");
 }
+
+test "checks inherent method call sugar and receiver mutability" {
+    try expectClean(
+        \\R <- struct
+        \\    n: i32
+        \\impl R:
+        \\    bump <- (r: &mut R) -> nil:
+        \\        r.n = r.n + 1
+        \\        ret
+        \\    bump_by <- (r: &mut R, by: i32) -> i32:
+        \\        r.n = r.n + by
+        \\        ret r.n
+        \\    value <- (r: &R) -> i32 = r.n
+        \\    plus <- (r: R, by: i32) -> i32 = r.n + by
+        \\run <- () -> i32:
+        \\    r := R { n: 1 }
+        \\    r.bump()
+        \\    r.bump_by(4)
+        \\    r.value() + r.plus(1)
+    );
+    try expectDiagnostic(
+        \\R <- struct
+        \\    n: i32
+        \\impl R:
+        \\    bump <- (r: &mut R) -> nil:
+        \\        r.n = r.n + 1
+        \\        ret
+        \\run <- () -> i32:
+        \\    r <- R { n: 1 }
+        \\    r.bump()
+        \\    r.n
+    , "requires a mutable receiver");
+    try expectDiagnostic(
+        \\R <- struct
+        \\    n: i32
+        \\run <- () -> i32:
+        \\    r := R { n: 1 }
+        \\    r.missing()
+    , "unknown field");
+    try expectDiagnostic(
+        \\R <- struct
+        \\    n: i32
+        \\impl R:
+        \\    add <- (r: &R, by: i32) -> i32 = r.n + by
+        \\run <- () -> i32:
+        \\    r := R { n: 1 }
+        \\    r.add("bad")
+    , "type mismatch");
+}

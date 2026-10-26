@@ -1523,8 +1523,20 @@ test "JIT loads an image through the e7 image intrinsics" {
 test "JIT executes the compiled e7 OBJ parser from engine/obj.e7" {
     const obj_source = readRepoTextForTest("engine/obj.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(obj_source);
+    const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(gfx_source);
+    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(window_source);
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
+    const ecs_source = readRepoTextForTest("engine/ecs.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(ecs_source);
 
     const root_source =
+        \\mod events
+        \\mod window
+        \\mod ecs
+        \\mod gfx
         \\mod obj
         \\main <- () -> i32:
         \\    quad := obj::parse_obj(
@@ -1541,10 +1553,21 @@ test "JIT executes the compiled e7 OBJ parser from engine/obj.e7" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{.{ .name = "obj", .source = obj_source }},
+        &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "window", .source = window_source },
+            .{ .name = "ecs", .source = ecs_source },
+            .{ .name = "gfx", .source = gfx_source },
+            .{ .name = "obj", .source = obj_source },
+        },
         .{},
     );
     defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("OBJ semantic: {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
     try std.testing.expect(compiled.analysis.ok());
     try compiler.bytecode.verify(std.testing.allocator, &compiled.bytecode);
 
@@ -1568,8 +1591,14 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
     defer std.testing.allocator.free(ecs_source);
     const gfx_source = readRepoTextForTest("engine/gfx.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
+    const window_source = readRepoTextForTest("engine/window.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(window_source);
+    const events_source = readRepoTextForTest("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
 
     const root_source =
+        \\mod events
+        \\mod window
         \\mod ecs
         \\mod gfx
         \\mod obj
@@ -1584,6 +1613,8 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "window", .source = window_source },
             .{ .name = "ecs", .source = ecs_source },
             .{ .name = "gfx", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
@@ -3026,4 +3057,40 @@ test "JIT sleeping body wakes on contact" {
     try std.testing.expect(ay > 1500);
     // Contact woke it and transferred horizontal impulse/position.
     try std.testing.expect(ax != 0 or avx != 0);
+}
+
+test "JIT calls inherent impl methods with receiver-first lowering" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\Counter <- struct
+        \\    n: i32
+        \\impl Counter:
+        \\    bump <- (counter: &mut Counter) -> nil:
+        \\        counter.n = counter.n + 1
+        \\        ret
+        \\    bump_by <- (counter: &mut Counter, by: i32) -> i32:
+        \\        counter.n = counter.n + by
+        \\        ret counter.n
+        \\    value <- (counter: &Counter) -> i32 = counter.n
+        \\    plus <- (counter: Counter, by: i32) -> i32 = counter.n + by
+        \\run <- () -> i32:
+        \\    counter := Counter { n: 1 }
+        \\    counter.bump()
+        \\    counter.bump_by(4)
+        \\    counter.value() + counter.plus(1)
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "inherent-methods");
+    const Run = *const fn () callconv(.c) i32;
+    const run = try jit.get(Run, "run");
+    // n: 1 -> bump 2 -> bump_by(4) 6; value() 6 + plus(1) 7 (by-value
+    // aggregate receivers alias the object pointer) = 13.
+    try std.testing.expectEqual(@as(i32, 13), run());
 }

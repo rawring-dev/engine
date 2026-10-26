@@ -89,6 +89,12 @@ engine/
   Material. Object count is dynamic (no fixed 64-object cap).  The player capsule is deliberately not renderable in the
   first-person demo.  Rotation comes from the physics step; there is no forced
   animation spin, so boxes tumble from gravity, contacts, and angular impulses.
+- Engine intrinsics are wrapped as e7 inherent methods: `window.create/pump/
+  should_close/destroy`, `gpu.create_scene/read_shader/set_camera/set_light/
+  begin_frame/draw_renderable/draw_custom/end_frame/destroy_scene/
+  upload_texture/upload_mesh`, `image.upload_texture/free`,
+  `mesh.upload`, `input.key_down/mouse_dx/mouse_dy`, `time.now_ms/start`.
+  Call sites use methods; raw intrinsics only appear inside the wrappers.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:
   `e7_engine_scene_texture_create` for the image and

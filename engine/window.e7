@@ -8,6 +8,27 @@ pub Window <- struct
     quit_requested: bool
 
 
+# Inherent Window methods.  Raw engine intrinsics stay inside these wrappers;
+# call sites use `window.pump()` / `window.should_close()` etc.
+impl Window:
+    pub create <- (window: &mut Window, title: str) -> nil:
+        window.handle = e7_engine_window_create(title, window.width, window.height)
+        window.quit_requested = false
+        ret
+
+    pub pump <- (window: &mut Window) -> nil:
+        window.quit_requested = e7_engine_window_pump(window.handle) != 0
+        ret
+
+    # Window close OR the host frame limiter (`--frames`) requests shutdown.
+    pub should_close <- (window: &Window) -> bool:
+        ret e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
+
+    pub destroy <- (window: &mut Window) -> nil:
+        e7_engine_window_destroy(window.handle)
+        ret
+
+
 pub WindowPlugin <- plugin
     window_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(Window {
@@ -19,5 +40,5 @@ pub WindowPlugin <- plugin
 
 @trigger(FrameInit)
 pub poll_window <- sys (window: res &mut Window):
-    window.quit_requested = e7_engine_window_pump(window.handle) != 0
+    window.pump()
 

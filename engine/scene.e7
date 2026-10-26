@@ -25,8 +25,7 @@ pub render_scene <- sys (
     for camera in cameras:
         yaw_degrees := camera.yaw * 57.2957795
         pitch_degrees := camera.pitch * 57.2957795
-        e7_engine_scene_set_camera(
-            gpu.scene,
+        gpu.set_camera(
             e7_f32_to_milli(camera.position[0]),
             e7_f32_to_milli(camera.position[1]),
             e7_f32_to_milli(camera.position[2]),
@@ -35,8 +34,7 @@ pub render_scene <- sys (
         )
 
     for light_row in lights:
-        e7_engine_scene_set_light(
-            gpu.scene,
+        gpu.set_light(
             e7_f32_to_milli(light_row.position[0]),
             e7_f32_to_milli(light_row.position[1]),
             e7_f32_to_milli(light_row.position[2]),
@@ -48,7 +46,7 @@ pub render_scene <- sys (
 
     # Frame submission is e7 policy: configure camera/light, begin the frame,
     # draw one procedural shape per renderable, then end/present it.
-    e7_engine_scene_begin_frame(gpu.scene)
+    gpu.begin_frame()
     for (transform, renderable, bounds, material) in renderables:
         # Physics bodies keep their visual size in BodyBounds; the procedural
         # meshes are unit-sized, so the scale is half-extent based.
@@ -79,8 +77,7 @@ pub render_scene <- sys (
             sz = radius
         # Full XYZ Euler orientation from the physics Transform (roll/pitch/yaw
         # in radians), matching the physics quaternion convention.
-        e7_engine_scene_draw_shape_rot(
-            gpu.scene,
+        gpu.draw_renderable(
             renderable.kind,
             e7_f32_to_milli(transform.translation[0]),
             e7_f32_to_milli(transform.translation[1]),
@@ -101,8 +98,7 @@ pub render_scene <- sys (
     for (mesh_transform, mesh_renderer, mesh_material) in meshes:
         if mesh_renderer.mesh == 0:
             cont
-        e7_engine_scene_draw_custom_rot(
-            gpu.scene,
+        gpu.draw_custom(
             mesh_renderer.mesh,
             e7_f32_to_milli(mesh_transform.translation[0]),
             e7_f32_to_milli(mesh_transform.translation[1]),
@@ -118,6 +114,6 @@ pub render_scene <- sys (
             e7_f32_to_milli(mesh_material.tint[2]),
             mesh_material.texture,
         )
-    e7_engine_scene_end_frame(gpu.scene)
+    gpu.end_frame()
 
-    window.quit_requested = e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
+    window.quit_requested = window.should_close()

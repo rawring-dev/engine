@@ -14,21 +14,18 @@ pub init_window <- sys (
 ):
     window.width = 960
     window.height = 540
-    window.handle = e7_engine_window_create("engine7", window.width, window.height)
-    window.quit_requested = false
+    window.create("engine7")
 
     # Shader loading is e7 policy: read the SPIR-V assets and hand them to the
-    # low-level Vulkan scene constructor.
-    vert_spirv := e7_engine_read_shader("engine/shaders/cube.vert.spv")
-    frag_spirv := e7_engine_read_shader("engine/shaders/cube.frag.spv")
-    gpu.scene = e7_engine_scene_create(window.handle, vert_spirv, frag_spirv)
-    gpu.width = window.width
-    gpu.height = window.height
-    time.start_ms = e7_engine_time_now_ms()
+    # low-level Vulkan scene constructor through the Gpu wrappers.
+    vert_spirv := gpu.read_shader("engine/shaders/cube.vert.spv")
+    frag_spirv := gpu.read_shader("engine/shaders/cube.frag.spv")
+    gpu.create_scene(window, vert_spirv, frag_spirv)
+    time.start()
 
 
 @trigger(DeInit)
 pub shutdown <- sys (window: res &mut Window, gpu: res &mut Gpu):
-    e7_engine_scene_destroy(gpu.scene)
-    e7_engine_window_destroy(window.handle)
+    gpu.destroy_scene()
+    window.destroy()
 

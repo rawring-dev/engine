@@ -23,6 +23,17 @@ pub Assets <- struct
     cube_texture: u64
     cube_mesh_id: u64
 
+# Inherent Image methods: texture upload delegates to the Gpu wrapper; freeing
+# the CPU image keeps the raw image ABI here.
+impl Image:
+    pub upload_texture <- (image: Image, gpu: &mut Gpu) -> u64:
+        ret gpu.upload_texture(image.handle)
+
+    pub free <- (image: Image) -> nil:
+        e7_image_free(image.handle)
+        ret
+
+
 # Load an image into an e7 `Image`.  Missing/undecodable files produce a
 # zeroed Image (handle 0) instead of failing the plugin.
 pub load_image <- (path: str) -> Image:
@@ -42,8 +53,7 @@ pub load_image <- (path: str) -> Image:
     }
 
 pub free_image <- (image: Image) -> nil:
-    e7_image_free(image.handle)
-    ret
+    image.free()
 
 # Load the engine's sample assets.  The renderer keeps its built-in cube; this
 # proves the image/OBJ pipeline end-to-end and gives later rendering work a
@@ -72,14 +82,9 @@ pub upload_assets <- sys (
     if gpu.scene == 0:
         ret
     if assets.cube_texture == 0 and assets.cube_image.handle != 0:
-        assets.cube_texture = e7_engine_scene_texture_create(gpu.scene, assets.cube_image.handle)
+        assets.cube_texture = assets.cube_image.upload_texture(gpu)
     if assets.cube_mesh_id == 0 and assets.cube_mesh.indices.len() > 0:
-        assets.cube_mesh_id = e7_engine_scene_mesh_upload(
-            gpu.scene,
-            assets.cube_mesh.vertices,
-            assets.cube_mesh.indices,
-            0,
-        )
+        assets.cube_mesh_id = assets.cube_mesh.upload(gpu)
     if assets.cube_texture != 0:
         for (material, pickup) in textured:
             material.texture = assets.cube_texture

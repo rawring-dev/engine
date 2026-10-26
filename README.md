@@ -497,6 +497,11 @@ Pickup, hold, and camera follow share that step. The demo starts with a static
 plane, a rotation-locked capsule player, a dynamic ball, and three stacked
 cubes.
 
+Engine intrinsics are wrapped in e7 inherent methods (`window.pump()`,
+`gpu.begin_frame()`, `gpu.draw_renderable(...)`, `image.upload_texture(gpu)`,
+`mesh.upload(gpu)`); raw `e7_engine_*`/`e7_image_*` calls live only inside those
+wrapper implementations.
+
 Rendering selects per-object geometry through
 `e7_engine_scene_draw_shape_tex` (box/sphere/capsule/plane) with RGB tint and
 GPU texture; sphere/capsule/plane are real procedural meshes rather than box
@@ -558,7 +563,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 346 tests: scheduler 8, compiler 204, runtime 111,
+`zig build test` runs 349 tests: scheduler 8, compiler 206, runtime 112,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

@@ -1503,8 +1503,14 @@ test "compiles the engine OBJ and asset libraries from sources" {
     defer std.testing.allocator.free(ecs_source);
     const gfx_source = readRepoText("engine/gfx.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(gfx_source);
+    const window_source = readRepoText("engine/window.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(window_source);
+    const events_source = readRepoText("engine/events.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(events_source);
 
     const root_source =
+        \\mod events
+        \\mod window
         \\mod ecs
         \\mod gfx
         \\mod obj
@@ -1519,6 +1525,8 @@ test "compiles the engine OBJ and asset libraries from sources" {
         std.testing.allocator,
         root_source,
         &.{
+            .{ .name = "events", .source = events_source },
+            .{ .name = "window", .source = window_source },
             .{ .name = "ecs", .source = ecs_source },
             .{ .name = "gfx", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
@@ -1632,4 +1640,56 @@ test "lowers ECS component removal, re-add, and despawn commands" {
         };
         try std.testing.expect(found);
     }
+}
+
+test "lowers inherent method calls with the receiver as the first argument" {
+    var result = try compile(
+        std.testing.allocator,
+        \\R <- struct
+        \\    n: i32
+        \\impl R:
+        \\    bump <- (r: &mut R) -> nil:
+        \\        r.n = r.n + 1
+        \\        ret
+        \\    bump_by <- (r: &mut R, by: i32) -> i32:
+        \\        r.n = r.n + by
+        \\        ret r.n
+        \\run <- () -> i32:
+        \\    r := R { n: 1 }
+        \\    r.bump()
+        \\    r.bump_by(4)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const bump = result.functionNamed("impl.R.bump").?;
+    try std.testing.expectEqual(@as(u16, 1), bump.params); // receiver only
+    const bump_by = result.functionNamed("impl.R.bump_by").?;
+    try std.testing.expectEqual(@as(u16, 2), bump_by.params);
+    const run = result.functionNamed("run").?;
+    var bump_index: u16 = 0;
+    var bump_by_index: u16 = 0;
+    for (result.bytecode.functions, 0..) |function, index| {
+        if (std.mem.eql(u8, function.name, "impl.R.bump")) bump_index = @intCast(index);
+        if (std.mem.eql(u8, function.name, "impl.R.bump_by")) bump_by_index = @intCast(index);
+    }
+    var saw_bump = false;
+    var saw_bump_by = false;
+    for (run.code) |op| switch (op) {
+        .call => |call| {
+            if (call.function == bump_index) {
+                saw_bump = true;
+                try std.testing.expectEqual(@as(u16, 1), call.argc);
+            }
+            if (call.function == bump_by_index) {
+                saw_bump_by = true;
+                try std.testing.expectEqual(@as(u16, 2), call.argc);
+            }
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_bump and saw_bump_by);
 }

@@ -1,5 +1,7 @@
 # GPU resources, materials, and shader/pipeline descriptions.
 
+use window::*;
+
 # Per-object material: a GPU texture id (0 = built-in white texture) and an
 # RGB tint.  The scene renderer samples `texture` with the mesh UVs and
 # multiplies its own vertex colour and `tint`.
@@ -20,6 +22,122 @@ pub Gpu <- struct
     cube_pipeline: u64
     cube_vertex_shader: u64
     cube_fragment_shader: u64
+
+
+# Inherent Gpu methods: the raw e7_engine_scene_* / e7_engine_read_shader
+# intrinsics are confined here; game code calls methods such as
+# `gpu.set_camera(...)`, `gpu.begin_frame()`, `gpu.draw_renderable(...)`.
+impl Gpu:
+    pub read_shader <- (gpu: &Gpu, path: str) -> str:
+        ret e7_engine_read_shader(path)
+
+    pub create_scene <- (gpu: &mut Gpu, window: &Window, vert: str, frag: str) -> nil:
+        gpu.scene = e7_engine_scene_create(window.handle, vert, frag)
+        gpu.width = window.width
+        gpu.height = window.height
+        ret
+
+    pub destroy_scene <- (gpu: &mut Gpu) -> nil:
+        e7_engine_scene_destroy(gpu.scene)
+        gpu.scene = 0
+        ret
+
+    # Integer-scaled ABI: camera yaw/pitch in milli-degrees, eye milli-units.
+    pub set_camera <- (
+        gpu: &Gpu,
+        eye_x: i64,
+        eye_y: i64,
+        eye_z: i64,
+        yaw: i64,
+        pitch: i64,
+    ) -> nil:
+        e7_engine_scene_set_camera(gpu.scene, eye_x, eye_y, eye_z, yaw, pitch)
+        ret
+
+    pub set_light <- (
+        gpu: &Gpu,
+        x: i64,
+        y: i64,
+        z: i64,
+        r: i64,
+        g: i64,
+        b: i64,
+        intensity: i64,
+    ) -> nil:
+        e7_engine_scene_set_light(gpu.scene, x, y, z, r, g, b, intensity)
+        ret
+
+    pub begin_frame <- (gpu: &Gpu) -> nil:
+        e7_engine_scene_begin_frame(gpu.scene)
+        ret
+
+    pub end_frame <- (gpu: &Gpu) -> nil:
+        e7_engine_scene_end_frame(gpu.scene)
+        ret
+
+    # Procedural renderable: kind (0 box, 1 sphere, 2 capsule, 3 plane),
+    # position/scale milli-units, XYZ Euler rotation milli-radians, RGB tint
+    # milli, texture id.
+    pub draw_renderable <- (
+        gpu: &Gpu,
+        kind: i32,
+        px: i64,
+        py: i64,
+        pz: i64,
+        sx: i64,
+        sy: i64,
+        sz: i64,
+        rx: i64,
+        ry: i64,
+        rz: i64,
+        tr: i64,
+        tg: i64,
+        tb: i64,
+        texture: u64,
+    ) -> nil:
+        e7_engine_scene_draw_shape_rot(
+            gpu.scene, kind, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb, texture,
+        )
+        ret
+
+    # Uploaded custom mesh draw (same transform/material layout as above).
+    pub draw_custom <- (
+        gpu: &Gpu,
+        mesh: u64,
+        px: i64,
+        py: i64,
+        pz: i64,
+        sx: i64,
+        sy: i64,
+        sz: i64,
+        rx: i64,
+        ry: i64,
+        rz: i64,
+        tr: i64,
+        tg: i64,
+        tb: i64,
+        texture: u64,
+    ) -> nil:
+        e7_engine_scene_draw_custom_rot(
+            gpu.scene, mesh, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb, texture,
+        )
+        ret
+
+    pub upload_texture <- (gpu: &mut Gpu, image_handle: u64) -> u64:
+        ret e7_engine_scene_texture_create(gpu.scene, image_handle)
+
+    pub upload_mesh <- (
+        gpu: &mut Gpu,
+        vertices: [f32],
+        indices: [i32],
+        layout: i32,
+    ) -> u64:
+        ret e7_engine_scene_mesh_upload(gpu.scene, vertices, indices, layout)
+
+
+# Asset text reader wrapper (OBJ/shader text).  Raw intrinsic stays here.
+pub read_asset <- (path: str) -> str:
+    ret e7_engine_read_shader(path)
 
 
 pub GfxPlugin <- plugin

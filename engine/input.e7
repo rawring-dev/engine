@@ -24,6 +24,19 @@ pub Input <- struct
     interact_was_down: bool
 
 
+# Raw key/mouse queries as Input methods.  Input policy (actions, edge
+# detection, clamps) stays in `gather_input`.
+impl Input:
+    pub key_down <- (input: &Input, code: i64) -> bool:
+        ret e7_engine_key_down(code) != 0
+
+    pub mouse_dx <- (input: &Input) -> f32:
+        ret e7_f32_from_i64(e7_engine_mouse_dx())
+
+    pub mouse_dy <- (input: &Input) -> f32:
+        ret e7_f32_from_i64(e7_engine_mouse_dy())
+
+
 pub InputPlugin <- plugin
     input_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(Input {
@@ -53,22 +66,22 @@ pub gather_input <- sys (input: res &mut Input):
     # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up/interact), 5 Q (down),
     # 6 Shift, 7-10 arrow look, 11 Space (jump).  Jump/interact are
     # edge-triggered so holding a key does not repeat the action every frame.
-    input.move_forward = e7_engine_key_down(0) != 0
-    input.move_backward = e7_engine_key_down(1) != 0
-    input.move_left = e7_engine_key_down(2) != 0
-    input.move_right = e7_engine_key_down(3) != 0
-    input.move_up = e7_engine_key_down(4) != 0
-    input.move_down = e7_engine_key_down(5) != 0
-    input.sprint = e7_engine_key_down(6) != 0
-    input.look_left = e7_engine_key_down(7) != 0
-    input.look_right = e7_engine_key_down(8) != 0
-    input.look_up = e7_engine_key_down(9) != 0
-    input.look_down = e7_engine_key_down(10) != 0
+    input.move_forward = input.key_down(0)
+    input.move_backward = input.key_down(1)
+    input.move_left = input.key_down(2)
+    input.move_right = input.key_down(3)
+    input.move_up = input.key_down(4)
+    input.move_down = input.key_down(5)
+    input.sprint = input.key_down(6)
+    input.look_left = input.key_down(7)
+    input.look_right = input.key_down(8)
+    input.look_up = input.key_down(9)
+    input.look_down = input.key_down(10)
 
-    input.look_dx = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dx()), -600.0, 600.0)
-    input.look_dy = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dy()), -600.0, 600.0)
+    input.look_dx = e7_f32_clamp(input.mouse_dx(), -600.0, 600.0)
+    input.look_dy = e7_f32_clamp(input.mouse_dy(), -600.0, 600.0)
 
-    jump_down := e7_engine_key_down(11) != 0
+    jump_down := input.key_down(11)
     interact_down := input.move_up
     input.jump_pressed = jump_down and not input.jump_was_down
     input.jump_down = jump_down
