@@ -4,15 +4,6 @@ use gfx::*;
 use time::*;
 
 @trigger(Update)
-pub spin_cube <- sys (
-    transforms: select &mut Transform, &CubeMesh from Components,
-    time: res &Time,
-):
-    for (transform, cube) in transforms:
-        transform.rotation[1] = time.elapsed * 0.9 + cube.spin_phase
-
-
-@trigger(Update)
 pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
     angle := time.elapsed * 0.7 + 0.8
     for light in lights:

@@ -13,7 +13,7 @@ engine/
 ├── window.e7      Window resource + event pump system
 ├── input.e7       Input resource + gather_input/reset_input systems
 ├── camera.e7      Camera movement/look system
-├── scene.e7       cube spin, light animation, render submission
+├── scene.e7       light animation, render submission (rotation is physics-driven)
 ├── physics.e7     physics plugin + fixed-step integration/pickup/camera follow
 ├── physics_broadphase.e7  spatial grid and aggregated region/ray queries
 ├── physics_narrowphase.e7 box/sphere/capsule/plane tests and resolution
@@ -80,7 +80,8 @@ engine/
   provides the per-object GPU texture and RGB tint (texture * tint * vertex
   colour); the ball and stacked cubes receive the sample PNG through their
   Material. Object count is dynamic (no fixed 64-object cap).  The player capsule is deliberately not renderable in the
-  first-person demo.  `CubeMesh` carries a per-cube spin phase.
+  first-person demo.  Rotation comes from the physics step; there is no forced
+  animation spin, so boxes tumble from gravity, contacts, and angular impulses.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:
   `e7_engine_scene_texture_create` for the image and
@@ -114,7 +115,7 @@ state (`set_camera`/`set_cube_angle`/`set_light`/`begin_frame`/`draw_mesh`/
 `draw_box`/`draw_shape`/`draw_shape_tex`/`draw_custom`/`texture_create`/
 `texture_destroy`/`mesh_upload`/`end_frame`), time, raw key/mouse queries, a raw asset
 read, and the host frame limiter/capture. Engine policy — shader asset selection/loading, input
-mapping, camera look/movement, time updates, cube spin, light animation, frame
+mapping, camera look/movement, time updates, physics rotation, light animation, frame
 phases, ECS queries, plugins and Commands — lives in `main.e7`.
 
 In particular, `init_window` reads the compiled Slang SPIR-V through

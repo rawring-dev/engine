@@ -507,7 +507,7 @@ append-only rows.
 
 Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
-cube spin, light animation, ECS queries, and render submission all live in the
+rigid-body rotation, light animation, ECS queries, and render submission all live in the
 `engine/*.e7` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
 window/scene/time/raw input/asset-read/frame-state/frame-limit and capture
 facilities; `e7_engine_scene_draw` has been replaced by separate

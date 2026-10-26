@@ -354,6 +354,54 @@ pub physics_step <- sys (
                         body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + inv_i.x * torque_x * impulse, -10.0, 10.0)
                         body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + inv_i.y * torque_y * impulse, -10.0, 10.0)
                         body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + inv_i.z * torque_z * impulse, -10.0, 10.0)
+                # Gravity torque about the support corner.  A box resting on a
+                # flat face has its centre of mass over the support and stays
+                # put; once tilted, the lowest corner is offset from the COM, so
+                # gravity produces a real tipping torque.  This is what lets a
+                # stack collapse and boxes tumble from gravity instead of only
+                # from initial spin.
+                if not body.rotation_locked and flags.shape == 0 and body.inv_mass > 0.0:
+                    ax := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+                    ay := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+                    az := quat_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+                    dot_x := ax.x * normal.x + ax.y * normal.y + ax.z * normal.z
+                    dot_y := ay.x * normal.x + ay.y * normal.y + ay.z * normal.z
+                    dot_z := az.x * normal.x + az.y * normal.y + az.z * normal.z
+                    sign_x := 0.0
+                    if dot_x > 0.0001:
+                        sign_x = -1.0
+                    elif dot_x < -0.0001:
+                        sign_x = 1.0
+                    sign_y := 0.0
+                    if dot_y > 0.0001:
+                        sign_y = -1.0
+                    elif dot_y < -0.0001:
+                        sign_y = 1.0
+                    sign_z := 0.0
+                    if dot_z > 0.0001:
+                        sign_z = -1.0
+                    elif dot_z < -0.0001:
+                        sign_z = 1.0
+                    ox := ax.x * half.x * sign_x + ay.x * half.y * sign_y + az.x * half.z * sign_z
+                    oy := ax.y * half.x * sign_x + ay.y * half.y * sign_y + az.y * half.z * sign_z
+                    oz := ax.z * half.x * sign_x + ay.z * half.y * sign_y + az.z * half.z * sign_z
+                    force := world.gravity_y * body.gravity_scale / body.inv_mass
+                    fx := normal.x * force
+                    fy := normal.y * force
+                    fz := normal.z * force
+                    torque_x := oy * fz - oz * fy
+                    torque_y := oz * fx - ox * fz
+                    torque_z := ox * fy - oy * fx
+                    gravity_inv_i := inverse_inertia_diagonal(
+                        flags.shape,
+                        Vec3 { x: half.x, y: half.y, z: half.z },
+                        flags.radius,
+                        flags.half_height,
+                        body.inv_mass,
+                    )
+                    body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + gravity_inv_i.x * torque_x * dt, -10.0, 10.0)
+                    body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + gravity_inv_i.y * torque_y * dt, -10.0, 10.0)
+                    body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + gravity_inv_i.z * torque_z * dt, -10.0, 10.0)
                 if not body.rotation_locked:
                     body.velocity[0] = body.velocity[0] * 0.985
                     body.velocity[2] = body.velocity[2] * 0.985
