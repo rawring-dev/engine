@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
     if (options.frames == 0 and options.capture_path != null) options.frames = 2;
     if (options.frames > 0) options.headless = true;
     if (!options.headless) {
-        std.debug.print("run-engine: first-person (WASD/QE move, mouse look, Shift sprint), Esc/window close exits\n", .{});
+        std.debug.print("run-engine: first-person (WASD move, mouse look, Space jump, E interact); Esc frees the mouse, window close exits\n", .{});
     }
 
     const allocator = std.heap.c_allocator;

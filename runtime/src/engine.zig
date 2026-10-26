@@ -273,7 +273,12 @@ fn pumpEventsLocked(window_handle: i64) void {
                 if (event.key.windowID != window.id) continue;
                 const pressed = event.key.down;
                 if (event.key.key == c.SDLK_ESCAPE) {
-                    if (pressed) state.quit_requested = true;
+                    // Escape releases the pointer instead of quitting so the
+                    // cursor can be used with the UI.  Window close still exits.
+                    if (pressed) {
+                        _ = c.SDL_SetWindowRelativeMouseMode(window.handle, false);
+                        _ = c.SDL_ShowCursor();
+                    }
                     continue;
                 }
                 if (mapSdlKey(event.key.key)) |key| setKeyLocked(key, pressed);
