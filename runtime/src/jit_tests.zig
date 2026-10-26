@@ -1120,7 +1120,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
-test "e7 SDL+Vulkan platform creates render targets and captures a frame" {
+test "e7 SDL+Vulkan platform draws a triangle and captures it" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
 
     const io = std.testing.io;
@@ -1206,8 +1206,22 @@ test "e7 SDL+Vulkan platform creates render targets and captures a frame" {
         \\                if vert_handle != 0:
         \\                    if frag_handle != 0:
         \\                        pipeline_ok = vulkan_graphics_pipeline(device, render_pass_handle, vert_handle, frag_handle, pipeline_out, layout_out)
+        \\                pipeline_handle := e7_load_u64(pipeline_out)
+        \\                layout_handle := e7_load_u64(layout_out)
+        \\                drew := 0
+        \\                green := 0
         \\                if pipeline_ok != 0:
-        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(pipeline_out), e7_load_u64(layout_out))
+        \\                    draw_pixels_out := e7_alloc_bytes(8)
+        \\                    draw_size_out := e7_alloc_bytes(8)
+        \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, draw_pixels_out, draw_size_out)
+        \\                    draw_pixels := e7_load_u64(draw_pixels_out)
+        \\                    center_offset := ((height / 2) * width + width / 2) * 4
+        \\                    center := e7_load_u32((draw_pixels as u64) + (center_offset as u64))
+        \\                    green = (center / 256) % 256
+        \\                    e7_free_ptr(draw_pixels)
+        \\                    e7_free_ptr(draw_pixels_out)
+        \\                    e7_free_ptr(draw_size_out)
+        \\                    vulkan_graphics_pipeline_destroy(device, pipeline_handle, layout_handle)
         \\                e7_free_ptr(pipeline_out)
         \\                e7_free_ptr(layout_out)
         \\                e7_free_ptr(vert_handle)
@@ -1216,6 +1230,12 @@ test "e7 SDL+Vulkan platform creates render targets and captures a frame" {
         \\                    vulkan_render_targets_destroy(device, render_pass_handle, views_handle, framebuffers_handle, image_count)
         \\                if pipeline_ok == 0:
         \\                    result = -14
+        \\                else:
+        \\                    if drew == 0:
+        \\                        result = -15
+        \\                    else:
+        \\                        if green != 255:
+        \\                            result = -16
         \\                e7_free_ptr(rp_targets)
         \\                e7_free_ptr(view_targets)
         \\                e7_free_ptr(fb_targets)

@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [47]Symbol {
+pub fn symbols() [48]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -614,6 +614,7 @@ pub fn symbols() [47]Symbol {
         .{ .name = "e7_cstr", .address = @intFromPtr(&e7_cstr) },
         .{ .name = "e7_memcpy", .address = @intFromPtr(&abi.e7_memcpy) },
         .{ .name = "e7_handle", .address = @intFromPtr(&e7_handle) },
+        .{ .name = "e7_store_f32", .address = @intFromPtr(&e7_store_f32) },
         .{ .name = "e7_alloc_bytes", .address = @intFromPtr(&e7_alloc_bytes) },
         .{ .name = "e7_free_ptr", .address = @intFromPtr(&e7_free_ptr) },
         .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
@@ -850,4 +851,12 @@ pub export fn e7_cstr(str: i64) callconv(.c) i64 {
 /// raw 64-bit FFI slot or to inspect a handle for zero.
 pub export fn e7_handle(value: i64) callconv(.c) i64 {
     return value;
+}
+
+/// Store an e7 float (f64 representation) into a 32-bit float field.
+pub export fn e7_store_f32(ptr: i64, value: i64) callconv(.c) void {
+    if (ptr == 0) return;
+    const double: f64 = @bitCast(value);
+    const single: f32 = @floatCast(double);
+    @as(*align(1) f32, @ptrFromInt(@as(usize, @intCast(ptr)))).* = single;
 }

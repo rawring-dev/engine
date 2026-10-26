@@ -69,8 +69,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `engine/platform/shaders/triangle.{vert,frag}.spv` and the `e7_handle`
   intrinsic for passing typed string handles through raw FFI slots.  Verified
   with lavapipe.
-- Remaining: draw calls, e7 intrinsic wrappers, image/text, and deletion of the
-  Zig layer.
+- **3c (done):** `vulkan_draw_triangle_capture` begins the render pass, binds
+  the pipeline, sets dynamic viewport/scissor, issues `vkCmdDraw(3)`, copies the
+  rendered image back, and verifies the center pixel is the shader's green.
+  Added `e7_store_f32` for viewport/scissor state.  Verified with lavapipe:
+  the e7-built pipeline rasterizes the triangle, not just clears the frame.
+- Remaining: e7 intrinsic wrappers, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 

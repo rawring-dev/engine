@@ -359,6 +359,7 @@ pub const functions = [_]Function{
     .{ .name = "e7_cstr", .params = &.{.str_}, .result = .u64_ },
     .{ .name = "e7_memcpy", .params = &.{ .any_, .any_, .any_ }, .result = .unit },
     .{ .name = "e7_handle", .params = &.{.any_}, .result = .u64_ },
+    .{ .name = "e7_store_f32", .params = &.{ .any_, .float_ }, .result = .unit },
     .{ .name = "e7_str_len", .params = &.{.any_}, .result = .i64_ },
     .{ .name = "e7_str_new", .params = &.{ .u64_, .i64_ }, .result = .str_ },
     .{ .name = "e7_alloc_bytes", .params = &.{.i64_}, .result = .u64_ },
