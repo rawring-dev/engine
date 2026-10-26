@@ -1554,7 +1554,11 @@ test "checks compiler-known engine intrinsics" {
         \\alive <- (window: u64) -> i64 = e7_engine_window_should_close(window)
         \\shutdown <- (window: u64) -> i64 = e7_engine_window_destroy(window)
         \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
-        \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000, 2600, 3000, 2600)
+        \\angle <- (scene: u64) -> i64 = e7_engine_scene_set_cube_angle(scene, 1000)
+        \\light <- (scene: u64) -> i64 = e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\begin <- (scene: u64) -> i64 = e7_engine_scene_begin_frame(scene)
+        \\mesh <- (scene: u64) -> i64 = e7_engine_scene_draw_mesh(scene)
+        \\end_frame <- (scene: u64) -> i64 = e7_engine_scene_end_frame(scene)
         \\limit <- () -> i64 = e7_engine_should_close()
         \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
         \\mouse <- () -> i64 = e7_engine_mouse_dx()
@@ -1567,8 +1571,8 @@ test "checks compiler-known engine intrinsics" {
         \\create <- () -> u64 = e7_engine_window_create(1, 960, 540)
     , "type mismatch");
     try expectDiagnostic(
-        \\draw <- (scene: u64) -> i64 = e7_engine_scene_draw(scene, 16, 1000)
-    , "expects 6 argument");
+        \\angle <- (scene: u64) -> i64 = e7_engine_scene_set_cube_angle(scene)
+    , "expects 2 argument");
 }
 
 test "checks query projection iteration patterns" {

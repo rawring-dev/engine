@@ -543,23 +543,56 @@ pub export fn e7_engine_scene_set_camera(
     return 0;
 }
 
-pub export fn e7_engine_scene_draw(
+pub export fn e7_engine_scene_set_cube_angle(handle: i64, angle_milli_radians: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    scene.spin = milli(angle_milli_radians);
+    return 0;
+}
+
+pub export fn e7_engine_scene_set_light(
     handle: i64,
-    delta_milliseconds: i64,
-    cube_angle_milli_radians: i64,
-    light_x_milli: i64,
-    light_y_milli: i64,
-    light_z_milli: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+    intensity_milli: i64,
 ) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
     const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
-    scene.draw(
-        milli(delta_milliseconds),
-        milli(cube_angle_milli_radians),
-        .{ milli(light_x_milli), milli(light_y_milli), milli(light_z_milli) },
-    ) catch return -1;
+    scene.setLight(
+        .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .{ milli(r_milli), milli(g_milli), milli(b_milli), milli(intensity_milli) },
+    );
+    return 0;
+}
+
+pub export fn e7_engine_scene_begin_frame(handle: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    scene.beginFrame() catch return -1;
     state.scene_draws += 1;
+    return 0;
+}
+
+pub export fn e7_engine_scene_draw_mesh(handle: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    scene.drawMesh();
+    return 0;
+}
+
+pub export fn e7_engine_scene_end_frame(handle: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    scene.endFrame() catch return -1;
     return 0;
 }
 
@@ -578,7 +611,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [15]Symbol {
+pub fn symbols() [19]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -590,7 +623,11 @@ pub fn symbols() [15]Symbol {
         .{ .name = "e7_engine_scene_destroy", .address = @intFromPtr(&e7_engine_scene_destroy) },
         .{ .name = "e7_engine_scene_resize", .address = @intFromPtr(&e7_engine_scene_resize) },
         .{ .name = "e7_engine_scene_set_camera", .address = @intFromPtr(&e7_engine_scene_set_camera) },
-        .{ .name = "e7_engine_scene_draw", .address = @intFromPtr(&e7_engine_scene_draw) },
+        .{ .name = "e7_engine_scene_set_cube_angle", .address = @intFromPtr(&e7_engine_scene_set_cube_angle) },
+        .{ .name = "e7_engine_scene_set_light", .address = @intFromPtr(&e7_engine_scene_set_light) },
+        .{ .name = "e7_engine_scene_begin_frame", .address = @intFromPtr(&e7_engine_scene_begin_frame) },
+        .{ .name = "e7_engine_scene_draw_mesh", .address = @intFromPtr(&e7_engine_scene_draw_mesh) },
+        .{ .name = "e7_engine_scene_end_frame", .address = @intFromPtr(&e7_engine_scene_end_frame) },
         .{ .name = "e7_engine_should_close", .address = @intFromPtr(&e7_engine_should_close) },
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
         .{ .name = "e7_engine_mouse_dx", .address = @intFromPtr(&e7_engine_mouse_dx) },
@@ -633,7 +670,11 @@ test "engine frame limiter captures a headless frame" {
 
     var frame: i64 = 0;
     while (frame < 2) : (frame += 1) {
-        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw(scene, 16, frame * 1000, 2600, 3000, 2600));
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_cube_angle(scene, frame * 1000));
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000));
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_begin_frame(scene));
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_mesh(scene));
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));
         _ = e7_engine_should_close();
     }
     var capture = takeCapture() orelse return error.TestUnexpectedResult;

@@ -1,0 +1,9 @@
+# Frame lifecycle trigger phases.
+pub Init <- trigger
+pub DeInit <- trigger
+
+pub FrameInit <- trigger
+pub PreUpdate <- trigger
+pub Update <- trigger
+pub PostUpdate <- trigger
+pub Render <- trigger

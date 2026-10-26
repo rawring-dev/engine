@@ -1,0 +1,70 @@
+use ecs::*;
+use events::*;
+use gfx::*;
+use time::*;
+use window::*;
+
+@trigger(Init)
+pub init_window <- sys (
+    window: res &mut Window,
+    gpu: res &mut Gpu,
+    time: res &mut Time,
+
+    commands: &mut Commands,
+):
+    window.width = 960
+    window.height = 540
+    window.handle = e7_engine_window_create("engine7", window.width, window.height)
+    window.quit_requested = false
+
+    # Shader loading is e7 policy: read the SPIR-V assets and hand them to the
+    # low-level Vulkan scene constructor.
+    vert_spirv := e7_engine_read_shader("engine/shaders/cube.vert.spv")
+    frag_spirv := e7_engine_read_shader("engine/shaders/cube.frag.spv")
+    gpu.scene = e7_engine_scene_create(window.handle, vert_spirv, frag_spirv)
+    gpu.width = window.width
+    gpu.height = window.height
+    time.start_ms = e7_engine_time_now_ms()
+
+    camera_transform := Transform {
+        translation: [0.0, 1.5, 6.0],
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    }
+    camera := Camera {
+        position: [0.0, 1.8, 5.5]
+        yaw: 0.0
+        pitch: -0.14
+        fov_y: 1.0471975512
+        near: 0.1
+        far: 100.0
+    }
+    controller := CameraController {
+        move_speed: 4.0,
+        look_speed: 0.0025,
+    }
+    commands.add_row(Components, { camera_transform, camera, controller })
+
+    cube_transform := Transform {
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 0.0],
+        scale: [1.0, 1.0, 1.0],
+    }
+    cube_mesh := CubeMesh
+
+    commands.add_row(Components, { cube_transform, cube_mesh })
+
+
+    light := PointLight {
+        position: [2.0, 3.0, 4.0],
+        colour: [1.0, 0.9, 0.8],
+        intensity: 12.0,
+    }
+    commands.add_row(Components, { light })
+
+
+@trigger(DeInit)
+pub shutdown <- sys (window: res &mut Window, gpu: res &mut Gpu):
+    e7_engine_scene_destroy(gpu.scene)
+    e7_engine_window_destroy(window.handle)
+

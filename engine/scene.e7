@@ -1,0 +1,75 @@
+use ecs::*;
+use events::*;
+use gfx::*;
+use time::*;
+
+@trigger(Update)
+pub spin_cube <- sys (
+    transforms: select &mut Transform from Components where has CubeMesh,
+    time: res &Time,
+):
+    for transform in transforms:
+        transform.rotation[1] = time.elapsed * 0.9
+
+
+@trigger(Update)
+pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
+    angle := time.elapsed * 0.7 + 0.8
+    for light in lights:
+        light.position[0] = 2.8 * e7_f32_cos(angle)
+        light.position[1] = 3.0
+        light.position[2] = 2.8 * e7_f32_sin(angle)
+
+
+@trigger(Render)
+pub render_scene <- sys (
+    gpu: res &mut Gpu,
+    window: res &mut Window,
+    time: res &Time,
+    cubes: select &CubeMesh, &Transform from Components,
+    lights: select &PointLight from Components,
+    cameras: select &Camera from Components,
+):
+    cube_angle := 0.0
+    light_x := 0.0
+    light_y := 0.0
+    light_z := 0.0
+
+    for camera in cameras:
+        yaw_degrees := camera.yaw * 57.2957795
+        pitch_degrees := camera.pitch * 57.2957795
+        e7_engine_scene_set_camera(
+            gpu.scene,
+            e7_f32_to_milli(camera.position[0]),
+            e7_f32_to_milli(camera.position[1]),
+            e7_f32_to_milli(camera.position[2]),
+            e7_f32_to_milli(yaw_degrees),
+            e7_f32_to_milli(pitch_degrees),
+        )
+
+    for (cube, cube_transform) in cubes:
+        cube_angle = cube_transform.rotation[1]
+    for light_row in lights:
+        light_x = light_row.position[0]
+        light_y = light_row.position[1]
+        light_z = light_row.position[2]
+
+    # Frame submission is e7 policy: configure the frame, begin it, dispatch
+    # the mesh draw, and end/present it through separate intrinsics.
+    e7_engine_scene_set_cube_angle(gpu.scene, e7_f32_to_milli(cube_angle))
+    e7_engine_scene_set_light(
+        gpu.scene,
+        e7_f32_to_milli(light_x),
+        e7_f32_to_milli(light_y),
+        e7_f32_to_milli(light_z),
+        e7_f32_to_milli(1.0),
+        e7_f32_to_milli(0.9),
+        e7_f32_to_milli(0.8),
+        e7_f32_to_milli(4.0),
+    )
+    e7_engine_scene_begin_frame(gpu.scene)
+    e7_engine_scene_draw_mesh(gpu.scene)
+    e7_engine_scene_end_frame(gpu.scene)
+
+    window.quit_requested = e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
+

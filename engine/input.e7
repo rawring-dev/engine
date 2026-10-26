@@ -1,0 +1,54 @@
+use events::*;
+
+@resource
+pub Input <- struct
+    move_forward: bool
+    move_backward: bool
+    move_left: bool
+    move_right: bool
+    move_up: bool
+    move_down: bool
+    sprint: bool
+    look_left: bool
+    look_right: bool
+    look_up: bool
+    look_down: bool
+    look_dx: f32
+    look_dy: f32
+
+
+@trigger(FrameInit)
+pub gather_input <- sys (input: res &mut Input):
+    # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.
+    input.move_forward = e7_engine_key_down(0) != 0
+    input.move_backward = e7_engine_key_down(1) != 0
+    input.move_left = e7_engine_key_down(2) != 0
+    input.move_right = e7_engine_key_down(3) != 0
+    input.move_up = e7_engine_key_down(4) != 0
+    input.move_down = e7_engine_key_down(5) != 0
+    input.sprint = e7_engine_key_down(6) != 0
+    input.look_left = e7_engine_key_down(7) != 0
+    input.look_right = e7_engine_key_down(8) != 0
+    input.look_up = e7_engine_key_down(9) != 0
+    input.look_down = e7_engine_key_down(10) != 0
+
+    input.look_dx = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dx()), -600.0, 600.0)
+    input.look_dy = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dy()), -600.0, 600.0)
+
+
+@trigger(PostUpdate)
+pub reset_input <- sys (input: res &mut Input):
+    input.move_forward = false
+    input.move_backward = false
+    input.move_left = false
+    input.move_right = false
+    input.move_up = false
+    input.move_down = false
+    input.sprint = false
+    input.look_left = false
+    input.look_right = false
+    input.look_up = false
+    input.look_down = false
+    input.look_dx = 0.0
+    input.look_dy = 0.0
+

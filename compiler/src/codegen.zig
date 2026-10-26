@@ -1301,9 +1301,22 @@ const Builder = struct {
         return null;
     }
 
+    fn lastPathSegment(name: []const u8) []const u8 {
+        var index = name.len;
+        while (index > 0) : (index -= 1) {
+            if (name[index - 1] == ':') return name[index..];
+        }
+        return name;
+    }
+
     fn structFields(self: *Builder, name: []const u8) ?[]ast.Field {
         if (self.structs.get(name)) |decl| return decl.fields;
         if (self.tables.get(name)) |decl| return decl.fields;
+        const short = lastPathSegment(name);
+        if (!std.mem.eql(u8, short, name)) {
+            if (self.structs.get(short)) |decl| return decl.fields;
+            if (self.tables.get(short)) |decl| return decl.fields;
+        }
         return null;
     }
 

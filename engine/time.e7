@@ -1,0 +1,18 @@
+use events::*;
+
+@resource
+pub Time <- struct
+    delta: f32
+    elapsed: f32
+    # Integer clocks for the millisecond intrinsic ABI.
+    now_ms: i64
+    start_ms: i64
+
+
+@trigger(PreUpdate)
+pub tick_time <- sys (time: res &mut Time):
+    now := e7_engine_time_now_ms()
+    time.now_ms = now
+    time.elapsed = e7_f32_from_i64(now - time.start_ms) / 1000.0
+    time.delta = 0.016
+

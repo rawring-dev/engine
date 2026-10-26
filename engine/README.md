@@ -5,10 +5,18 @@ the JIT host: `zig build run-engine`.
 
 ```
 engine/
-├── main.e7        resources, components, systems, plugins, frame loop
+├── main.e7        imports modules, runs the frame loop
+├── events.e7      Init/DeInit/FrameInit/PreUpdate/Update/PostUpdate/Render triggers
+├── ecs.e7         @Components types and the Components table
+├── gfx.e7         Gpu/shader/pipeline/mesh resources and deployment API
+├── time.e7        Time resource + tick_time system
+├── window.e7      Window resource + event pump system
+├── input.e7       Input resource + gather_input/reset_input systems
+├── camera.e7      Camera movement/look system
+├── scene.e7       cube spin, light animation, render submission
+├── bootstrap.e7   Init window/scene/shaders and DeInit teardown
 ├── ui.e7          Ui plugin, trait dependencies, UI ECS sample
-├── shaders/       e7s shader sources + generated SPIR-V
-└── scene-preview.png
+└── shaders/       e7s shader sources + generated SPIR-V
 ```
 
 ## Developer-facing model
@@ -46,8 +54,9 @@ engine/
   close/Escape events; `gather_input` reads raw keys and mouse deltas through
   `e7_engine_key_down` / `e7_engine_mouse_dx` / `e7_engine_mouse_dy`; and
   `move_camera` updates the Camera component in a query loop using e7 float
-  arithmetic and `e7_f32_sin/cos/clamp`. `render_scene` reads the Camera row and
-  calls `e7_engine_scene_set_camera`. 
+  arithmetic and `e7_f32_sin/cos/clamp`. `render_scene` reads the Camera row,
+  issues the split frame intrinsics (`set_camera`, `set_cube_angle`,
+  `set_light`, `begin_frame`, `draw_mesh`, `end_frame`). 
 
 ## Running
 
@@ -69,8 +78,9 @@ them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
 ## Runtime boundary
 
 `runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
-window lifecycle/event pumping, scene create/destroy/resize/set_camera/draw,
-time, raw key/mouse queries, a raw asset read, and the host frame
+window lifecycle/event pumping, scene create/destroy/resize, per-frame scene
+state (`set_camera`/`set_cube_angle`/`set_light`/`begin_frame`/`draw_mesh`/
+`end_frame`), time, raw key/mouse queries, a raw asset read, and the host frame
 limiter/capture. Engine policy — shader asset selection/loading, input
 mapping, camera look/movement, time updates, cube spin, light animation, frame
 phases, ECS queries, plugins and Commands — lives in `main.e7`.

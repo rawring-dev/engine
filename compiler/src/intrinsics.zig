@@ -97,10 +97,31 @@ pub const functions = [_]Function{
         .units = scene_camera_units,
     },
     .{
-        .name = "e7_engine_scene_draw",
-        .params = &.{ .u64_, .i64_, .i64_, .i64_, .i64_, .i64_ },
+        .name = "e7_engine_scene_set_cube_angle",
+        .params = &.{ .u64_, .i64_ },
         .result = .i64_,
-        .units = scene_draw_units,
+        .units = "cube angle in milli-radians",
+    },
+    .{
+        .name = "e7_engine_scene_set_light",
+        .params = &.{ .u64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_ },
+        .result = .i64_,
+        .units = "position milli-units; colour/intensity milli",
+    },
+    .{
+        .name = "e7_engine_scene_begin_frame",
+        .params = &.{.u64_},
+        .result = .i64_,
+    },
+    .{
+        .name = "e7_engine_scene_draw_mesh",
+        .params = &.{.u64_},
+        .result = .i64_,
+    },
+    .{
+        .name = "e7_engine_scene_end_frame",
+        .params = &.{.u64_},
+        .result = .i64_,
     },
     .{
         .name = "e7_engine_should_close",

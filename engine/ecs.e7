@@ -1,0 +1,46 @@
+# ECS components and the auto-collected Components table.
+
+@Components
+pub Camera <- struct
+    position: [f32; 3]
+    yaw: f32
+    pitch: f32
+    fov_y: f32
+    near: f32
+    far: f32
+
+@Components
+pub CameraController <- struct
+    move_speed: f32
+    look_speed: f32
+
+@Components
+pub Transform <- struct
+    translation: [f32; 3]
+    rotation: [f32; 3]
+    scale: [f32; 3]
+
+@Components
+pub MeshRenderer <- struct
+    mesh: u64
+    pipeline: u64
+    colour: [f32; 4]
+
+@Components
+pub PointLight <- struct
+    position: [f32; 3]
+    colour: [f32; 3]
+    intensity: f32
+
+@Components
+pub CubeMesh <- struct
+
+pub Components <- table
+    entity_id: usize,
+    ... # automatically collects all types with @Components
+
+
+pub Commands <- struct
+    handle: u64
+
+

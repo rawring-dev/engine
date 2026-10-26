@@ -1,0 +1,62 @@
+use ecs::*;
+use events::*;
+use input::*;
+
+@trigger(Update)
+pub move_camera <- sys (
+    input: res &Input,
+    controllers: select &mut Camera, &mut CameraController from Components,
+):
+    delta := 0.016
+    pitch_limit := 1.5533430343
+    for (camera, controller) in controllers:
+        camera.yaw = camera.yaw + input.look_dx * controller.look_speed
+        camera.pitch = camera.pitch - input.look_dy * controller.look_speed
+        keyboard_look := 1.6 * delta
+        if input.look_left:
+            camera.yaw = camera.yaw - keyboard_look
+        if input.look_right:
+            camera.yaw = camera.yaw + keyboard_look
+        if input.look_up:
+            camera.pitch = camera.pitch + keyboard_look
+        if input.look_down:
+            camera.pitch = camera.pitch - keyboard_look
+        camera.pitch = e7_f32_clamp(camera.pitch, -pitch_limit, pitch_limit)
+
+        sin_yaw := e7_f32_sin(camera.yaw)
+        cos_yaw := e7_f32_cos(camera.yaw)
+        forward_x := sin_yaw
+        forward_z := 0.0 - cos_yaw
+        right_x := cos_yaw
+        right_z := sin_yaw
+
+        dir_x := 0.0
+        dir_y := 0.0
+        dir_z := 0.0
+        if input.move_forward:
+            dir_x = dir_x + forward_x
+            dir_z = dir_z + forward_z
+        if input.move_backward:
+            dir_x = dir_x - forward_x
+            dir_z = dir_z - forward_z
+        if input.move_right:
+            dir_x = dir_x + right_x
+            dir_z = dir_z + right_z
+        if input.move_left:
+            dir_x = dir_x - right_x
+            dir_z = dir_z - right_z
+        if input.move_up:
+            dir_y = dir_y + 1.0
+        if input.move_down:
+            dir_y = dir_y - 1.0
+
+        speed := controller.move_speed * delta
+        if input.sprint:
+            speed = speed * 2.5
+        length := e7_f32_sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z)
+        if length > 0.000001:
+            scale := speed / length
+            camera.position[0] = camera.position[0] + dir_x * scale
+            camera.position[1] = camera.position[1] + dir_y * scale
+            camera.position[2] = camera.position[2] + dir_z * scale
+

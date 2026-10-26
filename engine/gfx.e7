@@ -1,0 +1,105 @@
+# GPU resources and shader/pipeline descriptions.
+
+@resource
+pub Gpu <- struct
+    scene: u64
+    surface: u64
+    renderer: u64
+    swapchain_format: i32
+    width: i32
+    height: i32
+
+    cube_pipeline: u64
+    cube_vertex_shader: u64
+    cube_fragment_shader: u64
+
+
+pub ShaderModule <- struct
+    handle: u64
+    stage: ShaderStage
+
+pub ShaderStage <- enum
+    Vertex
+    Fragment
+
+pub RasterPipeline <- struct
+    handle: u64
+    vertex: ShaderModule
+    fragment: ShaderModule
+    topology: Topology
+
+pub Topology <- enum
+    TriangleList
+
+pub Mesh <- struct
+    handle: u64
+    vertex_count: u64
+    index_count: u64
+
+pub ComputePipeline <- struct
+    handle: u64
+    shader: ShaderModule
+    workgroup_size: [u32; 3]
+
+pub ShaderDeploy <- struct
+    name: str
+    vertex_spirv: [u8]
+    fragment_spirv: [u8]
+
+pub PipelineOptions <- struct
+    depth_test: bool
+    depth_write: bool
+    cull_mode: CullMode
+    topology: Topology
+
+pub CullMode <- enum
+    None
+    Front
+    Back
+
+# Overloaded deployment entry points. The runtime ABI exposes the Vulkan calls;
+# these declarations are the e7-facing resource wrappers. The body is filled
+# once the compiler can lower `res &mut` sys parameter bodies.
+pub gpu_deploy_raster_pipeline <- async (
+    gpu: &mut Gpu,
+    deploy: ShaderDeploy,
+    options: PipelineOptions,
+) -> u64:
+    ret 0
+
+pub gpu_deploy_compute_pipeline <- async (
+    gpu: &mut Gpu,
+    shader: ShaderModule,
+    workgroup_size: [u32; 3],
+) -> u64:
+    ret 0
+
+pub gpu_create_mesh <- async (
+    gpu: &mut Gpu,
+    vertices: [f32],
+    indices: [u32],
+) -> u64:
+    ret 0
+
+pub gpu_set_uniform <- async (
+    gpu: &mut Gpu,
+    name: str,
+    value: [f32; 4],
+) -> !nil:
+    ret
+
+pub gpu_begin_frame <- async (gpu: &mut Gpu) -> !nil:
+    ret
+
+pub gpu_end_frame <- async (gpu: &mut Gpu) -> !nil:
+    ret
+
+pub gpu_draw_mesh <- async (
+    gpu: &mut Gpu,
+    mesh: Mesh,
+    transform: Transform,
+    camera: &Camera,
+    light: &PointLight,
+) -> !nil:
+    ret
+

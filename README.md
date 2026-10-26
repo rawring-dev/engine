@@ -467,16 +467,21 @@ zig build shaders                        # e7s -> Slang -> SPIR-V
 zig build run-scene                      # native renderer demo/fallback
 ```
 
-`run-engine` loads `engine/main.e7` + `engine/ui.e7` as a project, initializes
-the columnar ECS world, JITs the e7 `main`, and runs the `Init`, `FrameInit`,
-`PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit` triggers. SDL
+`run-engine` loads the `engine/` module tree (`main`, `events`, `ecs`, `gfx`,
+`time`, `window`, `input`, `camera`, `scene`, `bootstrap`, `ui`) as a project,
+initializes the columnar ECS world, JITs the e7 `main`, and runs the `Init`,
+`FrameInit`, `PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit`
+triggers. SDL
 window/input and Vulkan scene access are compiler-known intrinsics
 (`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
 [`runtime/src/ecs.zig`](runtime/src/ecs.zig). Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
-cube spin, light animation, ECS queries, and render submission all live in
-`engine/main.e7`. `runtime/src/engine.zig` is limited to SDL/Vulkan
-window/scene/time/raw input/asset-read/frame-limit and capture facilities.
+cube spin, light animation, ECS queries, and render submission all live in the
+`engine/*.e7` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
+window/scene/time/raw input/asset-read/frame-state/frame-limit and capture
+facilities; `e7_engine_scene_draw` has been replaced by separate
+`set_cube_angle`, `set_light`, `begin_frame`, `draw_mesh`, and `end_frame`
+intrinsics dispatched by e7.
 [`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
 depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
 

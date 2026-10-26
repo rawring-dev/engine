@@ -1133,7 +1133,12 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
 
     // Camera component slots: [0] position vector handle, [1] yaw, [2] pitch,
     // then fov/near/far.  Floats are f64 bit patterns in i64 slots.
-    const camera_component = compiled.analysis.component("Camera").?;
+    const camera_component = compiled.analysis.component("Camera") orelse blk: {
+        for (compiled.analysis.components) |component| {
+            if (std.mem.endsWith(u8, component.name, "Camera")) break :blk component;
+        }
+        return error.TestUnexpectedResult;
+    };
     const camera_ptr = ecs.e7_ecs_component_get(0, camera_component.id);
     try std.testing.expect(camera_ptr != 0);
     const loadFloat = struct {

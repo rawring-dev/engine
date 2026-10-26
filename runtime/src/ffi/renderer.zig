@@ -298,6 +298,9 @@ pub const Scene = struct {
     uniform: BufferAllocation = .{},
 
     camera: Camera = .{},
+    /// Pending frame state for the split begin/draw/end ABI used by e7.
+    frame_index: ?u32 = null,
+    frame_cmd: ?c.VkCommandBuffer = null,
     /// Model spin angle supplied by the last draw, retained for capture.
     spin: f32 = 0.0,
     light_position: Vec3 = .{ 2.5, 3.0, 2.0 },
@@ -744,6 +747,31 @@ pub const Scene = struct {
             null,
         );
         c.vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
+    }
+
+    /// Begin a presentable frame: acquire the swapchain image, rebuild the
+    /// pipeline if needed, upload the current uniforms, and open the render
+    /// pass.  e7 calls this before one or more `drawMesh` calls and
+    /// `endFrame`.
+    pub fn beginFrame(self: *Scene) Error!void {
+        if (self.frame_index != null) return error.VulkanFailed;
+        self.frame_index = try self.surface.acquireFrame();
+        try self.ensurePipeline();
+        self.writeUniforms();
+        self.frame_cmd = try self.surface.beginScene(self.clear_color, default_clear_depth);
+    }
+
+    /// Record the cube draw for the frame opened by `beginFrame`.
+    pub fn drawMesh(self: *Scene) void {
+        if (self.frame_cmd) |cmd| self.recordDraw(cmd);
+    }
+
+    /// Close the render pass and present the acquired image.
+    pub fn endFrame(self: *Scene) Error!void {
+        const index = self.frame_index orelse return error.VulkanFailed;
+        self.frame_cmd = null;
+        self.frame_index = null;
+        try self.surface.endScenePresent(index);
     }
 
     /// Render one frame and present it to the window.

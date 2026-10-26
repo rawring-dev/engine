@@ -1,0 +1,14 @@
+use events::*;
+
+@resource
+pub Window <- struct
+    handle: u64
+    width: i32
+    height: i32
+    quit_requested: bool
+
+
+@trigger(FrameInit)
+pub poll_window <- sys (window: res &mut Window):
+    window.quit_requested = e7_engine_window_pump(window.handle) != 0
+

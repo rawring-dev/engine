@@ -1,10 +1,15 @@
+use ecs::*;
+use events::*;
+use gfx::*;
+use input::*;
+
 # ECS/UI surface sample from the engine design notes.
 #
 # `Trait : Parent` is the trait-dependency form: every implementor of
 # UIRenderable must also implement UIElement. Required method signatures live
 # in the trait body; implementations provide the bodies in `impl` blocks.
 
-Ui <- plugin
+pub Ui <- plugin
     init <- sys ( # this is run when commands.add_plugin(Ui) is called
         commands: &mut Commands
     ):
@@ -18,7 +23,7 @@ Ui <- plugin
 
 @plugin(Ui) # the space for this resource is only allocated by the runtime when the Ui plugin has been added
 @resource
-UINode <- struct
+pub UINode <- struct
     pos: [f32; 2],
     scale: [f32; 2],
 
@@ -27,16 +32,16 @@ UINode <- struct
     element: ?*UIElement,
     children: [UINode]
 
-UIElement <- trait
-UIRenderable <- trait : UIElement
+pub UIElement <- trait
+pub UIRenderable <- trait : UIElement
     render <- async (&self, &mut Gpu) -> !nil
 
-UIInteractable <- trait : UIElement
+pub UIInteractable <- trait : UIElement
     interact <- (&mut self, &Input) -> !nil
 
 @plugin(Ui) # system is only run when the Ui plugin is added
 @trigger(PreUpdate)
-ui_interact <- sys (
+pub ui_interact <- sys (
     ui_root: res &mut UINode,
     interactable_entities: select &mut UIInteractable from Components,
 ):
@@ -44,7 +49,7 @@ ui_interact <- sys (
 
 @plugin(Ui)
 @trigger(Render)
-ui_render <- sys (
+pub ui_render <- sys (
     ui_root: res &UINode,
     gpu: res &mut Gpu,
 ):
