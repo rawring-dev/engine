@@ -1545,3 +1545,24 @@ test "compiles the engine OBJ and asset libraries from sources" {
     try std.testing.expect(result.analysis.resource("assets::Assets") != null);
     try std.testing.expect(result.analysis.resource("assets::Image") != null);
 }
+
+test "compiles maps of vectors for spatial cells" {
+    var result = try compile(
+        std.testing.allocator,
+        \\main <- () -> i32:
+        \\    cells := map[i64, [i64]] {}
+        \\    key := 7
+        \\    list := cells[key]
+        \\    list = e7_vec_push(list, 1)
+        \\    list = e7_vec_push(list, 2)
+        \\    cells[key] = list
+        \\    got := cells[key]
+        \\    ret got.len()
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try std.testing.expect(result.functionNamed("main") != null);
+}
+

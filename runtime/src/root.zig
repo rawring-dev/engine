@@ -1615,3 +1615,197 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
     try std.testing.expectEqual(@as(i64, 36), aggregate.e7_vec_len(indices)); // 6 quads -> 12 triangles
     try std.testing.expectEqual(@as(i64, 288), aggregate.e7_vec_len(vertices)); // 36 vertices * 8 floats
 }
+
+test "JIT executes broadphase aggregation and narrowphase helpers" {
+    const broad_source = readRepoTextForTest("engine/physics_broadphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(broad_source);
+    const narrow_source = readRepoTextForTest("engine/physics_narrowphase.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(narrow_source);
+
+    // Minimal shared type surface; the real engine uses physics.e7's copies.
+    const root_source =
+        \\mod physics_broadphase
+        \\mod physics_narrowphase
+        \\Vec3 <- struct
+        \\    x: f32
+        \\    y: f32
+        \\    z: f32
+        \\Ray <- struct
+        \\    origin: Vec3
+        \\    direction: Vec3
+        \\Aabb <- struct
+        \\    min: Vec3
+        \\    max: Vec3
+        \\RayHit <- struct
+        \\    hit: bool
+        \\    distance: f32
+        \\    point: Vec3
+        \\ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit = RayHit { hit: false, distance: 0.0, point: center }
+        \\main <- () -> i32:
+        \\    a := Aabb { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 2.0, y: 2.0, z: 2.0 } }
+        \\    b := Aabb { min: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, max: Vec3 { x: 3.0, y: 3.0, z: 3.0 } }
+        \\    overlapping := aabb_overlap(a, b)
+        \\    push := aabb_penetration(
+        \\        Aabb { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 2.0, y: 2.0, z: 2.0 } },
+        \\        Aabb { min: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, max: Vec3 { x: 3.0, y: 3.0, z: 3.0 } },
+        \\    )
+        \\    plane_hit := plane_aabb_overlap(
+        \\        Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        \\        0.0,
+        \\        Aabb { min: Vec3 { x: -1.0, y: -1.0, z: -1.0 }, max: Vec3 { x: 1.0, y: 1.0, z: 1.0 } },
+        \\    )
+        \\    hit := ray_plane(
+        \\        Ray { origin: Vec3 { x: 0.0, y: 1.0, z: 0.0 }, direction: Vec3 { x: 0.0, y: -1.0, z: 0.0 } },
+        \\        Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        \\        0.0,
+        \\    )
+        \\    cells := map[i64, [i64]] {}
+        \\    key := cell_key(0, 0, 0)
+        \\    cells[key] = e7_vec_push(cells[key], 7)
+        \\    spatial := SpatialMap {
+        \\        cell_size: 2.0,
+        \\        cells: cells,
+        \\        ids: [],
+        \\        bounds: [],
+        \\        count: 1,
+        \\    }
+        \\    found := query_region(
+        \\        &spatial,
+        \\        Vec3 { x: 0.2, y: 0.2, z: 0.2 },
+        \\        Vec3 { x: 0.4, y: 0.4, z: 0.4 },
+        \\    )
+        \\    score := 0
+        \\    if overlapping:
+        \\        score = score + 1
+        \\    if push.x < 0.0:
+        \\        score = score + 10
+        \\    if plane_hit:
+        \\        score = score + 100
+        \\    if hit.hit:
+        \\        score = score + 1000
+        \\    if found.len() == 1:
+        \\        if found[0] == 7:
+        \\            score = score + 10000
+        \\    ret score
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "physics_broadphase", .source = broad_source },
+            .{ .name = "physics_narrowphase", .source = narrow_source },
+        },
+        .{},
+    );
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-broad-narrow");
+    const Main = *const fn () callconv(.c) i64;
+    const main = try jit.get(Main, "main");
+    try std.testing.expectEqual(@as(i64, 11111), main());
+}
+
+test "JIT demo advances broadphase, jump, and pickup state" {
+    const candidates = [_][]const u8{
+        "engine/main.e7",
+        "../engine/main.e7",
+        "../../engine/main.e7",
+    };
+    var root_path: []const u8 = "";
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    for (candidates) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
+        defer std.testing.allocator.free(absolute);
+        if (absolute.len > path_buffer.len) continue;
+        @memcpy(path_buffer[0..absolute.len], absolute);
+        root_path = path_buffer[0..absolute.len];
+        break;
+    }
+    if (root_path.len == 0) return error.SkipZigTest;
+
+    var compiled = try compiler.pipeline.compileProject(std.testing.allocator, root_path, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    engine.reset();
+    defer engine.shutdown();
+    engine.setHeadless(true);
+    engine.setMaxFrames(30);
+    engine.injectKeyForTest(@intFromEnum(engine.Key.jump), true);
+    engine.injectKeyForTest(@intFromEnum(engine.Key.up), true); // E = pickup
+    defer engine.injectKeyForTest(@intFromEnum(engine.Key.jump), false);
+    defer engine.injectKeyForTest(@intFromEnum(engine.Key.up), false);
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "physics-demo");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var transform_id: i64 = -1;
+    var body_id_id: i64 = -1;
+    for (compiled.analysis.components) |component| {
+        if (std.mem.endsWith(u8, component.name, "Transform")) transform_id = component.id;
+        if (std.mem.endsWith(u8, component.name, "BodyId")) body_id_id = component.id;
+    }
+    try std.testing.expect(transform_id >= 0);
+    try std.testing.expect(body_id_id >= 0);
+    var player_transform: i64 = 0;
+    var ball_transform: i64 = 0;
+    var plane_transform: i64 = 0;
+    var entity: i64 = 0;
+    const entity_count = ecs.e7_ecs_entity_count();
+    while (entity < entity_count) : (entity += 1) {
+        const id_ptr = ecs.e7_ecs_component_get(entity, body_id_id);
+        if (id_ptr == 0) continue;
+        const body_id = aggregate.e7_load_i64(id_ptr);
+        if (body_id == 2) player_transform = ecs.e7_ecs_component_get(entity, transform_id);
+        if (body_id == 3) ball_transform = ecs.e7_ecs_component_get(entity, transform_id);
+        if (body_id == 1) plane_transform = ecs.e7_ecs_component_get(entity, transform_id);
+    }
+    try std.testing.expect(player_transform != 0);
+    try std.testing.expect(ball_transform != 0);
+    try std.testing.expect(plane_transform != 0);
+
+    const FloatReader = struct {
+        fn y(transform_ptr: i64) f64 {
+            const translation = aggregate.e7_load_i64(transform_ptr);
+            return @bitCast(aggregate.e7_vec_get(translation, 1));
+        }
+    };
+    // Ground raises the capsule's centre to 1.0; held-Space jumps afterwards.
+    try std.testing.expect(FloatReader.y(player_transform) > 1.05);
+    // The plane is static.
+    try std.testing.expectEqual(@as(f64, 0.0), FloatReader.y(plane_transform));
+    // The ball was within reach and is held in front of/above the player.
+    try std.testing.expect(FloatReader.y(ball_transform) > 2.0);
+
+    var spatial_id: i64 = -1;
+    var pickup_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "SpatialMap")) spatial_id = resource.id;
+        if (std.mem.endsWith(u8, resource.name, "PickupState")) pickup_id = resource.id;
+    }
+    try std.testing.expect(spatial_id >= 0);
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(spatial_id));
+    const spatial_ptr = ecs.e7_ecs_resource(spatial_id);
+    try std.testing.expect(spatial_ptr != 0);
+    // Fields: cell_size, cells, ids, bounds, count.
+    try std.testing.expectEqual(@as(i64, 6), aggregate.e7_load_i64(spatial_ptr + 32));
+
+    try std.testing.expect(pickup_id >= 0);
+    const pickup_ptr = ecs.e7_ecs_resource(pickup_id);
+    try std.testing.expect(pickup_ptr != 0);
+    try std.testing.expectEqual(@as(i64, 3), aggregate.e7_load_i64(pickup_ptr));
+}

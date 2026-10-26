@@ -325,7 +325,9 @@ fn mapEntryAt(map: i64, index: i64, column: usize) i64 {
     if (map == 0 or index < 0) return 0;
     const len = slots(map)[0];
     if (index >= len) return 0;
-    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(slots(map)[2])));
+    const entries_ptr = slots(map)[2];
+    if (entries_ptr == 0) return 0;
+    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(entries_ptr)));
     return entries[@as(usize, @intCast(index)) * 2 + column];
 }
 
@@ -340,7 +342,9 @@ pub export fn e7_map_value_at(map: i64, index: i64) callconv(.c) i64 {
 pub export fn e7_map_get(map: i64, key: i64) callconv(.c) i64 {
     if (map == 0) return 0;
     const len = slots(map)[0];
-    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(slots(map)[2])));
+    const entries_ptr = slots(map)[2];
+    if (entries_ptr == 0) return 0;
+    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(entries_ptr)));
     var i: usize = 0;
     while (i < @as(usize, @intCast(len))) : (i += 1) {
         if (entries[i * 2] == key) return entries[i * 2 + 1];
@@ -351,7 +355,9 @@ pub export fn e7_map_get(map: i64, key: i64) callconv(.c) i64 {
 pub export fn e7_map_get_str(map: i64, key: i64) callconv(.c) i64 {
     if (map == 0) return 0;
     const len = slots(map)[0];
-    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(slots(map)[2])));
+    const entries_ptr = slots(map)[2];
+    if (entries_ptr == 0) return 0;
+    const entries: [*]i64 = @ptrFromInt(@as(usize, @intCast(entries_ptr)));
     var i: usize = 0;
     while (i < @as(usize, @intCast(len))) : (i += 1) {
         if (e7_str_eq(entries[i * 2], key) != 0) return entries[i * 2 + 1];
@@ -570,7 +576,14 @@ pub export fn e7_parse_f32(text: i64) callconv(.c) i64 {
 /// immutable aggregates in e7: assign the result back).  Matrices and invalid
 /// handles return 0.
 pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
-    if (vec == 0) return 0;
+    if (vec == 0) {
+        // A missing aggregate (e.g. an absent map key) is treated as an empty
+        // vector, which makes `list = e7_vec_push(list, value)` ergonomic.
+        const created = e7_vec_new(1, 0);
+        if (created == 0) return 0;
+        slots(created + 16)[0] = value;
+        return created;
+    }
     const rows = slots(vec)[0];
     const columns = slots(vec)[1];
     if (rows < 0 or columns != 0) return 0;
@@ -747,5 +760,7 @@ test "text helpers parse numbers and push vector elements" {
     try std.testing.expectEqual(@as(i64, 2), e7_vec_len(vector));
     try std.testing.expectEqual(@as(i64, 10), e7_vec_get(vector, 0));
     try std.testing.expectEqual(@as(i64, 20), e7_vec_get(vector, 1));
-    try std.testing.expectEqual(@as(i64, 0), e7_vec_push(0, 1));
+    const from_missing = e7_vec_push(0, 7);
+    try std.testing.expectEqual(@as(i64, 1), e7_vec_len(from_missing));
+    try std.testing.expectEqual(@as(i64, 7), e7_vec_get(from_missing, 0));
 }

@@ -134,7 +134,7 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
-        // Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E, 5 Q, 6 Shift, 7-10 arrows.
+        // Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E, 5 Q, 6 Shift, 7-10 arrows, 11 Space.
         .name = "e7_engine_key_down",
         .params = &.{.i64_},
         .result = .i64_,

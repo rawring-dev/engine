@@ -49,6 +49,9 @@ pub Commands <- struct
 pub RigidBody <- struct
     velocity: [f32; 3]
     inv_mass: f32
+    gravity_scale: f32
+    rotation_locked: bool
+    is_static: bool
 
 @Components
 pub BoxCollider <- struct
@@ -57,3 +60,37 @@ pub BoxCollider <- struct
 @Components
 pub SphereCollider <- struct
     radius: f32
+
+@Components
+pub BodyId <- struct
+    id: i64
+
+# Broadphase bounds: half extents of each body's world-space AABB.
+@Components
+pub BodyBounds <- struct
+    half_extents: [f32; 3]
+
+@Components
+pub CapsuleCollider <- struct
+    radius: f32
+    half_height: f32
+
+# Infinite plane `dot(normal, p) = offset`.  The demo uses normal (0,1,0), offset 0.
+@Components
+pub PlaneCollider <- struct
+    normal: [f32; 3]
+    offset: f32
+
+@Components
+pub Player <- struct
+    body_id: i64
+
+@Components
+pub Pickup <- struct
+    body_id: i64
+
+# `by` is the holder body id (0 = not held).  Components cannot be removed at
+# runtime, so a held object keeps this marker and toggles `by`.
+@Components
+pub Held <- struct
+    by: i64

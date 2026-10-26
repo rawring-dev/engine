@@ -1,0 +1,135 @@
+# Narrowphase collision tests and penetration resolution.
+#
+# Pure e7 functions over the shared Vec3/Aabb/Ray types declared in
+# `engine/physics.e7`.  Shapes are approximated conservatively for the demo:
+#   - box:    axis-aligned box (AABB)
+#   - sphere: centre + radius
+#   - capsule: vertical capsule approximated by its enclosing AABB (or a sphere
+#              for ray tests)
+#   - plane:  infinite plane dot(normal, p) == offset
+#
+# `aabb_penetration` returns the minimum translation that pushes the first AABB
+# out of the second; the integrate systems apply it to transforms.
+
+pub vec3_dot <- (a: Vec3, b: Vec3) -> f32:
+    ret a.x * b.x + a.y * b.y + a.z * b.z
+
+min_f32 <- (a: f32, b: f32) -> f32:
+    if a < b:
+        ret a
+    ret b
+
+max_f32 <- (a: f32, b: f32) -> f32:
+    if a > b:
+        ret a
+    ret b
+
+pub aabb_overlap <- (a: Aabb, b: Aabb) -> bool:
+    ret (a.min.x <= b.max.x and a.max.x >= b.min.x and a.min.y <= b.max.y and a.max.y >= b.min.y and a.min.z <= b.max.z and a.max.z >= b.min.z)
+
+# Total penetration depths on each axis; <= 0 means separated on that axis.
+pub aabb_penetration_depth <- (a: Aabb, b: Aabb) -> Vec3:
+    ret Vec3 {
+        x: min_f32(a.max.x, b.max.x) - max_f32(a.min.x, b.min.x),
+        y: min_f32(a.max.y, b.max.y) - max_f32(a.min.y, b.min.y),
+        z: min_f32(a.max.z, b.max.z) - max_f32(a.min.z, b.min.z),
+    }
+
+# Minimum translation that pushes `a` out of `b`.  Zero when not overlapping.
+pub aabb_penetration <- (a: Aabb, b: Aabb) -> Vec3:
+    depth_x := min_f32(a.max.x, b.max.x) - max_f32(a.min.x, b.min.x)
+    depth_y := min_f32(a.max.y, b.max.y) - max_f32(a.min.y, b.min.y)
+    depth_z := min_f32(a.max.z, b.max.z) - max_f32(a.min.z, b.min.z)
+    if depth_x <= 0.0 or depth_y <= 0.0 or depth_z <= 0.0:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+
+    a_center_x := (a.min.x + a.max.x) * 0.5
+    a_center_y := (a.min.y + a.max.y) * 0.5
+    a_center_z := (a.min.z + a.max.z) * 0.5
+    b_center_x := (b.min.x + b.max.x) * 0.5
+    b_center_y := (b.min.y + b.max.y) * 0.5
+    b_center_z := (b.min.z + b.max.z) * 0.5
+
+    if depth_x <= depth_y and depth_x <= depth_z:
+        if a_center_x < b_center_x:
+            ret Vec3 { x: 0.0 - depth_x, y: 0.0, z: 0.0 }
+        ret Vec3 { x: depth_x, y: 0.0, z: 0.0 }
+    if depth_y <= depth_z:
+        if a_center_y < b_center_y:
+            ret Vec3 { x: 0.0, y: 0.0 - depth_y, z: 0.0 }
+        ret Vec3 { x: 0.0, y: depth_y, z: 0.0 }
+    if a_center_z < b_center_z:
+        ret Vec3 { x: 0.0, y: 0.0, z: 0.0 - depth_z }
+    ret Vec3 { x: 0.0, y: 0.0, z: depth_z }
+
+pub sphere_aabb_overlap <- (center: Vec3, radius: f32, box: Aabb) -> bool:
+    closest_x := e7_f32_clamp(center.x, box.min.x, box.max.x)
+    closest_y := e7_f32_clamp(center.y, box.min.y, box.max.y)
+    closest_z := e7_f32_clamp(center.z, box.min.z, box.max.z)
+    dx := center.x - closest_x
+    dy := center.y - closest_y
+    dz := center.z - closest_z
+    ret dx * dx + dy * dy + dz * dz <= radius * radius
+
+# Vertical capsule approximated by its enclosing AABB.
+pub capsule_aabb_overlap <- (
+    center: Vec3,
+    radius: f32,
+    half_height: f32,
+    box: Aabb,
+) -> bool:
+    capsule_min := Vec3 {
+        x: center.x - radius,
+        y: center.y - half_height - radius,
+        z: center.z - radius,
+    }
+    capsule_max := Vec3 {
+        x: center.x + radius,
+        y: center.y + half_height + radius,
+        z: center.z + radius,
+    }
+    ret aabb_overlap(Aabb { min: capsule_min, max: capsule_max }, box)
+
+# True when the AABB crosses the infinite plane (signed distances straddle 0).
+pub plane_aabb_overlap <- (normal: Vec3, offset: f32, box: Aabb) -> bool:
+    center := Vec3 {
+        x: (box.min.x + box.max.x) * 0.5,
+        y: (box.min.y + box.max.y) * 0.5,
+        z: (box.min.z + box.max.z) * 0.5,
+    }
+    extent := Vec3 {
+        x: (box.max.x - box.min.x) * 0.5,
+        y: (box.max.y - box.min.y) * 0.5,
+        z: (box.max.z - box.min.z) * 0.5,
+    }
+    center_distance := normal.x * center.x + normal.y * center.y + normal.z * center.z - offset
+    radius := (e7_f32_abs(normal.x) * extent.x + e7_f32_abs(normal.y) * extent.y + e7_f32_abs(normal.z) * extent.z)
+    ret center_distance - radius <= 0.0 and center_distance + radius >= 0.0
+
+pub ray_plane <- (ray: Ray, normal: Vec3, offset: f32) -> RayHit:
+    denominator := normal.x * ray.direction.x + normal.y * ray.direction.y + normal.z * ray.direction.z
+    if e7_f32_abs(denominator) < 0.000001:
+        ret RayHit { hit: false, distance: 0.0, point: ray.origin }
+    origin_distance := normal.x * ray.origin.x + normal.y * ray.origin.y + normal.z * ray.origin.z
+    t := (offset - origin_distance) / denominator
+    if t < 0.0:
+        ret RayHit { hit: false, distance: 0.0, point: ray.origin }
+    ret RayHit {
+        hit: true,
+        distance: t,
+        point: Vec3 {
+            x: ray.origin.x + ray.direction.x * t,
+            y: ray.origin.y + ray.direction.y * t,
+            z: ray.origin.z + ray.direction.z * t,
+        },
+    }
+
+# Capsule ray test approximated by a sphere around the capsule centre.
+pub ray_capsule <- (ray: Ray, center: Vec3, radius: f32, half_height: f32) -> RayHit:
+    ret ray_sphere(ray, center, radius + half_height)
+
+# Plugin marker: keeps the module in the project plugin graph; all narrowphase
+# work is exposed as pure functions called by `physics.e7` systems.
+pub NarrowphasePlugin <- plugin
+    narrowphase_plugin_init <- sys (commands: &mut Commands):
+        ret

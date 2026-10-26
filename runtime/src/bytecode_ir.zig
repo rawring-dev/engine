@@ -94,8 +94,35 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
 /// limits repeated optimization.
 fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
     for (function.code) |op| switch (op) {
-        .vec_len, .str_len, .map_len => return true,
+        // Container/map lowering expands into branchy call chains that can trip
+        // LLVM 23's InstCombine fixed-point verifier.
+        .vec_new,
+        .vec_len,
+        .vec_get,
+        .vec_set,
+        .vec_row,
+        .vec_get2,
+        .vec_set2,
+        .vec_set_row,
+        .vec_binary,
+        .vec_scalar,
+        .map_new,
+        .map_get,
+        .map_set,
+        .map_get_str,
+        .map_set_str,
+        .map_len,
+        .map_key_at,
+        .map_value_at,
+        .str_len,
+        => return true,
         .runtime_call => |call| switch (call.function) {
+            // `e7_vec_push`/`e7_str_*` helpers expand into large branchy IR.
+            .vec_push => return true,
+            // Query-driven loops lower to branchy stack-machine IR that can trip
+            // LLVM 23's InstCombine fixed-point verifier; opt out (the driver's
+            // own fixed-point loop still runs).
+            .ecs_query_next => return true,
             // Float helpers expand into large constant-argument call chains;
             // LLVM 23's InstCombine fixed-point verifier rejects the result.
             .float_add,

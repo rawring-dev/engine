@@ -1,0 +1,153 @@
+# Broadphase: uniform spatial grid over body AABBs, plus aggregated region and
+# ray candidate queries.
+#
+# `physics.e7::physics_step` rebuilds this map once per fixed step (before its
+# narrowphase collision pass) and replaces `SpatialMap` with:
+#   - `cells`: map cell hash -> [body_id] for bodies overlapping that cell
+#   - `ids`:   all body ids, in query order
+#   - `bounds`: six floats per id (min xyz, max xyz), parallel to `ids`
+#
+# `query_region` and `query_ray` aggregate candidate body ids from the cells
+# they touch.  Results are deduplicated, but may contain false positives from
+# hash collisions or coarse cells: the narrowphase must re-test exact shapes.
+#
+# Cell key hashing is deterministic across runs and platforms.
+
+use physics::*;
+
+@resource
+pub SpatialMap <- struct
+    cell_size: f32
+    cells: map[i64, [i64]]
+    ids: [i64]
+    bounds: [f32]
+    count: i64
+
+pub BroadphasePlugin <- plugin
+    broadphase_plugin_init <- sys (commands: &mut Commands):
+        empty_cells := map[i64, [i64]] {}
+        empty_ids: [i64] := []
+        empty_bounds: [f32] := []
+        commands.insert_resource(SpatialMap {
+            cell_size: 2.0,
+            cells: empty_cells,
+            ids: empty_ids,
+            bounds: empty_bounds,
+            count: 0,
+        })
+
+# Floor(world / cell_size) as an i64 cell coordinate.  Truncation is corrected
+# for negative non-integer values.
+pub cell_floor <- (value: f32, cell_size: f32) -> i64:
+    scaled := value / cell_size
+    truncated := e7_f32_to_i64(scaled)
+    rounded_back := e7_f32_from_i64(truncated)
+    if rounded_back > scaled:
+        ret truncated - 1
+    ret truncated
+
+pub cell_key <- (cx: i64, cy: i64, cz: i64) -> i64:
+    hx := cx * 73856093
+    hy := cy * 19349663
+    hz := cz * 83492791
+    ret hx + hy + hz
+
+append_unique <- (ids: [i64], id: i64) -> [i64]:
+    known := false
+    index := 0
+    count := ids.len() as i64
+    while index < count:
+        if ids[index as usize] == id:
+            known = true
+        index = index + 1
+    if known:
+        ret ids
+    ret e7_vec_push(ids, id)
+
+# Insert one body into a (possibly new) cell map.  Returns the updated map so
+# the caller can thread it through a rebuild loop without mutating a `&mut` map
+# across a query iteration.
+pub broadphase_insert <- (
+    cells: &mut map[i64, [i64]],
+    cell_size: f32,
+    id: i64,
+    minimum: Vec3,
+    maximum: Vec3,
+) -> nil:
+    min_cx := cell_floor(minimum.x, cell_size)
+    min_cy := cell_floor(minimum.y, cell_size)
+    min_cz := cell_floor(minimum.z, cell_size)
+    max_cx := cell_floor(maximum.x, cell_size)
+    max_cy := cell_floor(maximum.y, cell_size)
+    max_cz := cell_floor(maximum.z, cell_size)
+    cx := min_cx
+    while cx <= max_cx:
+        cy := min_cy
+        while cy <= max_cy:
+            cz := min_cz
+            while cz <= max_cz:
+                key := cell_key(cx, cy, cz)
+                cell_ids := cells[key]
+                cell_ids = append_unique(cell_ids, id)
+                cells[key] = cell_ids
+                cz = cz + 1
+            cy = cy + 1
+        cx = cx + 1
+    ret
+
+# Candidate body ids whose broadphase cells intersect the world-space AABB
+# [minimum, maximum].  Deduplicated; caller must narrowphase-test each id.
+pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64]:
+    result: [i64] := []
+    cell_size := spatial.cell_size
+    min_cx := cell_floor(minimum.x, cell_size)
+    min_cy := cell_floor(minimum.y, cell_size)
+    min_cz := cell_floor(minimum.z, cell_size)
+    max_cx := cell_floor(maximum.x, cell_size)
+    max_cy := cell_floor(maximum.y, cell_size)
+    max_cz := cell_floor(maximum.z, cell_size)
+
+    cx := min_cx
+    while cx <= max_cx:
+        cy := min_cy
+        while cy <= max_cy:
+            cz := min_cz
+            while cz <= max_cz:
+                key := cell_key(cx, cy, cz)
+                cell_ids := spatial.cells[key]
+                member_count := cell_ids.len() as i64
+                member := 0
+                while member < member_count:
+                    result = append_unique(result, cell_ids[member as usize])
+                    member = member + 1
+                cz = cz + 1
+            cy = cy + 1
+        cx = cx + 1
+    ret result
+
+# Ray candidates: sample the ray at cell-size steps up to `max_distance` and
+# aggregate the small AABBs around the sample points.  This is conservative
+# enough for the demo and avoids a separate DDA implementation.
+pub query_ray <- (spatial: &SpatialMap, ray: Ray, max_distance: f32) -> [i64]:
+    result: [i64] := []
+    step := spatial.cell_size
+    distance := 0.0
+    while distance <= max_distance:
+        point := Vec3 {
+            x: ray.origin.x + ray.direction.x * distance,
+            y: ray.origin.y + ray.direction.y * distance,
+            z: ray.origin.z + ray.direction.z * distance,
+        }
+        patch := 0.05
+        candidates := query_region(
+            spatial,
+            Vec3 { x: point.x - patch, y: point.y - patch, z: point.z - patch },
+            Vec3 { x: point.x + patch, y: point.y + patch, z: point.z + patch },
+        )
+        candidate_count := candidates.len() as i64
+        index := 0
+        while index < candidate_count:
+            result = append_unique(result, candidates[index as usize])
+            index = index + 1
+        distance = distance + step
+    ret result

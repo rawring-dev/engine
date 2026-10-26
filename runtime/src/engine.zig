@@ -55,9 +55,10 @@ pub const Key = enum(i64) {
     look_right = 8, // Right arrow
     look_up = 9, // Up arrow
     look_down = 10, // Down arrow
+    jump = 11, // Space
 };
 
-const key_count = 11;
+const key_count = 12;
 
 /// Raw device state only: which logical keys are held and how far the mouse
 /// moved since the previous query.  e7 turns this into camera motion.
@@ -156,6 +157,7 @@ fn mapSdlKey(keycode: u32) ?Key {
         c.SDLK_RIGHT => .look_right,
         c.SDLK_UP => .look_up,
         c.SDLK_DOWN => .look_down,
+        c.SDLK_SPACE => .jump,
         else => null,
     };
 }
@@ -206,7 +208,7 @@ fn pumpEventsLocked(window_handle: i64) void {
 pub fn injectKeyForTest(code: i64, pressed: bool) void {
     state.mutex.lock();
     defer state.mutex.unlock();
-    if (code < 0 or code > @intFromEnum(Key.look_down)) return;
+    if (code < 0 or code > @intFromEnum(Key.jump)) return;
     setKeyLocked(@enumFromInt(code), pressed);
 }
 
@@ -413,11 +415,11 @@ pub export fn e7_engine_window_pump(handle: i64) callconv(.c) i64 {
 }
 
 /// Logical key state (see `Key` codes: 0 W, 1 S, 2 A, 3 D, 4 E, 5 Q, 6 Shift,
-/// 7-10 arrow look).  Returns 1 when held.
+/// 7-10 arrow look, 11 Space).  Returns 1 when held.
 pub export fn e7_engine_key_down(code: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
-    if (code < 0 or code > @intFromEnum(Key.look_down)) return 0;
+    if (code < 0 or code > @intFromEnum(Key.jump)) return 0;
     return @intFromBool(state.input.keys[@intCast(code)]);
 }
 

@@ -1,5 +1,16 @@
-# Physics library: vector helpers, AABB/sphere colliders, raycasts, and a
-# simple integrate system. Physics behavior is a plugin over the ECS world.
+# Physics library: vector/ray primitives, plugin resources, and the single
+# fixed-step Update system that composes broadphase and narrowphase modules.
+#
+# Modules:
+#   - physics_broadphase.e7: SpatialMap, cell keys, region/ray candidate queries
+#   - physics_narrowphase.e7: AABB/sphere/capsule/plane tests + raycasts
+#   - physics.e7 (this file): public Vec3/Ray/Aabb API, ECS resources, systems
+#
+# All physics work happens in one system so the order is deterministic even
+# though trigger phases run systems concurrently:
+#   broadphase rebuild -> gravity integrate -> ground -> body-body collisions
+#   -> player movement/jump -> pickup hold -> camera follow -> raycast.
+# The step is fixed at 16 ms.
 
 use ecs::*;
 use events::*;
@@ -27,6 +38,9 @@ pub RayHit <- struct
 pub PhysicsWorld <- struct
     gravity_y: f32
     max_step: f32
+    grounded: bool
+    # Prevents held-Space from auto-hopping on every landing.
+    jump_latched: bool
 
 @resource
 pub RaycastState <- struct
@@ -36,11 +50,18 @@ pub RaycastState <- struct
     point_y: f32
     point_z: f32
 
+@resource
+pub PickupState <- struct
+    # Body id held by the player, or 0 for none.
+    held_id: i64
+
 pub PhysicsPlugin <- plugin
     physics_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(PhysicsWorld {
             gravity_y: -9.81,
             max_step: 0.05,
+            grounded: false,
+            jump_latched: false,
         })
         commands.insert_resource(RaycastState {
             hit: false,
@@ -49,11 +70,20 @@ pub PhysicsPlugin <- plugin
             point_y: 0.0,
             point_z: 0.0,
         })
+        commands.insert_resource(PickupState { held_id: 0 })
 
 pub box_collider <- (center: Vec3, half: Vec3) -> Aabb:
     ret Aabb {
-        min: Vec3 { x: center.x - half.x, y: center.y - half.y, z: center.z - half.z },
-        max: Vec3 { x: center.x + half.x, y: center.y + half.y, z: center.z + half.z },
+        min: Vec3 {
+            x: center.x - half.x,
+            y: center.y - half.y,
+            z: center.z - half.z,
+        },
+        max: Vec3 {
+            x: center.x + half.x,
+            y: center.y + half.y,
+            z: center.z + half.z,
+        },
     }
 
 pub ray_aabb <- (ray: Ray, box: Aabb) -> RayHit:
@@ -132,30 +162,344 @@ pub ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit:
         },
     }
 
+# ---------------------------------------------------------------------------
+# Broadphase lookup helpers used by the collision pass
+# ---------------------------------------------------------------------------
+
+find_bound_index <- (spatial: &SpatialMap, id: i64) -> i64:
+    index := 0
+    count := spatial.ids.len() as i64
+    while index < count:
+        if spatial.ids[index as usize] == id:
+            ret index
+        index = index + 1
+    ret -1
+
+bound_min <- (spatial: &SpatialMap, index: i64) -> Vec3:
+    base := index * 6
+    ret Vec3 {
+        x: spatial.bounds[base as usize],
+        y: spatial.bounds[(base + 1) as usize],
+        z: spatial.bounds[(base + 2) as usize],
+    }
+
+bound_max <- (spatial: &SpatialMap, index: i64) -> Vec3:
+    base := index * 6
+    ret Vec3 {
+        x: spatial.bounds[(base + 3) as usize],
+        y: spatial.bounds[(base + 4) as usize],
+        z: spatial.bounds[(base + 5) as usize],
+    }
+
+candidate_contains <- (ids: [i64], id: i64) -> bool:
+    index := 0
+    count := ids.len() as i64
+    while index < count:
+        if ids[index as usize] == id:
+            ret true
+        index = index + 1
+    ret false
+
+# ---------------------------------------------------------------------------
+# The fixed-step system
+# ---------------------------------------------------------------------------
+
 @trigger(Update)
 pub physics_step <- sys (
-    bodies: select &mut Transform, &mut RigidBody from Components,
-    world: res &PhysicsWorld,
+    input: res &Input,
+    world: res &mut PhysicsWorld,
+    spatial: res &mut SpatialMap,
+    bodies: select &mut Transform, &mut RigidBody, &BodyId, &BodyBounds from Components,
+    collide_bodies: select &mut Transform, &mut RigidBody, &BodyId, &BodyBounds from Components,
+    planes: select &PlaneCollider from Components,
+    player_views: select &Camera, &CameraController from Components,
+    player_bodies: select &mut Transform, &mut RigidBody, &Player, &BodyBounds from Components,
 ):
     dt := 0.016
-    for (transform, body) in bodies:
-        body.velocity[1] = body.velocity[1] + world.gravity_y * dt
-        transform.translation[0] = transform.translation[0] + body.velocity[0] * dt
-        transform.translation[1] = transform.translation[1] + body.velocity[1] * dt
-        transform.translation[2] = transform.translation[2] + body.velocity[2] * dt
-        # Simple ground plane at y=0 for the demo cube.
-        if transform.translation[1] < 0.0:
-            transform.translation[1] = 0.0
-            body.velocity[1] = 0.0
+    ground := 0.0
+    for plane in planes:
+        ground = plane.offset
 
+    # ---------------------------------------------------------------- rebuild
+    cells := map[i64, [i64]] {}
+    ids: [i64] := []
+    stored_bounds: [f32] := []
+    body_count := 0
+    cell_size := spatial.cell_size
+    world.grounded = false
 
-# Cast one ray from each camera through the scene's box colliders. The demo
-# uses this resource to report what the camera is looking at.
-@trigger(Update)
+    for (transform, body, body_id, body_bounds) in bodies:
+        if not body.is_static:
+            body.velocity[1] = body.velocity[1] + world.gravity_y * body.gravity_scale * dt
+            transform.translation[0] = transform.translation[0] + body.velocity[0] * dt
+            transform.translation[1] = transform.translation[1] + body.velocity[1] * dt
+            transform.translation[2] = transform.translation[2] + body.velocity[2] * dt
+
+            bottom := body_bounds.half_extents[1]
+            if transform.translation[1] < ground + bottom:
+                transform.translation[1] = ground + bottom
+                if body.velocity[1] < 0.0:
+                    body.velocity[1] = 0.0
+                world.grounded = true
+
+        min_x := transform.translation[0] - body_bounds.half_extents[0]
+        min_y := transform.translation[1] - body_bounds.half_extents[1]
+        min_z := transform.translation[2] - body_bounds.half_extents[2]
+        max_x := transform.translation[0] + body_bounds.half_extents[0]
+        max_y := transform.translation[1] + body_bounds.half_extents[1]
+        max_z := transform.translation[2] + body_bounds.half_extents[2]
+
+        ids = e7_vec_push(ids, body_id.id)
+        stored_bounds = e7_vec_push(stored_bounds, min_x)
+        stored_bounds = e7_vec_push(stored_bounds, min_y)
+        stored_bounds = e7_vec_push(stored_bounds, min_z)
+        stored_bounds = e7_vec_push(stored_bounds, max_x)
+        stored_bounds = e7_vec_push(stored_bounds, max_y)
+        stored_bounds = e7_vec_push(stored_bounds, max_z)
+        body_count = body_count + 1
+        broadphase_insert(
+            &mut cells,
+            cell_size,
+            body_id.id,
+            Vec3 { x: min_x, y: min_y, z: min_z },
+            Vec3 { x: max_x, y: max_y, z: max_z },
+        )
+
+    spatial.cells = cells
+    spatial.ids = ids
+    spatial.bounds = stored_bounds
+    spatial.count = body_count
+
+    # ------------------------------------------------------- body-body contacts
+    for (transform, body, body_id, body_bounds) in collide_bodies:
+        if body.is_static:
+            cont
+        min_x := transform.translation[0] - body_bounds.half_extents[0]
+        min_y := transform.translation[1] - body_bounds.half_extents[1]
+        min_z := transform.translation[2] - body_bounds.half_extents[2]
+        max_x := transform.translation[0] + body_bounds.half_extents[0]
+        max_y := transform.translation[1] + body_bounds.half_extents[1]
+        max_z := transform.translation[2] + body_bounds.half_extents[2]
+        candidates := query_region(
+            spatial,
+            Vec3 { x: min_x, y: min_y, z: min_z },
+            Vec3 { x: max_x, y: max_y, z: max_z },
+        )
+        candidate_count := candidates.len() as i64
+        candidate := 0
+        while candidate < candidate_count:
+            other_id := candidates[candidate as usize]
+            candidate = candidate + 1
+            if other_id <= body_id.id:
+                cont
+            other_index := find_bound_index(spatial, other_id)
+            if other_index < 0:
+                cont
+            other_min := bound_min(spatial, other_index)
+            other_max := bound_max(spatial, other_index)
+            if aabb_overlap(
+                Aabb {
+                    min: Vec3 { x: min_x, y: min_y, z: min_z },
+                    max: Vec3 { x: max_x, y: max_y, z: max_z },
+                },
+                Aabb { min: other_min, max: other_max },
+            ):
+                other_min2 := bound_min(spatial, other_index)
+                other_max2 := bound_max(spatial, other_index)
+                push := aabb_penetration(
+                    Aabb {
+                        min: Vec3 { x: min_x, y: min_y, z: min_z },
+                        max: Vec3 { x: max_x, y: max_y, z: max_z },
+                    },
+                    Aabb { min: other_min2, max: other_max2 },
+                )
+                transform.translation[0] = transform.translation[0] + push.x
+                transform.translation[1] = transform.translation[1] + push.y
+                transform.translation[2] = transform.translation[2] + push.z
+                if push.x != 0.0:
+                    body.velocity[0] = 0.0
+                if push.y != 0.0:
+                    body.velocity[1] = 0.0
+                if push.z != 0.0:
+                    body.velocity[2] = 0.0
+
+    # ------------------------------------------------------- player movement
+    yaw := 0.0
+    move_speed := 4.0
+    for (camera, controller) in player_views:
+        yaw = camera.yaw
+        move_speed = controller.move_speed
+    sin_yaw := e7_f32_sin(yaw)
+    cos_yaw := e7_f32_cos(yaw)
+    forward_x := sin_yaw
+    forward_z := 0.0 - cos_yaw
+    right_x := cos_yaw
+    right_z := sin_yaw
+    wish_x := 0.0
+    wish_z := 0.0
+    if input.move_forward:
+        wish_x = wish_x + forward_x
+        wish_z = wish_z + forward_z
+    if input.move_backward:
+        wish_x = wish_x - forward_x
+        wish_z = wish_z - forward_z
+    if input.move_right:
+        wish_x = wish_x + right_x
+        wish_z = wish_z + right_z
+    if input.move_left:
+        wish_x = wish_x - right_x
+        wish_z = wish_z - right_z
+    length := e7_f32_sqrt(wish_x * wish_x + wish_z * wish_z)
+    speed := move_speed
+    if input.sprint:
+        speed = speed * 2.5
+    if length > 0.000001:
+        scale := speed / length
+        wish_x = wish_x * scale
+        wish_z = wish_z * scale
+    else:
+        wish_x = 0.0
+        wish_z = 0.0
+
+    if not input.jump_down:
+        world.jump_latched = false
+    for (transform, body, player, body_bounds) in player_bodies:
+        body.velocity[0] = wish_x
+        body.velocity[2] = wish_z
+        on_ground := transform.translation[1] <= ground + body_bounds.half_extents[1] + 0.01
+        if on_ground:
+            world.grounded = true
+        if input.jump_down and on_ground and not world.jump_latched:
+            body.velocity[1] = 5.2
+            world.grounded = false
+            world.jump_latched = true
+
+    # ---------------------------------------------------------------------------
+# Deferred interaction systems (PostUpdate, after the fixed-step Update)
+# ---------------------------------------------------------------------------
+
+@trigger(PostUpdate)
+pub physics_pickup_interact <- sys (
+    input: res &Input,
+    state: res &mut PickupState,
+    spatial: res &SpatialMap,
+    players: select &Transform, &Player from Components,
+    pickups: select &Transform, &Pickup from Components,
+):
+    if not input.interact_pressed:
+        ret
+    if state.held_id != 0:
+        state.held_id = 0
+        ret
+    player_position := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    found_player := false
+    for (transform, player) in players:
+        if not found_player:
+            player_position = Vec3 {
+                x: transform.translation[0],
+                y: transform.translation[1],
+                z: transform.translation[2],
+            }
+            found_player = true
+    if not found_player:
+        ret
+    reach := 2.6
+    candidates := query_region(
+        spatial,
+        Vec3 {
+            x: player_position.x - reach,
+            y: player_position.y - reach,
+            z: player_position.z - reach,
+        },
+        Vec3 {
+            x: player_position.x + reach,
+            y: player_position.y + reach,
+            z: player_position.z + reach,
+        },
+    )
+    best_id := 0
+    best_distance := 1000000.0
+    for (transform, pickup) in pickups:
+        if not candidate_contains(candidates, pickup.body_id):
+            cont
+        dx := transform.translation[0] - player_position.x
+        dy := transform.translation[1] - player_position.y
+        dz := transform.translation[2] - player_position.z
+        distance := dx * dx + dy * dy + dz * dz
+        if distance < best_distance:
+            best_distance = distance
+            best_id = pickup.body_id
+    state.held_id = best_id
+
+@trigger(PostUpdate)
+pub physics_held_sync <- sys (
+    state: res &PickupState,
+    held_components: select &mut Held, &Pickup from Components,
+):
+    for (held, pickup) in held_components:
+        if pickup.body_id == state.held_id:
+            held.by = 1
+        else:
+            held.by = 0
+
+@trigger(PostUpdate)
+pub physics_pickup_hold <- sys (
+    state: res &PickupState,
+    held_bodies: select &mut Transform, &mut RigidBody, &Pickup from Components,
+    views: select &Camera from Components,
+    players: select &Transform, &Player from Components,
+):
+    if state.held_id == 0:
+        ret
+    player_position := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    for (transform, player) in players:
+        player_position = Vec3 {
+            x: transform.translation[0],
+            y: transform.translation[1],
+            z: transform.translation[2],
+        }
+    yaw := 0.0
+    for camera in views:
+        yaw = camera.yaw
+    hold_forward_x := e7_f32_sin(yaw)
+    hold_forward_z := 0.0 - e7_f32_cos(yaw)
+    for (transform, body, pickup) in held_bodies:
+        if pickup.body_id != state.held_id:
+            cont
+        transform.translation[0] = player_position.x + hold_forward_x * 1.8
+        transform.translation[1] = player_position.y + 1.4
+        transform.translation[2] = player_position.z + hold_forward_z * 1.8
+        body.velocity[0] = 0.0
+        body.velocity[1] = 0.0
+        body.velocity[2] = 0.0
+
+@trigger(PostUpdate)
+pub camera_follow <- sys (
+    players: select &Transform, &Player from Components,
+    cameras: select &mut Camera from Components,
+):
+    target_x := 0.0
+    target_y := 0.0
+    target_z := 0.0
+    found := false
+    for (transform, player) in players:
+        if not found:
+            target_x = transform.translation[0]
+            target_y = transform.translation[1]
+            target_z = transform.translation[2]
+            found = true
+    if not found:
+        ret
+    for camera in cameras:
+        camera.position[0] = target_x
+        camera.position[1] = target_y + 1.55
+        camera.position[2] = target_z
+
+@trigger(PostUpdate)
 pub physics_raycast <- sys (
+    state: res &mut RaycastState,
     cameras: select &Camera from Components,
     colliders: select &Transform, &BoxCollider from Components,
-    state: res &mut RaycastState,
 ):
     for camera in cameras:
         sin_yaw := e7_f32_sin(camera.yaw)
@@ -166,13 +510,10 @@ pub physics_raycast <- sys (
             y: e7_f32_sin(camera.pitch),
             z: 0.0 - cos_yaw * cos_pitch,
         }
-        ray := Ray {
-            origin: Vec3 {
-                x: camera.position[0],
-                y: camera.position[1],
-                z: camera.position[2],
-            },
-            direction: direction,
+        origin := Vec3 {
+            x: camera.position[0],
+            y: camera.position[1],
+            z: camera.position[2],
         }
         state.hit = false
         state.distance = 1000000.0
@@ -187,8 +528,13 @@ pub physics_raycast <- sys (
                 y: collider.half_extents[1],
                 z: collider.half_extents[2],
             }
-            box := box_collider(center, half)
-            hit := ray_aabb(ray, box)
+            hit := ray_aabb(
+                Ray {
+                    origin: Vec3 { x: origin.x, y: origin.y, z: origin.z },
+                    direction: Vec3 { x: direction.x, y: direction.y, z: direction.z },
+                },
+                box_collider(center, half),
+            )
             if hit.hit and hit.distance < state.distance:
                 state.hit = true
                 state.distance = hit.distance

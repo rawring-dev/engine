@@ -15,6 +15,13 @@ pub Input <- struct
     look_down: bool
     look_dx: f32
     look_dy: f32
+    # Space (edge-triggered jump) and E (edge-triggered pickup).
+    jump_pressed: bool
+    jump_down: bool
+    jump_was_down: bool
+    interact: bool
+    interact_pressed: bool
+    interact_was_down: bool
 
 
 pub InputPlugin <- plugin
@@ -33,11 +40,19 @@ pub InputPlugin <- plugin
             look_down: false,
             look_dx: 0.0,
             look_dy: 0.0,
+            jump_pressed: false,
+            jump_down: false,
+            jump_was_down: false,
+            interact: false,
+            interact_pressed: false,
+            interact_was_down: false,
         })
 
 @trigger(FrameInit)
 pub gather_input <- sys (input: res &mut Input):
-    # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up), 5 Q (down), 6 Shift, 7-10 arrow look.
+    # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up/interact), 5 Q (down),
+    # 6 Shift, 7-10 arrow look, 11 Space (jump).  Jump/interact are
+    # edge-triggered so holding a key does not repeat the action every frame.
     input.move_forward = e7_engine_key_down(0) != 0
     input.move_backward = e7_engine_key_down(1) != 0
     input.move_left = e7_engine_key_down(2) != 0
@@ -52,6 +67,15 @@ pub gather_input <- sys (input: res &mut Input):
 
     input.look_dx = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dx()), -600.0, 600.0)
     input.look_dy = e7_f32_clamp(e7_f32_from_i64(e7_engine_mouse_dy()), -600.0, 600.0)
+
+    jump_down := e7_engine_key_down(11) != 0
+    interact_down := input.move_up
+    input.jump_pressed = jump_down and not input.jump_was_down
+    input.jump_down = jump_down
+    input.jump_was_down = jump_down
+    input.interact = interact_down
+    input.interact_pressed = interact_down and not input.interact_was_down
+    input.interact_was_down = interact_down
 
 
 @trigger(PostUpdate)
@@ -69,4 +93,7 @@ pub reset_input <- sys (input: res &mut Input):
     input.look_down = false
     input.look_dx = 0.0
     input.look_dy = 0.0
+    input.jump_pressed = false
+    input.jump_down = false
+    input.interact_pressed = false
 
