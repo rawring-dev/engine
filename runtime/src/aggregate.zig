@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [44]Symbol {
+pub fn symbols() [45]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -611,6 +611,7 @@ pub fn symbols() [44]Symbol {
         .{ .name = "e7_str_char_at", .address = @intFromPtr(&e7_str_char_at) },
         .{ .name = "e7_str_eq", .address = @intFromPtr(&e7_str_eq) },
         .{ .name = "e7_str_data", .address = @intFromPtr(&e7_str_data) },
+        .{ .name = "e7_cstr", .address = @intFromPtr(&e7_cstr) },
         .{ .name = "e7_alloc_bytes", .address = @intFromPtr(&e7_alloc_bytes) },
         .{ .name = "e7_free_ptr", .address = @intFromPtr(&e7_free_ptr) },
         .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
@@ -824,4 +825,21 @@ pub export fn e7_load_u64(ptr: i64) callconv(.c) i64 {
 pub export fn e7_store_u64(ptr: i64, value: i64) callconv(.c) void {
     if (ptr == 0) return;
     @as(*align(1) u64, @ptrFromInt(@as(usize, @intCast(ptr)))).* = @bitCast(value);
+}
+
+/// Allocate a NUL-terminated copy of a string aggregate for C APIs.  The caller
+/// owns the result and releases it with `e7_free_ptr`.
+pub export fn e7_cstr(str: i64) callconv(.c) i64 {
+    if (str == 0) return 0;
+    const len = slots(str)[0];
+    if (len < 0) return 0;
+    const size = std.math.add(usize, @as(usize, @intCast(len)), 1) catch return 0;
+    const raw = std.c.malloc(size) orelse return 0;
+    const ptr: [*]u8 = @ptrCast(raw);
+    if (len > 0) {
+        const src: [*]const u8 = @ptrFromInt(@as(usize, @intCast(str + 8)));
+        @memcpy(ptr[0..@intCast(len)], src[0..@intCast(len)]);
+    }
+    ptr[@intCast(len)] = 0;
+    return @intCast(@intFromPtr(raw));
 }

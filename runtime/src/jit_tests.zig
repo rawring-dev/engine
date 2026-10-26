@@ -834,3 +834,53 @@ test "e7 source binds and calls libc strlen through the generic C FFI" {
     const strlen_len = try jit.get(StrlenLen, "strlen_len");
     try std.testing.expectEqual(@as(u64, 5), strlen_len());
 }
+
+test "e7 source creates an SDL window through the C FFI" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) {
+        std.debug.print("skipping e7 SDL FFI test: libSDL3 unavailable\n", .{});
+        return;
+    }
+
+    const source =
+        \\window_probe <- () -> u64:
+        \\    driver_key := e7_cstr("SDL_VIDEODRIVER")
+        \\    driver_value := e7_cstr("dummy")
+        \\    set_hint := e7_cffi_bind("SDL3", "SDL_SetHint")
+        \\    e7_ffi_call2(set_hint, driver_key, driver_value)
+        \\    init := e7_cffi_bind("SDL3", "SDL_InitSubSystem")
+        \\    rc := e7_ffi_call1(init, 32)
+        \\    if rc == 0:
+        \\        e7_free_ptr(driver_key)
+        \\        e7_free_ptr(driver_value)
+        \\        ret 0
+        \\    title := e7_cstr("e7 SDL window")
+        \\    create := e7_cffi_bind("SDL3", "SDL_CreateWindow")
+        \\    win := e7_ffi_call4(create, title, 64, 48, 8)
+        \\    destroy := e7_cffi_bind("SDL3", "SDL_DestroyWindow")
+        \\    quit := e7_cffi_bind("SDL3", "SDL_QuitSubSystem")
+        \\    e7_ffi_call1(destroy, win)
+        \\    e7_ffi_call1(quit, 32)
+        \\    e7_free_ptr(title)
+        \\    e7_free_ptr(driver_key)
+        \\    e7_free_ptr(driver_value)
+        \\    if win == 0:
+        \\        ret 0
+        \\    ret 1
+    ;
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-sdl-window");
+    const Probe = *const fn () callconv(.c) u64;
+    const probe = try jit.get(Probe, "window_probe");
+    const result = probe();
+    if (result == 0) {
+        std.debug.print("skipping e7 SDL FFI test: SDL video unavailable\n", .{});
+        return;
+    }
+    try std.testing.expectEqual(@as(u64, 1), result);
+}

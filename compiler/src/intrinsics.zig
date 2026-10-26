@@ -356,6 +356,7 @@ pub const functions = [_]Function{
     // 64-bit slots, so strings/vectors are passed as their runtime handles.
     .{ .name = "e7_cffi_bind", .params = &.{ .str_, .str_ }, .result = .u64_ },
     .{ .name = "e7_str_data", .params = &.{.str_}, .result = .u64_ },
+    .{ .name = "e7_cstr", .params = &.{.str_}, .result = .u64_ },
     .{ .name = "e7_str_len", .params = &.{.str_}, .result = .i64_ },
     .{ .name = "e7_str_new", .params = &.{ .u64_, .i64_ }, .result = .str_ },
     .{ .name = "e7_alloc_bytes", .params = &.{.i64_}, .result = .u64_ },
