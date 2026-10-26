@@ -973,6 +973,7 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
         \\    out_h := e7_alloc_bytes(4)
         \\    window_size(win, out_w, out_h)
         \\    width := e7_load_u32(out_w)
+        \\    height := e7_load_u32(out_h)
         \\    key := key_down(win, 4)
         \\    buttons := mouse_buttons(win)
         \\    mouse := mouse_x(win) + mouse_y(win) + mouse_dx(win) + mouse_dy(win)
@@ -1119,7 +1120,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
-test "e7 SDL+Vulkan platform module presents a cleared frame" {
+test "e7 SDL+Vulkan platform module captures a cleared frame" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
 
     const io = std.testing.io;
@@ -1185,10 +1186,22 @@ test "e7 SDL+Vulkan platform module presents a cleared frame" {
         \\            if swapchain_created != 0:
         \\                swapchain := e7_load_u64(swapchain_out)
         \\                width := e7_load_u32(width_out)
+        \\                height := e7_load_u32(height_out)
         \\                image_count := e7_load_u32(image_count_out)
         \\                index_out := e7_alloc_bytes(4)
         \\                presented := vulkan_present_clear(device, queue, family, swapchain, index_out)
         \\                e7_free_ptr(index_out)
+        \\                pixels_out := e7_alloc_bytes(8)
+        \\                size_out := e7_alloc_bytes(8)
+        \\                captured := vulkan_capture_clear(device, queue, family, physical, swapchain, width, height, pixels_out, size_out)
+        \\                pixels := e7_load_u64(pixels_out)
+        \\                pixel_size := e7_load_u64(size_out)
+        \\                pixel := e7_load_u32(pixels)
+        \\                red_bgra := (pixel / 65536) % 256
+        \\                red_rgba := pixel % 256
+        \\                e7_free_ptr(pixels)
+        \\                e7_free_ptr(pixels_out)
+        \\                e7_free_ptr(size_out)
         \\                vulkan_swapchain_destroy(device, swapchain)
         \\                if width <= 0:
         \\                    result = -6
@@ -1199,7 +1212,19 @@ test "e7 SDL+Vulkan platform module presents a cleared frame" {
         \\                        if presented == 0:
         \\                            result = -8
         \\                        else:
-        \\                            result = 1
+        \\                            if captured == 0:
+        \\                                result = -10
+        \\                            else:
+        \\                                if pixel_size < width * height * 4:
+        \\                                    result = -11
+        \\                                else:
+        \\                                    if red_bgra != 255:
+        \\                                        if red_rgba != 255:
+        \\                                            result = -12
+        \\                                        else:
+        \\                                            result = 1
+        \\                                    else:
+        \\                                        result = 1
         \\            else:
         \\                result = -5
         \\            if images != 0:
@@ -1232,6 +1257,24 @@ test "e7 SDL+Vulkan platform module presents a cleared frame" {
     ;
     const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, vk_source, selftest });
     defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |diagnostic| {
+            std.debug.print("e7 capture parse diagnostic: {s}\n", .{diagnostic.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |diagnostic| {
+            std.debug.print("e7 capture diagnostic: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+        return error.TestUnexpectedResult;
+    }
 
     var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
     defer compiled.deinit();

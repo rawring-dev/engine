@@ -56,8 +56,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   calls `vkQueuePresentKHR`.  Verified with lavapipe.  The submit path exposed
   an argument-order bug: `vkQueueSubmit(queue, submitCount, pSubmits, fence)`
   needs the count before the pointer.
-- Remaining: readback capture, e7 intrinsic wrappers, renderer, image/text, and
-  deletion of the Zig layer.
+- **2e (done):** `vulkan_capture_clear` creates a host-visible/coherent buffer,
+  copies the cleared swapchain image into it with `vkCmdCopyImageToBuffer`, maps
+  it, copies the pixels into an e7 allocation with the new `e7_memcpy`
+  intrinsic, and verifies the readback color.  Verified with lavapipe.
+- Remaining: e7 intrinsic wrappers, renderer, image/text, and deletion of the
+  Zig layer.
 
 ## Migration stages
 

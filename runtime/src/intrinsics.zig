@@ -1225,7 +1225,7 @@ pub export fn e7_ffi_write(address: u64, data: ?[*]const u8, len: usize) callcon
 
 // ------------------------------------------------------------- manifest ------
 
-var symbol_table: [93]Symbol = undefined;
+var symbol_table: [92]Symbol = undefined;
 var symbol_state = std.atomic.Value(u8).init(0);
 
 pub fn symbols() []const Symbol {
@@ -1235,7 +1235,6 @@ pub fn symbols() []const Symbol {
             .{ .name = "e7_alloc", .address = @intFromPtr(&abi.e7_alloc) },
             .{ .name = "e7_free", .address = @intFromPtr(&abi.e7_free) },
             .{ .name = "e7_last_error", .address = @intFromPtr(&abi.e7_last_error) },
-            .{ .name = "e7_memcpy", .address = @intFromPtr(&abi.e7_memcpy) },
             .{ .name = "e7_clock_ns", .address = @intFromPtr(&e7_clock_ns) },
             .{ .name = "e7_sleep_ms", .address = @intFromPtr(&e7_sleep_ms) },
             .{ .name = "e7_log", .address = @intFromPtr(&e7_log) },

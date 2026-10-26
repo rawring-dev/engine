@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [45]Symbol {
+pub fn symbols() [46]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -612,6 +612,7 @@ pub fn symbols() [45]Symbol {
         .{ .name = "e7_str_eq", .address = @intFromPtr(&e7_str_eq) },
         .{ .name = "e7_str_data", .address = @intFromPtr(&e7_str_data) },
         .{ .name = "e7_cstr", .address = @intFromPtr(&e7_cstr) },
+        .{ .name = "e7_memcpy", .address = @intFromPtr(&abi.e7_memcpy) },
         .{ .name = "e7_alloc_bytes", .address = @intFromPtr(&e7_alloc_bytes) },
         .{ .name = "e7_free_ptr", .address = @intFromPtr(&e7_free_ptr) },
         .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
