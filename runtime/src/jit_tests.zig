@@ -1501,6 +1501,7 @@ test "e7 scene module draws an indexed cube and captures it" {
         \\        video_quit()
         \\        ret -2
         \\    scene_set_camera(scene, 0, 0, 3000, 0, 0)
+        \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
         \\    pixels_out := e7_alloc_bytes(8)
         \\    size_out := e7_alloc_bytes(8)
         \\    drew := scene_draw(scene, pixels_out, size_out)

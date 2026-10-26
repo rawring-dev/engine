@@ -129,8 +129,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   FPS view matrix and Vulkan Y-flipped perspective projection, writes the full
   engine `SceneUniform` (UBO expanded to 320 bytes), and the scene test draws a
   camera-transformed indexed cube. Runtime: **136/136**.
-- Remaining: light uniforms, full engine renderer/scene API, image/text, and
-  deletion of the Zig layer.
+- **7b (done):** `scene_set_light` writes point-light position/color/intensity,
+  ambient parameters, and white tint into the SceneUniform. Camera+light frame
+  setup now matches the engine contract. Runtime: **136/136**.
+- Remaining: full engine renderer/scene API, image/text, and deletion of the
+  Zig layer.
 
 ## Migration stages
 

@@ -351,3 +351,25 @@ scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli
     e7_store_f32(ubo + 196, ey)
     e7_store_f32(ubo + 200, ez)
     e7_store_f32(ubo + 204, 1.0)
+
+# Write the engine point-light parameters and white tint into the SceneUniform.
+scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, intensity_milli: i64) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    e7_store_f32(ubo + 208, e7_f32_div(e7_f32_from_i64(x_milli), 1000.0))
+    e7_store_f32(ubo + 212, e7_f32_div(e7_f32_from_i64(y_milli), 1000.0))
+    e7_store_f32(ubo + 216, e7_f32_div(e7_f32_from_i64(z_milli), 1000.0))
+    e7_store_f32(ubo + 220, 1.0)
+    e7_store_f32(ubo + 224, e7_f32_div(e7_f32_from_i64(r_milli), 1000.0))
+    e7_store_f32(ubo + 228, e7_f32_div(e7_f32_from_i64(g_milli), 1000.0))
+    e7_store_f32(ubo + 232, e7_f32_div(e7_f32_from_i64(b_milli), 1000.0))
+    e7_store_f32(ubo + 236, e7_f32_div(e7_f32_from_i64(intensity_milli), 1000.0))
+    e7_store_f32(ubo + 240, 0.02)
+    e7_store_f32(ubo + 244, 0.02)
+    e7_store_f32(ubo + 248, 0.03)
+    e7_store_f32(ubo + 252, 1.0)
+    e7_store_f32(ubo + 256, 1.0)
+    e7_store_f32(ubo + 260, 1.0)
+    e7_store_f32(ubo + 264, 1.0)
+    e7_store_f32(ubo + 268, 1.0)
