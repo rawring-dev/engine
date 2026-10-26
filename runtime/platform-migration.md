@@ -89,8 +89,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   raw-memory state block.  The test creates a hidden Vulkan window, builds the
   scene, draws the triangle, and verifies the center pixel is the shader green.
   Runtime: **136/136** with lavapipe.
-- Remaining: full engine renderer/scene API, image/text, and deletion of the
-  Zig layer.
+- **5b (assets):** added validated `mesh.vert.spv`/`mesh.frag.spv` shaders with
+  a vertex buffer (position/color) and `Scene` UBO.  Pipeline integration is
+  pending; the first attempt crashed inside `vkCreateGraphicsPipelines` and was
+  reverted rather than committed unverified.
+- Remaining: mesh pipeline/draw path, full engine renderer/scene API,
+  image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
