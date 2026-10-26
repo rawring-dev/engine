@@ -1,0 +1,59 @@
+# SDL/Vulkan runtime migration
+
+Goal: the `runtime` package must not link or implement SDL3/Vulkan. The e7
+engine owns the platform intrinsics and reaches SDL/Vulkan through the generic
+C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
+
+## Completed foundation
+
+- `runtime/src/ffi/dl.zig`: `dlopen`/`LoadLibrary`, symbol lookup, call
+  trampolines 0..16, data access.
+- `runtime/src/ffi/cbridge.zig`: cached `e7_cffi_bind(library, symbol)` and
+  `e7_ffi_call0..16` callable from e7 source.
+- Compiler intrinsic table + bytecode support for `e7_cffi_bind`,
+  `e7_ffi_call0..16`, `e7_str_data/len/new`, `e7_alloc_bytes`, `e7_free_ptr`,
+  and `e7_load/store_*`.
+- End-to-end test: e7 source binds libc `strlen` and calls it.
+- ORC tests call library symbols directly; dynamic-library tests cover `cos`,
+  `strlen`, `qsort` callbacks, and data symbols.
+
+## Migration stages
+
+1. **Raw platform bindings in e7**
+   - SDL: `SDL_InitSubSystem`, `SDL_CreateWindow`, `SDL_PollEvent`,
+     `SDL_DestroyWindow`, keyboard/mouse/text state, relative mouse mode.
+   - Vulkan: instance + physical/logical device + surface + swapchain creation,
+     render pass, command buffers, clear/present, readback capture.
+   - State is stored in raw allocations (`e7_alloc_bytes`) owned by opaque
+     handles; e7 has no mutable globals, so the handle carries the state.
+
+2. **Intrinsic parity**
+   - Reimplement `e7_engine_window_*`, input, `e7_engine_scene_*`,
+     `e7_font_*`/`e7_text_*`, and `e7_image_*` as e7 functions with the existing
+     signatures. Import them into the engine modules so they shadow the
+     compiler-known intrinsics.
+   - `e7_engine_read_shader` and `e7_engine_time_now_ms` remain generic runtime
+     helpers (filesystem/clock, not SDL/Vulkan).
+
+3. **Renderer port**
+   - Port the SPIR-V pipeline, vertex/index buffers, uniform slots, descriptor
+     sets, texture upload, depth target, and draw paths from
+     `runtime/src/ffi/renderer.zig` into e7 using raw-memory Vulkan calls.
+   - Keep the shader SPIR-V assets as data consumed by e7.
+
+4. **Remove Zig platform layer**
+   - Delete `runtime/src/ffi/{sdl,window,vulkan,renderer}.zig`, `engine.zig`,
+     `text.zig`, `image.zig`, the SDL/Vulkan link directives, and the old
+     engine/image/text symbol manifests.
+   - Move/retire the runtime engine/scene tests with the implementation.
+
+5. **Build/runtime packaging**
+   - `engine-run` links only the runtime; e7 loads SDL/Vulkan libraries from
+     the platform loader. No SDL/Vulkan headers or libraries in
+     `runtime/build.zig`.
+
+## Current blocker
+
+The existing Zig platform layer is ~180 KB of renderer/engine code and is
+exercised by 128 runtime tests. Stage 3 must reach visual parity before stage 4
+deletes it; otherwise window/scene/UI behavior and capture tests regress.
