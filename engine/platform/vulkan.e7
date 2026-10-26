@@ -836,6 +836,26 @@ create_framebuffer <- (device: i64, render_pass: i64, view: i64, width: i64, hei
 
 # Create a single-attachment render pass plus an image view and framebuffer for
 # each swapchain image.  Returns 1 on success.
+create_framebuffer_depth <- (device: i64, render_pass: i64, color_view: i64, depth_view: i64, width: i64, height: i64, out_framebuffer: u64) -> nil:
+    if depth_view == 0:
+        create_framebuffer(device, render_pass, color_view, width, height, out_framebuffer)
+        ret
+    attachments := e7_alloc_bytes(16)
+    e7_store_u64(attachments, color_view)
+    e7_store_u64(attachments + 8, depth_view)
+    info := e7_alloc_bytes(64)
+    e7_store_u32(info, 37)
+    e7_store_u64(info + 24, render_pass)
+    e7_store_u32(info + 32, 2)
+    e7_store_u64(info + 40, attachments)
+    e7_store_u32(info + 48, width)
+    e7_store_u32(info + 52, height)
+    e7_store_u32(info + 56, 1)
+    create := bind_vk("vkCreateFramebuffer")
+    e7_ffi_call4(create, device, info, 0, out_framebuffer)
+    e7_free_ptr(attachments)
+    e7_free_ptr(info)
+
 vulkan_render_targets <- (
     device: i64,
     swapchain_images: i64,
@@ -843,17 +863,28 @@ vulkan_render_targets <- (
     format: i64,
     width: i64,
     height: i64,
+    depth_view: i64,
     out_render_pass: u64,
     out_views: u64,
     out_framebuffers: u64,
 ) -> i64:
-    attachment := e7_alloc_bytes(36)
-    e7_store_u32(attachment + 4, format)
-    e7_store_u32(attachment + 8, 1)
-    e7_store_u32(attachment + 12, 1)
-    e7_store_u32(attachment + 16, 0)
-    e7_store_u32(attachment + 28, 0)
-    e7_store_u32(attachment + 32, 1000001002)
+    attachment_count := 1
+    if depth_view != 0:
+        attachment_count = 2
+    attachments := e7_alloc_bytes(attachment_count * 36)
+    e7_store_u32(attachments + 4, format)
+    e7_store_u32(attachments + 8, 1)
+    e7_store_u32(attachments + 12, 1)
+    e7_store_u32(attachments + 16, 0)
+    e7_store_u32(attachments + 28, 0)
+    e7_store_u32(attachments + 32, 1000001002)
+    if depth_view != 0:
+        e7_store_u32(attachments + 40, 126)
+        e7_store_u32(attachments + 44, 1)
+        e7_store_u32(attachments + 48, 1)
+        e7_store_u32(attachments + 52, 1)
+        e7_store_u32(attachments + 64, 0)
+        e7_store_u32(attachments + 68, 3)
     reference := e7_alloc_bytes(8)
     e7_store_u32(reference, 0)
     e7_store_u32(reference + 4, 2)
@@ -861,10 +892,15 @@ vulkan_render_targets <- (
     e7_store_u32(subpass + 4, 0)
     e7_store_u32(subpass + 24, 1)
     e7_store_u64(subpass + 32, reference)
+    if depth_view != 0:
+        depth_reference := e7_alloc_bytes(8)
+        e7_store_u32(depth_reference, 1)
+        e7_store_u32(depth_reference + 4, 3)
+        e7_store_u64(subpass + 48, depth_reference)
     render_pass_info := e7_alloc_bytes(64)
     e7_store_u32(render_pass_info, 38)
-    e7_store_u32(render_pass_info + 20, 1)
-    e7_store_u64(render_pass_info + 24, attachment)
+    e7_store_u32(render_pass_info + 20, attachment_count)
+    e7_store_u64(render_pass_info + 24, attachments)
     e7_store_u32(render_pass_info + 32, 1)
     e7_store_u64(render_pass_info + 40, subpass)
     create_render_pass := bind_vk("vkCreateRenderPass")
@@ -879,7 +915,7 @@ vulkan_render_targets <- (
         create_image_view(device, image, format, view_out)
         view := e7_load_u64(view_out)
         e7_store_u64(views, view)
-        create_framebuffer(device, render_pass, view, width, height, framebuffers)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers)
         e7_free_ptr(view_out)
     if image_count > 1:
         image := e7_load_u64(swapchain_images + 8)
@@ -887,7 +923,7 @@ vulkan_render_targets <- (
         create_image_view(device, image, format, view_out)
         view := e7_load_u64(view_out)
         e7_store_u64(views + 8, view)
-        create_framebuffer(device, render_pass, view, width, height, framebuffers + 8)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 8)
         e7_free_ptr(view_out)
     if image_count > 2:
         image := e7_load_u64(swapchain_images + 16)
@@ -895,7 +931,7 @@ vulkan_render_targets <- (
         create_image_view(device, image, format, view_out)
         view := e7_load_u64(view_out)
         e7_store_u64(views + 16, view)
-        create_framebuffer(device, render_pass, view, width, height, framebuffers + 16)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 16)
         e7_free_ptr(view_out)
     if image_count > 3:
         image := e7_load_u64(swapchain_images + 24)
@@ -903,11 +939,11 @@ vulkan_render_targets <- (
         create_image_view(device, image, format, view_out)
         view := e7_load_u64(view_out)
         e7_store_u64(views + 24, view)
-        create_framebuffer(device, render_pass, view, width, height, framebuffers + 24)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 24)
         e7_free_ptr(view_out)
     e7_store_u64(out_views, views)
     e7_store_u64(out_framebuffers, framebuffers)
-    e7_free_ptr(attachment)
+    e7_free_ptr(attachments)
     e7_free_ptr(reference)
     e7_free_ptr(subpass)
     e7_free_ptr(render_pass_info)
@@ -1071,6 +1107,7 @@ vulkan_draw_triangle_capture <- (
     index_count: i64,
     descriptor_set: i64,
     pipeline_layout: i64,
+    has_depth: i64,
     out_pixels: u64,
     out_size: u64,
 ) -> i64:
@@ -1143,8 +1180,10 @@ vulkan_draw_triangle_capture <- (
     image := e7_load_u64(images + ((image_index * 8) as u64))
     framebuffer := e7_load_u64((framebuffers as u64) + ((image_index * 8) as u64))
 
-    clear_value := e7_alloc_bytes(16)
-    e7_store_u32(clear_value + 12, 1065353216)
+    clear_values := e7_alloc_bytes(32)
+    e7_store_u32(clear_values + 12, 1065353216)
+    if has_depth != 0:
+        e7_store_u32(clear_values + 16, 1065353216)
     render_area := e7_alloc_bytes(16)
     e7_store_u32(render_area + 8, width)
     e7_store_u32(render_area + 12, height)
@@ -1156,8 +1195,11 @@ vulkan_draw_triangle_capture <- (
     e7_store_u32(render_pass_begin + 36, 0)
     e7_store_u32(render_pass_begin + 40, width)
     e7_store_u32(render_pass_begin + 44, height)
-    e7_store_u32(render_pass_begin + 48, 1)
-    e7_store_u64(render_pass_begin + 56, clear_value)
+    clear_count := 1
+    if has_depth != 0:
+        clear_count = 2
+    e7_store_u32(render_pass_begin + 48, clear_count)
+    e7_store_u64(render_pass_begin + 56, clear_values)
     begin_render_pass := bind_vk("vkCmdBeginRenderPass")
     e7_ffi_call3(begin_render_pass, command, render_pass_begin, 0)
     bind_pipeline := bind_vk("vkCmdBindPipeline")
@@ -1271,7 +1313,7 @@ vulkan_draw_triangle_capture <- (
     e7_free_ptr(begin_info)
     e7_free_ptr(image_count_out)
     e7_free_ptr(images)
-    e7_free_ptr(clear_value)
+    e7_free_ptr(clear_values)
     e7_free_ptr(render_area)
     e7_free_ptr(render_pass_begin)
     e7_free_ptr(viewport)
@@ -1590,6 +1632,11 @@ vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u6
     e7_store_u32(dynamic_state, 27)
     e7_store_u32(dynamic_state + 20, 2)
     e7_store_u64(dynamic_state + 24, dynamic_states)
+    depth_state := e7_alloc_bytes(104)
+    e7_store_u32(depth_state, 25)
+    e7_store_u32(depth_state + 20, 1)
+    e7_store_u32(depth_state + 24, 1)
+    e7_store_u32(depth_state + 28, 3)
     pipeline_info := e7_alloc_bytes(144)
     e7_store_u32(pipeline_info, 28)
     e7_store_u32(pipeline_info + 20, 2)
@@ -1599,6 +1646,7 @@ vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u6
     e7_store_u64(pipeline_info + 56, viewport_state)
     e7_store_u64(pipeline_info + 64, raster)
     e7_store_u64(pipeline_info + 72, multisample)
+    e7_store_u64(pipeline_info + 80, depth_state)
     e7_store_u64(pipeline_info + 88, blend_state)
     e7_store_u64(pipeline_info + 96, dynamic_state)
     e7_store_u64(pipeline_info + 104, pipeline_layout)
@@ -1627,6 +1675,7 @@ vulkan_mesh_pipeline_simple <- (device: i64, render_pass: i64, vertex_shader: u6
     e7_free_ptr(blend_state)
     e7_free_ptr(dynamic_states)
     e7_free_ptr(dynamic_state)
+    e7_free_ptr(depth_state)
     e7_free_ptr(pipeline_info)
     if result != 0:
         ret 0

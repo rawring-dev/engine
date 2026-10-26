@@ -121,8 +121,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **6b (resource):** `vulkan_depth_target` creates a `D32_SFLOAT` depth image,
   device memory, and depth image view; the e7 scene creates/destroys it.
   Render-pass/pipeline depth integration is next. Runtime: **136/136**.
-- Remaining: depth render-pass/pipeline wiring, camera/light updates, full
-  engine renderer/scene API, image/text, and deletion of the Zig layer.
+- **6c (done):** depth is wired into the scene: render pass depth attachment
+  (CLEAR/STORE, D32_SFLOAT), framebuffers with color+depth views, two clear
+  values, and depth test/write/LESS_OR_EQUAL in the mesh pipeline.  The indexed
+  cube still renders and captures correctly.  Runtime: **136/136**.
+- Remaining: camera/light updates, full engine renderer/scene API, image/text,
+  and deletion of the Zig layer.
 
 ## Migration stages
 

@@ -94,17 +94,6 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_store_u32(scene + 88, width)
     e7_store_u32(scene + 92, height)
 
-    render_pass_out := e7_alloc_bytes(8)
-    views_out := e7_alloc_bytes(8)
-    framebuffers_out := e7_alloc_bytes(8)
-    if vulkan_render_targets(device, images, image_count, format, width, height, render_pass_out, views_out, framebuffers_out) == 0:
-        ret 0
-    render_pass := e7_load_u64(render_pass_out)
-    views := e7_load_u64(views_out)
-    framebuffers := e7_load_u64(framebuffers_out)
-    e7_store_u64(scene + 64, render_pass)
-    e7_store_u64(scene + 80, framebuffers)
-    e7_store_u64(scene + 96, views)
     depth_image_out := e7_alloc_bytes(8)
     depth_memory_out := e7_alloc_bytes(8)
     depth_view_out := e7_alloc_bytes(8)
@@ -113,9 +102,21 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_store_u64(scene + 208, e7_load_u64(depth_image_out))
     e7_store_u64(scene + 216, e7_load_u64(depth_memory_out))
     e7_store_u64(scene + 224, e7_load_u64(depth_view_out))
+    depth_view := e7_load_u64(depth_view_out)
     e7_free_ptr(depth_image_out)
     e7_free_ptr(depth_memory_out)
     e7_free_ptr(depth_view_out)
+    render_pass_out := e7_alloc_bytes(8)
+    views_out := e7_alloc_bytes(8)
+    framebuffers_out := e7_alloc_bytes(8)
+    if vulkan_render_targets(device, images, image_count, format, width, height, depth_view, render_pass_out, views_out, framebuffers_out) == 0:
+        ret 0
+    render_pass := e7_load_u64(render_pass_out)
+    views := e7_load_u64(views_out)
+    framebuffers := e7_load_u64(framebuffers_out)
+    e7_store_u64(scene + 64, render_pass)
+    e7_store_u64(scene + 80, framebuffers)
+    e7_store_u64(scene + 96, views)
 
     vert := e7_engine_read_shader("engine/platform/shaders/triangle.vert.spv")
     frag := e7_engine_read_shader("engine/platform/shaders/triangle.frag.spv")
@@ -245,6 +246,7 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         36,
         e7_load_u64(scene + 128),
         e7_load_u64(scene + 168),
+        1,
         out_pixels,
         out_size,
     )
