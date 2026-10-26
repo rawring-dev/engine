@@ -17,6 +17,18 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - ORC tests call library symbols directly; dynamic-library tests cover `cos`,
   `strlen`, `qsort` callbacks, and data symbols.
 
+## Stage progress
+
+- **1a (done):** e7 source initializes SDL video, sets `SDL_VIDEODRIVER`, creates
+  a hidden `SDL_Window`, destroys it, and quits the subsystem using only
+  `e7_cffi_bind`/`e7_ffi_call*`, `e7_cstr`, and `e7_alloc_bytes`.
+- **1b (done):** e7 source builds `VkApplicationInfo`/`VkInstanceCreateInfo` in
+  raw memory, creates a Vulkan instance, calls
+  `vkEnumeratePhysicalDevices`, and destroys the instance. Device enumeration is
+  treated as zero devices when the headless loader reports no GPU.
+- Remaining: SDL event/input state, Vulkan device/swapchain/present/capture,
+  e7 intrinsic wrappers, renderer, image/text, and deletion of the Zig layer.
+
 ## Migration stages
 
 1. **Raw platform bindings in e7**
