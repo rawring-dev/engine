@@ -484,8 +484,13 @@ nested derived structs, and vectors through a compiler-generated schema.
 
 The engine libraries now also include an `obj.e7` Wavefront parser,
 PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
-`physics.e7` library with `RigidBody`, box/sphere colliders, AABB/sphere
-raycasts, gravity integration, and a camera raycast resource.
+`physics.e7` library with `RigidBody`, box/sphere/capsule/plane colliders,
+AABB/sphere raycasts, gravity integration, pickup/hold, and a camera raycast
+resource. `physics_broadphase.e7` maintains a spatial grid with aggregated
+region/ray candidate queries; `physics_narrowphase.e7` provides overlap,
+penetration, and ray tests. The demo starts with a static plane, a
+rotation-locked capsule player, a dynamic ball, and three stacked cubes;
+multi-object rendering draws the scene through `e7_engine_scene_draw_box`.
 
 Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
@@ -539,7 +544,7 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 322 tests: scheduler 8, compiler 199, runtime 92,
+`zig build test` runs 328 tests: scheduler 8, compiler 201, runtime 96,
 transpiler 20.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock

@@ -5,11 +5,11 @@ use time::*;
 
 @trigger(Update)
 pub spin_cube <- sys (
-    transforms: select &mut Transform from Components where has CubeMesh,
+    transforms: select &mut Transform, &CubeMesh from Components,
     time: res &Time,
 ):
-    for transform in transforms:
-        transform.rotation[1] = time.elapsed * 0.9
+    for (transform, cube) in transforms:
+        transform.rotation[1] = time.elapsed * 0.9 + cube.spin_phase
 
 
 @trigger(Update)
@@ -25,16 +25,11 @@ pub update_light <- sys (lights: select &mut PointLight from Components, time: r
 pub render_scene <- sys (
     gpu: res &mut Gpu,
     window: res &mut Window,
-    time: res &Time,
-    cubes: select &CubeMesh, &Transform from Components,
+    renderables: select &Transform, &Renderable, &BodyBounds from Components,
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
 ):
-    cube_angle := 0.0
-    light_x := 0.0
-    light_y := 0.0
-    light_z := 0.0
-
+    # First-person: the ECS camera is the eye.  Every renderable shares it.
     for camera in cameras:
         yaw_degrees := camera.yaw * 57.2957795
         pitch_degrees := camera.pitch * 57.2957795
@@ -47,29 +42,48 @@ pub render_scene <- sys (
             e7_f32_to_milli(pitch_degrees),
         )
 
-    for (cube, cube_transform) in cubes:
-        cube_angle = cube_transform.rotation[1]
     for light_row in lights:
-        light_x = light_row.position[0]
-        light_y = light_row.position[1]
-        light_z = light_row.position[2]
+        e7_engine_scene_set_light(
+            gpu.scene,
+            e7_f32_to_milli(light_row.position[0]),
+            e7_f32_to_milli(light_row.position[1]),
+            e7_f32_to_milli(light_row.position[2]),
+            e7_f32_to_milli(light_row.colour[0]),
+            e7_f32_to_milli(light_row.colour[1]),
+            e7_f32_to_milli(light_row.colour[2]),
+            e7_f32_to_milli(light_row.intensity),
+        )
 
-    # Frame submission is e7 policy: configure the frame, begin it, dispatch
-    # the mesh draw, and end/present it through separate intrinsics.
-    e7_engine_scene_set_cube_angle(gpu.scene, e7_f32_to_milli(cube_angle))
-    e7_engine_scene_set_light(
-        gpu.scene,
-        e7_f32_to_milli(light_x),
-        e7_f32_to_milli(light_y),
-        e7_f32_to_milli(light_z),
-        e7_f32_to_milli(1.0),
-        e7_f32_to_milli(0.9),
-        e7_f32_to_milli(0.8),
-        e7_f32_to_milli(4.0),
-    )
+    # Frame submission is e7 policy: configure camera/light, begin the frame,
+    # draw one box per renderable, then end/present it.
     e7_engine_scene_begin_frame(gpu.scene)
-    e7_engine_scene_draw_mesh(gpu.scene)
+    for (transform, renderable, bounds) in renderables:
+        # Physics bodies keep their visual size in BodyBounds; the built-in
+        # unit cube spans [-1, 1], so the box scale equals the half-extents.
+        sx := bounds.half_extents[0]
+        sy := bounds.half_extents[1]
+        sz := bounds.half_extents[2]
+        if renderable.kind == 1:
+            # Sphere proxy: use the largest half-extent on every axis so the
+            # box reads as a cube around the ball.
+            radius := bounds.half_extents[0]
+            if bounds.half_extents[1] > radius:
+                radius = bounds.half_extents[1]
+            if bounds.half_extents[2] > radius:
+                radius = bounds.half_extents[2]
+            sx = radius
+            sy = radius
+            sz = radius
+        e7_engine_scene_draw_box(
+            gpu.scene,
+            e7_f32_to_milli(transform.translation[0]),
+            e7_f32_to_milli(transform.translation[1]),
+            e7_f32_to_milli(transform.translation[2]),
+            e7_f32_to_milli(sx),
+            e7_f32_to_milli(sy),
+            e7_f32_to_milli(sz),
+            e7_f32_to_milli(transform.rotation[1]),
+        )
     e7_engine_scene_end_frame(gpu.scene)
 
     window.quit_requested = e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
-

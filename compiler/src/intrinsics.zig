@@ -46,6 +46,9 @@ pub const scene_camera_units = "eye xyz in milli-units, yaw/pitch in milli-degre
 /// Scene draw: delta in milliseconds; cube angle in milli-radians; light xyz
 /// in milli-units.
 pub const scene_draw_units = "delta_ms, cube angle milli-radians, light xyz milli-units";
+/// Per-object box draw: position/scale in milli-units, Y rotation in
+/// milli-radians.
+pub const scene_box_units = "position/scale milli-units, angle milli-radians";
 
 pub const functions = [_]Function{
     .{
@@ -124,6 +127,12 @@ pub const functions = [_]Function{
         .result = .i64_,
     },
     .{
+        .name = "e7_engine_scene_draw_box",
+        .params = &.{ .u64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_, .i64_ },
+        .result = .i64_,
+        .units = scene_box_units,
+    },
+    .{
         .name = "e7_engine_scene_end_frame",
         .params = &.{.u64_},
         .result = .i64_,
@@ -197,4 +206,27 @@ pub fn lookup(name: []const u8) ?Function {
         if (std.mem.eql(u8, function.name, name)) return function;
     }
     return null;
+}
+
+test "compiler-known intrinsics map to bytecode runtime calls with matching arity" {
+    const bytecode = @import("bytecode.zig");
+    for (functions) |function| {
+        const runtime = bytecode.RuntimeFunction.fromSymbol(function.name) orelse {
+            std.debug.print("no RuntimeFunction for intrinsic {s}\n", .{function.name});
+            return error.TestUnexpectedResult;
+        };
+        if (runtime.arity() != @as(u16, @intCast(function.params.len))) {
+            std.debug.print("arity mismatch for {s}: intrinsic {d}, bytecode {d}\n", .{
+                function.name,
+                function.params.len,
+                runtime.arity(),
+            });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // The multi-object scene draw is registered with 8 i64 arguments:
+    // handle + position xyz + scale xyz + Y angle.
+    const draw_box = lookup("e7_engine_scene_draw_box").?;
+    try std.testing.expectEqual(@as(usize, 8), draw_box.params.len);
+    try std.testing.expectEqual(ValueType.i64_, draw_box.result);
 }

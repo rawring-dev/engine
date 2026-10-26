@@ -32,8 +32,19 @@ pub PointLight <- struct
     colour: [f32; 3]
     intensity: f32
 
+# Marks an entity as visible to the scene renderer.  `kind` is a visual hint:
+# 0 box, 1 sphere, 2 capsule, 3 plane.  The renderer currently proxies every
+# kind as a box (sphere uses its largest half-extent uniformly); the hint is
+# kept so materials/meshes can be selected here later without changing rows.
+@Components
+pub Renderable <- struct
+    kind: i32
+
+# Cube proxy with a per-cube spin phase so stacked proxies do not rotate in
+# lockstep (they would otherwise read as a single tall box).
 @Components
 pub CubeMesh <- struct
+    spin_phase: f32
 
 pub Components <- table
     entity_id: usize,

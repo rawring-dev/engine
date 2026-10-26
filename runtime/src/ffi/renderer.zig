@@ -2,11 +2,13 @@
 //!
 //! `Scene` owns a `Surface` (instance/device/swapchain/offscreen target), a
 //! SPIR-V vertex/fragment pipeline with a depth test, a host-visible uniform
-//! buffer, and a unit cube with a fixed position/normal/colour vertex format.
-//! Each frame it writes the model/view/projection matrices plus point-light
-//! parameters into the uniform buffer, records one indexed draw into the
-//! surface's offscreen colour+depth target, and either presents the result or
-//! copies it back for headless validation.
+//! buffer with one aligned slot per drawable object, and a unit cube with a
+//! fixed position/normal/colour vertex format.  Each frame it writes the
+//! model/view/projection matrices plus point-light parameters into a per-object
+//! uniform slot, records one indexed draw per object into the surface's
+//! offscreen colour+depth target, and either presents the result or copies it
+//! back for headless validation.  Up to `max_objects` boxes can be drawn per
+//! frame; all share the frame's camera and light.
 //!
 //! Matrix convention: matrices are column-major (`Mat4[col][row]`), matching
 //! the `column_major float4x4` fields emitted from `engine/shaders/*.e7`.
@@ -31,6 +33,9 @@ pub const Error = vulkan.Error || error{
     DescriptorCreateFailed,
     BufferCreateFailed,
     WindowOperationFailed,
+    FrameAlreadyActive,
+    FrameNotActive,
+    ObjectLimit,
 };
 
 /// A scene frame starts from this background colour unless overridden.
@@ -47,6 +52,10 @@ pub const Vertex = extern struct {
 
 pub const vertex_count = 24;
 pub const index_count = 36;
+
+/// Per-frame draw limit.  Each object gets its own aligned uniform-buffer slot
+/// so a frame can draw up to this many boxes with distinct model matrices.
+pub const max_objects = 64;
 
 /// Uniform block, std140-compatible and 256 bytes.  Matrices are stored as
 /// four contiguous columns (`Mat4[col][row]`), matching the `column_major`
@@ -70,6 +79,16 @@ pub const Camera = struct {
     yaw: f32 = 0.0,
     /// Radians; positive looks up.
     pitch: f32 = -0.14,
+};
+
+/// One drawable box: world translation, per-axis scale, and a Y rotation
+/// (radians).  The built-in unit cube spans [-1, 1], so scale is half-extent
+/// based: a 1x1x1 cube needs scale (1, 1, 1), a plane 100x0.2x100 needs
+/// (50, 0.1, 50).
+pub const Box = struct {
+    position: Vec3 = .{ 0.0, 0.0, 0.0 },
+    scale: Vec3 = .{ 1.0, 1.0, 1.0 },
+    angle: f32 = 0.0,
 };
 
 pub const default_light_color = [4]f32{ 1.0, 0.94, 0.86, 4.0 };
@@ -205,6 +224,26 @@ pub fn matRotationY(angle: f32) Mat4 {
     return m;
 }
 
+pub fn matTranslation(translation: Vec3) Mat4 {
+    var m = matIdentity();
+    m[3] = .{ translation[0], translation[1], translation[2], 1.0 };
+    return m;
+}
+
+pub fn matScale(scale: Vec3) Mat4 {
+    var m = matIdentity();
+    m[0][0] = scale[0];
+    m[1][1] = scale[1];
+    m[2][2] = scale[2];
+    return m;
+}
+
+/// Model matrix for a box: translate * rotate around Y * scale (column-vector
+/// convention, so the box is scaled first, then rotated, then moved).
+pub fn boxModel(box: Box) Mat4 {
+    return matMul(matTranslation(box.position), matMul(matRotationY(box.angle), matScale(box.scale)));
+}
+
 pub const CameraBasis = struct {
     forward: Vec3,
     right: Vec3,
@@ -296,6 +335,13 @@ pub const Scene = struct {
     vertex: BufferAllocation = .{},
     index: BufferAllocation = .{},
     uniform: BufferAllocation = .{},
+    /// Bytes between per-object uniform slots (a multiple of the device's
+    /// minUniformBufferOffsetAlignment and of @sizeOf(Uniforms)).
+    uniform_stride: u32 = @sizeOf(Uniforms),
+    /// Model matrices recorded by the current/last frame, replayed by
+    /// `captureRecordedFrame` so headless captures include every object.
+    recorded_models: [max_objects]Mat4 = undefined,
+    recorded_count: usize = 0,
 
     camera: Camera = .{},
     /// Pending frame state for the split begin/draw/end ABI used by e7.
@@ -325,6 +371,7 @@ pub const Scene = struct {
         errdefer self.deinit();
 
         const device = self.surface.device.?;
+        self.uniform_stride = self.computeUniformStride();
         self.vert_module = try self.createShaderModule(device, vert_spv);
         self.frag_module = try self.createShaderModule(device, frag_spv);
 
@@ -447,7 +494,7 @@ pub const Scene = struct {
         );
         self.uniform = try self.createHostBuffer(
             device,
-            @sizeOf(Uniforms),
+            @as(usize, self.uniform_stride) * max_objects,
             c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         );
 
@@ -457,14 +504,24 @@ pub const Scene = struct {
         index_target.* = cube_indices;
     }
 
-    fn uniformPtr(self: *Scene) *Uniforms {
-        return @ptrCast(@alignCast(self.uniform.mapped.?));
+    fn computeUniformStride(self: *Scene) u32 {
+        var props = std.mem.zeroes(c.VkPhysicalDeviceProperties);
+        c.vkGetPhysicalDeviceProperties(self.surface.physical.?, &props);
+        const alignment: u32 = @intCast(@max(props.limits.minUniformBufferOffsetAlignment, 1));
+        const block_size: u32 = @sizeOf(Uniforms);
+        const stride = ((block_size + alignment - 1) / alignment) * alignment;
+        return @max(stride, block_size);
+    }
+
+    fn uniformSlot(self: *Scene, slot: usize) *Uniforms {
+        const offset = @as(usize, slot) * self.uniform_stride;
+        return @ptrCast(@alignCast(self.uniform.mapped.? + offset));
     }
 
     fn createDescriptors(self: *Scene, device: c.VkDevice) Error!void {
         var binding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
         binding.binding = 0;
-        binding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        binding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         binding.descriptorCount = 1;
         binding.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -479,7 +536,7 @@ pub const Scene = struct {
         self.descriptor_set_layout = set_layout;
 
         var pool_size = std.mem.zeroes(c.VkDescriptorPoolSize);
-        pool_size.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_size.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         pool_size.descriptorCount = 1;
         var pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
         pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -512,7 +569,7 @@ pub const Scene = struct {
         write.dstSet = set;
         write.dstBinding = 0;
         write.descriptorCount = 1;
-        write.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         write.pBufferInfo = &buffer_info;
         c.vkUpdateDescriptorSets(device, 1, &write, 0, null);
 
@@ -690,19 +747,17 @@ pub const Scene = struct {
         self.light_color = color;
     }
 
-    fn writeUniforms(self: *Scene) void {
+    fn writeUniformSlot(self: *Scene, slot: usize, model: Mat4) void {
         const extent = self.surface.extent;
         const aspect = if (extent.height == 0)
             1.0
         else
             @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
 
-        const model = matMul(matRotationY(self.spin), matRotationX(0.35));
         const view = matView(self.camera.eye, self.camera.yaw, self.camera.pitch);
         const proj = matPerspective(default_fov_y, aspect, default_near, default_far);
 
-        const target = self.uniformPtr();
-        target.* = .{
+        self.uniformSlot(slot).* = .{
             .model = model,
             .view = view,
             .proj = proj,
@@ -713,7 +768,10 @@ pub const Scene = struct {
         };
     }
 
-    fn recordDraw(self: *Scene, cmd: c.VkCommandBuffer) void {
+    /// Bind the pipeline, dynamic viewport/scissor, and the shared cube
+    /// vertex/index buffers.  Per-object draws then only bind their dynamic
+    /// uniform slot and record an indexed draw.
+    fn recordFrameSetup(self: *Scene, cmd: c.VkCommandBuffer) void {
         const extent = self.surface.extent;
         c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline.?);
 
@@ -734,8 +792,27 @@ pub const Scene = struct {
         var vertex_offset: c.VkDeviceSize = 0;
         c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &vertex_offset);
         c.vkCmdBindIndexBuffer(cmd, self.index.buffer.?, 0, c.VK_INDEX_TYPE_UINT16);
+    }
+
+    /// Reset the recorded-object list and bind the shared pipeline state for
+    /// the render pass that is currently open.
+    fn beginRecordedFrame(self: *Scene, cmd: c.VkCommandBuffer) void {
+        self.recorded_count = 0;
+        self.recordFrameSetup(cmd);
+    }
+
+    /// Write `model` into the next per-object uniform slot and record one
+    /// indexed cube draw with that slot bound as a dynamic UBO offset.
+    /// Returns false when the per-frame object limit is reached.
+    fn recordObject(self: *Scene, cmd: c.VkCommandBuffer, model: Mat4) bool {
+        if (self.recorded_count >= max_objects) return false;
+        const slot = self.recorded_count;
+        self.writeUniformSlot(slot, model);
+        self.recorded_models[slot] = model;
+        self.recorded_count += 1;
 
         var descriptor_set = self.descriptor_set.?;
+        var dynamic_offset: u32 = @intCast(slot * self.uniform_stride);
         c.vkCmdBindDescriptorSets(
             cmd,
             c.VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -743,38 +820,57 @@ pub const Scene = struct {
             0,
             1,
             &descriptor_set,
-            0,
-            null,
+            1,
+            &dynamic_offset,
         );
         c.vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
+        return true;
+    }
+
+    /// Model matrix used by the legacy single-cube entry points (`drawMesh`,
+    /// `draw`, `captureFrame`): a Y spin plus the original fixed X tilt.
+    fn legacyCubeModel(self: *Scene) Mat4 {
+        return matMul(matRotationY(self.spin), matRotationX(0.35));
     }
 
     /// Begin a presentable frame: acquire the swapchain image, rebuild the
-    /// pipeline if needed, upload the current uniforms, and open the render
-    /// pass.  e7 calls this before one or more `drawMesh` calls and
-    /// `endFrame`.
+    /// pipeline if needed, and open the render pass.  e7 calls this, then one
+    /// or more `drawBox`/`drawMesh` calls, then `endFrame`.
     pub fn beginFrame(self: *Scene) Error!void {
-        if (self.frame_index != null) return error.VulkanFailed;
+        if (self.frame_index != null) return error.FrameAlreadyActive;
         self.frame_index = try self.surface.acquireFrame();
         try self.ensurePipeline();
-        self.writeUniforms();
-        self.frame_cmd = try self.surface.beginScene(self.clear_color, default_clear_depth);
+        const cmd = self.surface.beginScene(self.clear_color, default_clear_depth) catch |err| {
+            self.frame_index = null;
+            return err;
+        };
+        self.frame_cmd = cmd;
+        self.beginRecordedFrame(cmd);
     }
 
-    /// Record the cube draw for the frame opened by `beginFrame`.
+    /// Draw one box (position, scale, Y angle) in the frame opened by
+    /// `beginFrame`.  Every box shares the frame's camera and light.
+    pub fn drawBox(self: *Scene, box: Box) Error!void {
+        const cmd = self.frame_cmd orelse return error.FrameNotActive;
+        if (!self.recordObject(cmd, boxModel(box))) return error.ObjectLimit;
+    }
+
+    /// Record the built-in single cube for the frame opened by `beginFrame`.
+    /// Kept for the pre-multi-object path and back-compat tests.
     pub fn drawMesh(self: *Scene) void {
-        if (self.frame_cmd) |cmd| self.recordDraw(cmd);
+        const cmd = self.frame_cmd orelse return;
+        _ = self.recordObject(cmd, self.legacyCubeModel());
     }
 
     /// Close the render pass and present the acquired image.
     pub fn endFrame(self: *Scene) Error!void {
-        const index = self.frame_index orelse return error.VulkanFailed;
+        const index = self.frame_index orelse return error.FrameNotActive;
         self.frame_cmd = null;
         self.frame_index = null;
         try self.surface.endScenePresent(index);
     }
 
-    /// Render one frame and present it to the window.
+    /// Render one single-cube frame and present it to the window.
     ///
     /// `cube_angle` is the model's Y rotation in radians; `light_position` is
     /// the world-space point light.  `delta_seconds` is accepted for callers
@@ -791,15 +887,15 @@ pub const Scene = struct {
 
         const index = try self.surface.acquireFrame();
         try self.ensurePipeline();
-        self.writeUniforms();
-
         const cmd = try self.surface.beginScene(self.clear_color, default_clear_depth);
-        self.recordDraw(cmd);
+        self.beginRecordedFrame(cmd);
+        _ = self.recordObject(cmd, self.legacyCubeModel());
         try self.surface.endScenePresent(index);
     }
 
-    /// Render one frame into the offscreen target and return tightly packed
-    /// RGBA8 pixels.  Caller owns the slice (same allocator as the scene).
+    /// Render one single-cube frame into the offscreen target and return
+    /// tightly packed RGBA8 pixels.  Caller owns the slice (same allocator as
+    /// the scene).
     pub fn captureFrame(
         self: *Scene,
         cube_angle: f32,
@@ -810,9 +906,35 @@ pub const Scene = struct {
 
         const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
         try self.ensurePipeline();
-        self.writeUniforms();
-        self.recordDraw(cmd);
+        self.beginRecordedFrame(cmd);
+        _ = self.recordObject(cmd, self.legacyCubeModel());
         return self.surface.endSceneCapture();
+    }
+
+    /// Render the objects recorded by the current/last frame (camera state is
+    /// the scene's current camera/light) and return RGBA8 pixels.  The engine
+    /// frame limiter uses this so a headless capture contains every object that
+    /// was drawn, not just the legacy single cube.
+    pub fn captureRecordedFrame(self: *Scene) Error![]u8 {
+        const saved_count = self.recorded_count;
+        const cmd = try self.surface.beginSceneCapture(self.clear_color, default_clear_depth);
+        try self.ensurePipeline();
+        self.beginRecordedFrame(cmd);
+        if (saved_count == 0) {
+            _ = self.recordObject(cmd, self.legacyCubeModel());
+        } else {
+            for (0..saved_count) |slot| {
+                const model = self.recorded_models[slot];
+                _ = self.recordObject(cmd, model);
+            }
+        }
+        return self.surface.endSceneCapture();
+    }
+
+    /// Number of objects recorded for the current/last frame (test and
+    /// diagnostics hook).
+    pub fn recordedObjectCount(self: *const Scene) usize {
+        return self.recorded_count;
     }
 
     pub fn size(self: *const Scene) struct { width: u32, height: u32 } {
@@ -989,4 +1111,104 @@ test "scene renders a lit spinning cube headlessly" {
     // hidden window; the demo's interactive mode uses exactly this.
     try scene.draw(1.0 / 60.0, std.math.degreesToRadians(15.0), light);
     try scene.draw(1.0 / 60.0, std.math.degreesToRadians(20.0), light);
+}
+
+test "scene draws multiple boxes at distinct positions" {
+    var window = window_mod.Window.create("engine7 multi-box test", 320, 240, .{
+        .hidden = true,
+        .vulkan = true,
+    }, null) catch |err| {
+        std.debug.print("skipping multi-box render test (no display): {s}\n", .{@errorName(err)});
+        window_mod.shutdownVideo();
+        return;
+    };
+    defer window_mod.shutdownVideo();
+    defer window.destroy();
+
+    var scene = Scene.init(
+        std.testing.allocator,
+        &window,
+        shader_assets.cube_vert_spv,
+        shader_assets.cube_frag_spv,
+    ) catch |err| {
+        std.debug.print("skipping multi-box render test (no Vulkan): {s} ({s})\n", .{ @errorName(err), abi.lastError() });
+        return;
+    };
+    defer scene.deinit();
+
+    const light = Vec3{ 2.5, 3.0, 2.0 };
+    const boxes = [_]Box{
+        .{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.6, 0.6, 0.6 }, .angle = 0.0 },
+        .{ .position = .{ 2.0, 0.0, 0.0 }, .scale = .{ 0.5, 0.5, 0.5 }, .angle = 0.6 },
+        .{ .position = .{ -2.0, 0.5, 0.5 }, .scale = .{ 0.8, 0.4, 0.8 }, .angle = -0.4 },
+    };
+
+    // Drawing requires an active frame.
+    try std.testing.expectError(error.FrameNotActive, scene.drawBox(boxes[0]));
+
+    // Reference single-cube capture with the same camera/light.
+    const single = try scene.captureFrame(0.0, light);
+    defer std.testing.allocator.free(single);
+
+    try scene.beginFrame();
+    for (boxes) |box| try scene.drawBox(box);
+    try std.testing.expectEqual(boxes.len, scene.recordedObjectCount());
+    try scene.endFrame();
+
+    const multi = try scene.captureRecordedFrame();
+    defer std.testing.allocator.free(multi);
+    try std.testing.expect(multi.len == single.len);
+    try std.testing.expect(!std.mem.eql(u8, single, multi));
+
+    const size = scene.size();
+    const background: u32 = @as(u32, multi[0]) + multi[1] + multi[2];
+    var lit_pixels: usize = 0;
+    var index: usize = 0;
+    while (index + 3 < multi.len) : (index += 4) {
+        const sum: u32 = @as(u32, multi[index]) + multi[index + 1] + multi[index + 2];
+        if (sum > background + 60) lit_pixels += 1;
+        try std.testing.expectEqual(@as(u8, 255), multi[index + 3]);
+    }
+    try std.testing.expect(lit_pixels > 300);
+
+    // Every box centre must project to a non-background pixel, proving the
+    // per-object model matrices moved each draw off the origin.
+    const Project = struct {
+        fn transform(m: Mat4, v: [4]f32) [4]f32 {
+            var out = [4]f32{ 0, 0, 0, 0 };
+            for (0..4) |col| {
+                for (0..4) |row| out[row] += m[col][row] * v[col];
+            }
+            return out;
+        }
+
+        fn pixel(view_scene: *const Scene, point: Vec3) struct { x: usize, y: usize } {
+            const extent = view_scene.surface.extent;
+            const aspect = @as(f32, @floatFromInt(extent.width)) / @as(f32, @floatFromInt(extent.height));
+            const view = matView(view_scene.camera.eye, view_scene.camera.yaw, view_scene.camera.pitch);
+            const proj = matPerspective(default_fov_y, aspect, default_near, default_far);
+            const clip = transform(proj, transform(view, .{ point[0], point[1], point[2], 1.0 }));
+            const inv_w = 1.0 / clip[3];
+            const ndc_x = clip[0] * inv_w;
+            const ndc_y = clip[1] * inv_w;
+            const x: usize = @intFromFloat(@max(0.0, @min(1.0, ndc_x * 0.5 + 0.5)) * @as(f32, @floatFromInt(extent.width - 1)));
+            const y: usize = @intFromFloat(@max(0.0, @min(1.0, ndc_y * 0.5 + 0.5)) * @as(f32, @floatFromInt(extent.height - 1)));
+            return .{ .x = x, .y = y };
+        }
+    };
+
+    for (boxes) |box| {
+        const at = Project.pixel(&scene, box.position);
+        const offset = (at.y * size.width + at.x) * 4;
+        const sum: u32 = @as(u32, multi[offset]) + multi[offset + 1] + multi[offset + 2];
+        try std.testing.expect(sum > background + 40);
+    }
+
+    // The per-frame limit is 64 objects; the 65th draw is rejected.
+    try scene.beginFrame();
+    for (0..max_objects) |_| try scene.drawBox(.{ .position = .{ 0.0, 0.0, 0.0 }, .scale = .{ 0.3, 0.3, 0.3 } });
+    try std.testing.expectEqual(@as(usize, max_objects), scene.recordedObjectCount());
+    try std.testing.expectError(error.ObjectLimit, scene.drawBox(.{}));
+    try std.testing.expectEqual(@as(usize, max_objects), scene.recordedObjectCount());
+    try scene.endFrame();
 }

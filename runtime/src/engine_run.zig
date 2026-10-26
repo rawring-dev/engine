@@ -134,7 +134,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (options.verbose) {
         const stats = engine.renderStats();
-        std.debug.print("run-engine: scene_draws={d} frames={d}\n", .{ stats.scene_draws, engine.frames() });
+        std.debug.print("run-engine: scene_draws={d} scene_boxes={d} frames={d}\n", .{ stats.scene_draws, stats.scene_boxes, engine.frames() });
     }
     if (engine.lastFailure()) |message| {
         std.debug.print("run-engine: engine stopped: {s}\n", .{message});

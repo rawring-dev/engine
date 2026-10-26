@@ -92,12 +92,14 @@ pub DemoPlugin <- plugin
             is_static: true,
         }
         plane_collider := PlaneCollider { normal: [0.0, 1.0, 0.0], offset: 0.0 }
+        plane_renderable := Renderable { kind: 3 }
         commands.add_row(Components, {
             plane_transform,
             plane_id,
             plane_bounds,
             plane_body,
             plane_collider,
+            plane_renderable,
         })
 
         # Rotation-locked capsule player, starting above the plane.
@@ -117,6 +119,7 @@ pub DemoPlugin <- plugin
         }
         player_capsule := CapsuleCollider { radius: 0.4, half_height: 0.6 }
         player := Player { body_id: 2 }
+        # First-person: the player capsule is physics-only (the eye is inside).
         commands.add_row(Components, {
             player_transform,
             player_id,
@@ -144,6 +147,7 @@ pub DemoPlugin <- plugin
         ball_collider := SphereCollider { radius: 0.5 }
         ball_pickup := Pickup { body_id: 3 }
         ball_held := Held { by: 0 }
+        ball_renderable := Renderable { kind: 1 }
         commands.add_row(Components, {
             ball_transform,
             ball_id,
@@ -152,6 +156,7 @@ pub DemoPlugin <- plugin
             ball_collider,
             ball_pickup,
             ball_held,
+            ball_renderable,
         })
 
         # Three pickable cubes stacked vertically.
@@ -174,7 +179,8 @@ pub DemoPlugin <- plugin
                 is_static: false,
             }
             cube_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
-            cube_visual := CubeMesh
+            cube_visual := CubeMesh { spin_phase: e7_f32_from_i64(stack_index) * 0.4 }
+            cube_renderable := Renderable { kind: 0 }
             cube_pickup := Pickup { body_id: 4 + stack_index }
             cube_held := Held { by: 0 }
             commands.add_row(Components, {
@@ -186,6 +192,7 @@ pub DemoPlugin <- plugin
                 cube_visual,
                 cube_pickup,
                 cube_held,
+                cube_renderable,
             })
             cube_y = cube_y + 1.0
             stack_index = stack_index + 1
@@ -193,7 +200,7 @@ pub DemoPlugin <- plugin
         light := PointLight {
             position: [2.0, 3.0, 4.0],
             colour: [1.0, 0.9, 0.8],
-            intensity: 12.0,
+            intensity: 2.0,
         }
         commands.add_row(Components, { light })
 

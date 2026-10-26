@@ -1134,6 +1134,9 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
     const stats = engine.renderStats();
     try std.testing.expect(stats.scene_draws > 0);
+    // The demo scene has a plane, player, ball, and three stacked cubes; each
+    // renderable must reach the multi-object scene renderer.
+    try std.testing.expect(stats.scene_boxes >= 6);
 
     // Camera component slots: [0] position vector handle, [1] yaw, [2] pitch,
     // then fov/near/far.  Floats are f64 bit patterns in i64 slots.

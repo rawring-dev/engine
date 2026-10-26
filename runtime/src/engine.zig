@@ -99,6 +99,7 @@ const State = struct {
     last_failure: ?[]const u8 = null,
     input: InputState = .{},
     scene_draws: i64 = 0,
+    scene_boxes: i64 = 0,
 };
 
 var state: State = .{};
@@ -245,6 +246,7 @@ pub fn reset() void {
     state.last_failure = null;
     state.input = .{};
     state.scene_draws = 0;
+    state.scene_boxes = 0;
 }
 
 /// Human-readable first failure observed by the engine intrinsics, if any.
@@ -272,12 +274,17 @@ pub fn setCaptureEnabled(enabled: bool) void {
     state.capture_enabled = enabled;
 }
 
-pub const RenderStats = struct { scene_draws: i64 };
+pub const RenderStats = struct {
+    /// Frames opened with `e7_engine_scene_begin_frame`.
+    scene_draws: i64,
+    /// Box draws recorded across all frames (`draw_box` plus `draw_mesh`).
+    scene_boxes: i64,
+};
 
 pub fn renderStats() RenderStats {
     state.mutex.lock();
     defer state.mutex.unlock();
-    return .{ .scene_draws = state.scene_draws };
+    return .{ .scene_draws = state.scene_draws, .scene_boxes = state.scene_boxes };
 }
 
 pub fn frames() i64 {
@@ -325,7 +332,9 @@ pub fn shutdown() void {
 fn captureLocked() void {
     if (!state.capture_enabled or state.capture != null or state.last_scene == 0) return;
     const scene = renderer.registry.get(state.last_scene) orelse return;
-    const pixels = scene.captureFrame(scene.spin, scene.light_position) catch return;
+    // Replay every object recorded by the last frame so multi-object scenes are
+    // captured in full; `captureRecordedFrame` falls back to the legacy cube.
+    const pixels = scene.captureRecordedFrame() catch return;
     state.capture = .{ .pixels = pixels, .width = scene.size().width, .height = scene.size().height };
 }
 
@@ -586,7 +595,35 @@ pub export fn e7_engine_scene_draw_mesh(handle: i64) callconv(.c) i64 {
     state.mutex.lock();
     defer state.mutex.unlock();
     const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    if (scene.frame_index == null) return -1;
     scene.drawMesh();
+    state.scene_boxes += 1;
+    return 0;
+}
+
+/// Draw one box in the frame opened by `e7_engine_scene_begin_frame`.
+/// Position and scale are milli-units (world units x1000), the Y rotation is
+/// milli-radians.  Returns 0 on success, -1 when there is no active frame or
+/// the per-frame object limit (`renderer.max_objects`, 64) is reached.
+pub export fn e7_engine_scene_draw_box(
+    handle: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    angle_milli_radians: i64,
+) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const scene = renderer.registry.get(@intCast(handle)) orelse return -1;
+    scene.drawBox(.{
+        .position = .{ milli(x_milli), milli(y_milli), milli(z_milli) },
+        .scale = .{ milli(sx_milli), milli(sy_milli), milli(sz_milli) },
+        .angle = milli(angle_milli_radians),
+    }) catch return -1;
+    state.scene_boxes += 1;
     return 0;
 }
 
@@ -613,7 +650,7 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [19]Symbol {
+pub fn symbols() [20]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
@@ -629,6 +666,7 @@ pub fn symbols() [19]Symbol {
         .{ .name = "e7_engine_scene_set_light", .address = @intFromPtr(&e7_engine_scene_set_light) },
         .{ .name = "e7_engine_scene_begin_frame", .address = @intFromPtr(&e7_engine_scene_begin_frame) },
         .{ .name = "e7_engine_scene_draw_mesh", .address = @intFromPtr(&e7_engine_scene_draw_mesh) },
+        .{ .name = "e7_engine_scene_draw_box", .address = @intFromPtr(&e7_engine_scene_draw_box) },
         .{ .name = "e7_engine_scene_end_frame", .address = @intFromPtr(&e7_engine_scene_end_frame) },
         .{ .name = "e7_engine_should_close", .address = @intFromPtr(&e7_engine_should_close) },
         .{ .name = "e7_engine_key_down", .address = @intFromPtr(&e7_engine_key_down) },
@@ -684,4 +722,70 @@ test "engine frame limiter captures a headless frame" {
     try std.testing.expect(capture.width > 0 and capture.height > 0);
     try std.testing.expect(captureIsNonBlack(capture));
     try std.testing.expectEqual(@as(i64, 1), e7_engine_should_close());
+}
+
+test "engine draw_box records one draw per box and captures them" {
+    reset();
+    defer shutdown();
+    setHeadless(true);
+    setMaxFrames(1);
+    setCaptureEnabled(true);
+
+    const title_text = "engine7 multi-box test";
+    const title = aggregate.e7_str_new(@intCast(@intFromPtr(title_text.ptr)), title_text.len);
+    const window = e7_engine_window_create(title, 320, 240);
+    if (window == 0) {
+        std.debug.print("skipping engine draw_box test (no display)\n", .{});
+        return;
+    }
+    const vert_path = "engine/shaders/cube.vert.spv";
+    const frag_path = "engine/shaders/cube.frag.spv";
+    const vert_str = aggregate.e7_str_new(@intCast(@intFromPtr(vert_path.ptr)), vert_path.len);
+    const frag_str = aggregate.e7_str_new(@intCast(@intFromPtr(frag_path.ptr)), frag_path.len);
+    const vert = e7_engine_read_shader(vert_str);
+    const frag = e7_engine_read_shader(frag_str);
+    const scene = e7_engine_scene_create(window, vert, frag);
+    if (scene == 0) {
+        std.debug.print("skipping engine draw_box test (no Vulkan)\n", .{});
+        return;
+    }
+
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_camera(scene, 0, 1800, 5500, 0, -140));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000));
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_begin_frame(scene));
+
+    // plane + player + ball + 3 cubes, as in the engine demo rows.
+    const boxes = [_][7]i64{
+        .{ 0, 0, 0, 50000, 100, 50000, 0 }, // plane: 100 x 0.2 x 100
+        .{ 0, 1200, 5000, 400, 1000, 400, 0 }, // player capsule proxy
+        .{ 1600, 2000, 4000, 500, 500, 500, 0 }, // ball proxy
+        .{ -2000, 500, 0, 500, 500, 500, 0 },
+        .{ -2000, 1500, 0, 500, 500, 500, 0 },
+        .{ -2000, 2500, 0, 500, 500, 500, 0 },
+    };
+    for (boxes) |box| {
+        try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_draw_box(
+            scene,
+            box[0],
+            box[1],
+            box[2],
+            box[3],
+            box[4],
+            box[5],
+            box[6],
+        ));
+    }
+    const stats = renderStats();
+    try std.testing.expectEqual(@as(i64, 6), stats.scene_boxes);
+    try std.testing.expectEqual(@as(i64, 1), stats.scene_draws);
+
+    try std.testing.expectEqual(@as(i64, 0), e7_engine_scene_end_frame(scene));
+    // Hitting the frame limit captures the scene (all recorded boxes replayed).
+    try std.testing.expectEqual(@as(i64, 1), e7_engine_should_close());
+
+    var capture = takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 320), capture.width);
+    try std.testing.expect(captureIsNonBlack(capture));
+    try std.testing.expect(captureHasContent(capture));
 }
