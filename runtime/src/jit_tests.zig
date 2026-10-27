@@ -43,6 +43,33 @@ fn canResolve(library_path: []const u8, symbol_name: []const u8) bool {
     return true;
 }
 
+/// Read a checked-in repo source relative to the workspace root.  Missing
+/// files are repo/build failures, not skips: a test that needs engine source
+/// must fail loudly instead of silently passing.
+fn readRepoSource(allocator: std.mem.Allocator, relative: []const u8) ![]u8 {
+    const prefixes = [_][]const u8{ "", "../", "../../" };
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    for (prefixes) |prefix| {
+        const candidate = std.fmt.bufPrint(&buffer, "{s}{s}", .{ prefix, relative }) catch continue;
+        const data = std.Io.Dir.readFileAlloc(
+            std.Io.Dir.cwd(),
+            std.testing.io,
+            candidate,
+            allocator,
+            .limited(8 * 1024 * 1024),
+        ) catch continue;
+        return data;
+    }
+    std.debug.print("missing checked-in engine source: {s}\n", .{relative});
+    return error.TestUnexpectedResult;
+}
+
+/// Read one RGBA8 pixel from a captured frame.
+fn capturePixel(pixels: []const u8, width: usize, x: usize, y: usize) u32 {
+    const offset = (y * width + x) * 4;
+    return std.mem.readInt(u32, pixels[offset..][0..4], .little);
+}
+
 fn makeJit() !orc.Jit {
     var jit = try orc.Jit.init(std.testing.allocator);
     errdefer jit.deinit();
@@ -254,7 +281,7 @@ test "JITed IR performs a QUIC request/response" {
         .key_pem = key,
     }) catch |err| {
         std.debug.print("skipping JIT QUIC test: {s}\n", .{@errorName(err)});
-        return;
+        return error.SkipZigTest;
     };
     defer listener.deinit();
 
@@ -308,7 +335,7 @@ test "JITed IR creates and closes a WebRTC peer" {
     const result = jit_rtc("".ptr, 0, bind.ptr, bind.len);
     if (result == -1) {
         std.debug.print("skipping JIT WebRTC test (libdatachannel unavailable)\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i32, 0), result);
 }
@@ -454,10 +481,10 @@ test "JIT executes compiled ECS setup, Commands, and plugin activation" {
 }
 
 test "JITed IR loads a shared library and calls cos through the FFI trampoline" {
-    const library_path = mathLibraryPath() orelse return;
+    const library_path = mathLibraryPath() orelse return error.SkipZigTest;
     if (!canResolve(library_path, "cos")) {
         std.debug.print("skipping JIT dynamic FFI test: cos unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     var jit = try makeJit();
@@ -498,10 +525,10 @@ test "JITed IR loads a shared library and calls cos through the FFI trampoline" 
 }
 
 test "JITed IR calls strlen from the C library through an integer trampoline" {
-    const library_path = cLibraryPath() orelse return;
+    const library_path = cLibraryPath() orelse return error.SkipZigTest;
     if (!canResolve(library_path, "strlen")) {
         std.debug.print("skipping JIT dynamic FFI test: strlen unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     var jit = try makeJit();
@@ -544,10 +571,10 @@ test "JITed IR calls strlen from the C library through an integer trampoline" {
 }
 
 test "JITed IR passes a JIT callback into libc qsort" {
-    const library_path = cLibraryPath() orelse return;
+    const library_path = cLibraryPath() orelse return error.SkipZigTest;
     if (!canResolve(library_path, "qsort")) {
         std.debug.print("skipping JIT qsort callback test: qsort unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     var jit = try makeJit();
@@ -607,10 +634,10 @@ test "JITed IR passes a JIT callback into libc qsort" {
 }
 
 test "JITed IR resolves and reads a C data symbol" {
-    const library_path = cLibraryPath() orelse return;
+    const library_path = cLibraryPath() orelse return error.SkipZigTest;
     if (!canResolve(library_path, "stdout")) {
         std.debug.print("skipping JIT data-symbol test: stdout unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     var jit = try makeJit();
@@ -709,8 +736,8 @@ test "e7 host frame limit and capture intrinsics" {
 }
 
 test "e7 source binds and calls libc strlen through the generic C FFI" {
-    const library_path = cLibraryPath() orelse return;
-    if (!canResolve(library_path, "strlen")) return;
+    const library_path = cLibraryPath() orelse return error.SkipZigTest;
+    if (!canResolve(library_path, "strlen")) return error.SkipZigTest;
 
     const source = try std.fmt.allocPrint(
         std.testing.allocator,
@@ -755,7 +782,7 @@ test "e7 source binds and calls libc strlen through the generic C FFI" {
 test "e7 source creates an SDL window through the C FFI" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) {
         std.debug.print("skipping e7 SDL FFI test: libSDL3 unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     const source =
@@ -797,7 +824,7 @@ test "e7 source creates an SDL window through the C FFI" {
     const result = probe();
     if (result == 0) {
         std.debug.print("skipping e7 SDL FFI test: SDL video unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(u64, 1), result);
 }
@@ -805,7 +832,7 @@ test "e7 source creates an SDL window through the C FFI" {
 test "e7 source creates a Vulkan instance and enumerates devices through the C FFI" {
     if (!canResolve("libvulkan.so", "vkCreateInstance")) {
         std.debug.print("skipping e7 Vulkan FFI test: libvulkan unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
     const source =
@@ -868,14 +895,10 @@ test "e7 source creates a Vulkan instance and enumerates devices through the C F
 test "e7 SDL platform module initializes video, creates, sizes, pumps, and destroys a window" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) {
         std.debug.print("skipping e7 SDL platform test: libSDL3 unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
-    const io = std.testing.io;
-    const module_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch {
-        std.debug.print("skipping e7 SDL platform test: engine/platform/sdl.e7 missing\n", .{});
-        return;
-    };
+    const module_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(module_source);
 
     const selftest =
@@ -938,7 +961,7 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
     const result = selftest_fn();
     if (result == -1) {
         std.debug.print("skipping e7 SDL platform test: SDL video unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
@@ -946,13 +969,12 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
 test "e7 SDL+Vulkan platform module creates a window surface" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) {
         std.debug.print("skipping e7 Vulkan surface test: SDL Vulkan or Vulkan loader unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
 
-    const io = std.testing.io;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
 
     const selftest =
@@ -1032,18 +1054,17 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
     const result = selftest_fn();
     if (result == 0) {
         std.debug.print("skipping e7 Vulkan surface test: no Vulkan window/surface available\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
 test "e7 SDL+Vulkan platform draws a triangle and captures it" {
-    if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
+    if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
 
-    const io = std.testing.io;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
 
     const selftest =
@@ -1343,17 +1364,16 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
     const result = selftest_fn();
     if (result == 0) {
         std.debug.print("skipping e7 Vulkan device test: no physical device\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
 test "e7 input module maps actions and mouse state through SDL" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
-    const io = std.testing.io;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const input_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/input.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const input_source = try readRepoSource(std.testing.allocator, "engine/platform/input.e7");
     defer std.testing.allocator.free(input_source);
 
     const selftest =
@@ -1390,21 +1410,24 @@ test "e7 input module maps actions and mouse state through SDL" {
     const Selftest = *const fn () callconv(.c) i64;
     const selftest_fn = try jit.get(Selftest, "input_selftest");
     const result = selftest_fn();
-    if (result == -1) return;
+    if (result == -1) {
+        std.debug.print("skipping e7 input test: SDL video unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
 test "e7 engine scene module renders and captures a frame" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
-    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
     defer std.testing.allocator.free(window_source);
-    const engine_scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const engine_scene_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_scene.e7");
     defer std.testing.allocator.free(engine_scene_source);
     const probe =
         \\scene_probe <- () -> i64:
@@ -1453,14 +1476,27 @@ test "e7 engine scene module renders and captures a frame" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "scene_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expectEqual(@as(i64, 1), result);
     try std.testing.expect(host_mod.frames() == 1);
     var capture = host_mod.takeCapture() orelse return error.TestUnexpectedResult;
     defer capture.deinit();
     try std.testing.expectEqual(@as(u32, 64), capture.width);
     try std.testing.expectEqual(@as(u32, 48), capture.height);
-    try std.testing.expect(capture.pixels.len == 64 * 48 * 4);
+    try std.testing.expectEqual(@as(usize, 64 * 48 * 4), capture.pixels.len);
+    // The probe draws a lit box over a black clear colour, so the captured
+    // frame must contain that geometry instead of an empty buffer.
+    const center = capturePixel(capture.pixels, 64, 32, 24);
+    try std.testing.expect(center != 0xFF000000);
+    try std.testing.expect(center != capturePixel(capture.pixels, 64, 0, 0));
+    var non_zero: usize = 0;
+    for (capture.pixels) |byte| {
+        if (byte != 0) non_zero += 1;
+    }
+    try std.testing.expect(non_zero > 1000);
 }
 
 test "e7 async task returns an i64 result" {
@@ -1484,12 +1520,12 @@ test "e7 async task returns an i64 result" {
 }
 
 test "e7 scene renders through separate modules" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const root_source =
         \\mod sdl
@@ -1548,13 +1584,18 @@ test "e7 scene renders through separate modules" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "module_scene_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 window state returned from a helper is valid" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
     const root_source =
         \\mod sdl
@@ -1594,17 +1635,20 @@ test "e7 window state returned from a helper is valid" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "window_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect((result & 0x10000000) != 0);
 }
 
 test "e7 scene renders inside a helper function" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const root_source =
         \\mod sdl
@@ -1664,19 +1708,24 @@ test "e7 scene renders inside a helper function" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "helper_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 scene renders on a helper-created window after pumping" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
-    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
     defer std.testing.allocator.free(window_source);
     const root_source =
         \\mod sdl
@@ -1734,17 +1783,22 @@ test "e7 scene renders on a helper-created window after pumping" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "helper_window_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 scene_draw from a different function than begin/draw" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const root_source =
         \\mod sdl
@@ -1805,17 +1859,22 @@ test "e7 scene_draw from a different function than begin/draw" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "split_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 scene_draw called from another module" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const driver_source =
         \\use scene::*;
@@ -1882,17 +1941,22 @@ test "e7 scene_draw called from another module" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "module_draw_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 scene_draw through a method receiver" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const root_source =
         \\mod sdl
@@ -1957,17 +2021,22 @@ test "e7 scene_draw through a method receiver" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "method_draw_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 scene draw inside an inline async task" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
     const root_source =
         \\mod sdl
@@ -2029,15 +2098,20 @@ test "e7 scene draw inside an inline async task" {
     const handle = async_scene();
     try std.testing.expect(handle != 0);
     const result = task.e7_task_await(handle);
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 engine window module creates, pumps, and destroys a window" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
     defer std.testing.allocator.free(window_source);
     const probe =
         \\window_probe <- () -> i64:
@@ -2078,19 +2152,22 @@ test "e7 engine window module creates, pumps, and destroys a window" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "window_probe");
     const result = probe_fn();
-    if (result == 0) return;
+    if (result == 0) {
+        std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
 test "e7 text image uploads through the UI texture path" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
-    const text_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/text.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const text_source = try readRepoSource(std.testing.allocator, "engine/platform/text.e7");
     defer std.testing.allocator.free(text_source);
     const probe =
         \\text_ui_probe <- () -> i64:
@@ -2147,7 +2224,6 @@ test "e7 text image uploads through the UI texture path" {
     defer analysis.deinit();
     if (!analysis.ok()) {
         for (analysis.diagnostics) |d| std.debug.print("text ui diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
-        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = ".e7-text-ui-fail.e7", .data = source }) catch {};
         return error.TestUnexpectedResult;
     }
     var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
@@ -2158,19 +2234,20 @@ test "e7 text image uploads through the UI texture path" {
     const Probe = *const fn () callconv(.c) i64;
     const probe_fn = try jit.get(Probe, "text_ui_probe");
     const result = probe_fn();
-    std.debug.print("text ui probe result {}\n", .{result});
-    if (result == 0 or result == -1) return;
+    if (result == 0 or result == -1 or result == -3) {
+        std.debug.print("skipping e7 text UI test: window/device/font unavailable (code {d})\n", .{result});
+        return error.SkipZigTest;
+    }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
 test "e7 scene module draws an indexed cube and captures it" {
-    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
-    const io = std.testing.io;
-    const sdl_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
-    const vk_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
     defer std.testing.allocator.free(vk_source);
-    const scene_source = std.Io.Dir.cwd().readFileAlloc(io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
     defer std.testing.allocator.free(scene_source);
 
     const selftest =
@@ -2239,7 +2316,6 @@ test "e7 scene module draws an indexed cube and captures it" {
     defer analysis.deinit();
     if (!analysis.ok()) {
         for (analysis.diagnostics) |d| std.debug.print("scene diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
-        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = ".e7-scene-fail.e7", .data = source }) catch {};
         return error.TestUnexpectedResult;
     }
     var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
@@ -2251,13 +2327,17 @@ test "e7 scene module draws an indexed cube and captures it" {
     const Selftest = *const fn () callconv(.c) i64;
     const selftest_fn = try jit.get(Selftest, "scene_selftest");
     const result = selftest_fn();
-    if (result == 0 or result == -1) return;
-    std.debug.print("e7 scene center pixel {x}\n", .{result});
-    try std.testing.expect(result != 0 and result != 0xFF000000);
+    if (result == 0 or result == -1) {
+        std.debug.print("skipping e7 test: window/device unavailable (code {d})\n", .{result});
+        return error.SkipZigTest;
+    }
+    try std.testing.expect(result > 0);
+    try std.testing.expect(@as(u64, @intCast(result)) >> 24 == 0xFF);
+    try std.testing.expect(result != 0xFF000000);
 }
 
 test "e7 text module loads a font, measures, and rasterizes text" {
-    const text_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/text.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    const text_source = try readRepoSource(std.testing.allocator, "engine/platform/text.e7");
     defer std.testing.allocator.free(text_source);
     const selftest =
         \\text_selftest <- () -> i64:
@@ -2304,10 +2384,9 @@ test "e7 text module loads a font, measures, and rasterizes text" {
     const Selftest = *const fn () callconv(.c) i64;
     const selftest_fn = try jit.get(Selftest, "text_selftest");
     const result = selftest_fn();
-    std.debug.print("e7 text selftest result {d}\n", .{result});
     if (result == 0) {
         std.debug.print("skipping e7 text test: font unavailable\n", .{});
-        return;
+        return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
