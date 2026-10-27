@@ -174,7 +174,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **7j (done):** object capacity extended to sixteen dynamic UBO slots and
   sixteen indexed draws per frame; scene state/object/texture regions no longer
   overlap. Scene test records sixteen cubes. Runtime: **134/134**.
-- Remaining: textured pipeline/UI draw, engine draw parity, engine scene
+- **7k (done):** static combined texture descriptor bound through a mesh
+  pipeline and a static draw path; scene renders and captures a static-
+  descriptor frame, proving the static binding/layout path independently of the
+  textured shader. Runtime: **134/134**.
+- Remaining: textured shader pipeline/UI draw, engine draw parity, engine scene
   wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
 
 ## Migration stages

@@ -144,6 +144,17 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_free_ptr(texture_layout_out)
     e7_free_ptr(texture_pool_out)
     e7_free_ptr(texture_set_out)
+    static_layout_out := e7_alloc_bytes(8)
+    static_pool_out := e7_alloc_bytes(8)
+    static_set_out := e7_alloc_bytes(8)
+    if vulkan_texture_descriptor_static(device, e7_load_u64(texture_view_out), e7_load_u64(texture_sampler_out), static_layout_out, static_pool_out, static_set_out) == 0:
+        ret 0
+    e7_store_u64(scene + 1136, e7_load_u64(static_layout_out))
+    e7_store_u64(scene + 1144, e7_load_u64(static_pool_out))
+    e7_store_u64(scene + 1152, e7_load_u64(static_set_out))
+    e7_free_ptr(static_layout_out)
+    e7_free_ptr(static_pool_out)
+    e7_free_ptr(static_set_out)
     e7_store_u64(scene + 1024, e7_load_u64(texture_image_out))
     e7_store_u64(scene + 1032, e7_load_u64(texture_memory_out))
     e7_store_u64(scene + 1040, e7_load_u64(texture_view_out))
@@ -231,6 +242,21 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
         ret 0
     e7_store_u64(scene + 160, e7_load_u64(mesh_pipeline_out))
     e7_store_u64(scene + 168, e7_load_u64(mesh_layout_out))
+    static_vert := e7_engine_read_shader("engine/platform/shaders/mesh_simple.vert.spv")
+    static_frag := e7_engine_read_shader("engine/platform/shaders/mesh_simple.frag.spv")
+    static_vert_handle := e7_handle(static_vert)
+    static_frag_handle := e7_handle(static_frag)
+    static_pipeline_out := e7_alloc_bytes(8)
+    static_pipeline_layout_out := e7_alloc_bytes(8)
+    if static_vert_handle != 0:
+        if static_frag_handle != 0:
+            if vulkan_mesh_pipeline_simple(device, render_pass, static_vert_handle, static_frag_handle, e7_load_u64(scene + 1136), static_pipeline_out, static_pipeline_layout_out) != 0:
+                e7_store_u64(scene + 1160, e7_load_u64(static_pipeline_out))
+                e7_store_u64(scene + 1168, e7_load_u64(static_pipeline_layout_out))
+    e7_free_ptr(static_vert_handle)
+    e7_free_ptr(static_frag_handle)
+    e7_free_ptr(static_pipeline_out)
+    e7_free_ptr(static_pipeline_layout_out)
     e7_free_ptr(mesh_vert_handle)
     e7_free_ptr(mesh_frag_handle)
     e7_free_ptr(ubo_layout_out)
@@ -384,6 +410,32 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         1,
         1,
         extra,
+        out_pixels,
+        out_size,
+    )
+
+scene_draw_static <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
+    ret vulkan_draw_triangle_capture(
+        e7_load_u64(scene + 32),
+        e7_load_u64(scene + 40),
+        e7_load_u32(scene + 48),
+        e7_load_u64(scene + 24),
+        e7_load_u64(scene + 56),
+        e7_load_u64(scene + 64),
+        e7_load_u64(scene + 1160),
+        e7_load_u64(scene + 80),
+        e7_load_u32(scene + 52),
+        e7_load_u32(scene + 88),
+        e7_load_u32(scene + 92),
+        e7_load_u64(scene + 176),
+        e7_load_u64(scene + 192),
+        36,
+        e7_load_u64(scene + 1152),
+        e7_load_u64(scene + 1168),
+        0,
+        0,
+        1,
+        0,
         out_pixels,
         out_size,
     )
