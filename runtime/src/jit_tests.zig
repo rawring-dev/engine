@@ -2604,6 +2604,174 @@ test "e7 scene module draws an indexed cube and captures it" {
     try std.testing.expect(result != 0xFF000000);
 }
 
+test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+
+    // Render one procedural shape at the origin on a black 96x96 frame and
+    // return count * 1000000 + widest row * 1000 + silhouette rows.  The
+    // camera sits at (0, eye_y, 3.0) looking down -Z, so a flat XZ plane is
+    // edge-on at eye_y = 0 and visible from above at eye_y = 1000.
+    const probe =
+        \\shape_metric <- (kind: i64, eye_y: i64) -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret -1
+        \\    win := window_create("e7 shape probe", 96, 96, 268435464)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret -2
+        \\    scene := scene_create(win, 96, 96)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        video_quit()
+        \\        ret -3
+        \\    scene_set_camera(scene, 0, eye_y, 3000, 0, 0)
+        \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    scene_begin_frame(scene)
+        \\    scene_draw_shape_rot(scene, kind as i32, 0, 0, 0, 1000, 1000, 1000, 0, 0, 0, 1000, 1000, 1000, 0 as u64)
+        \\    pixels_out := e7_alloc_bytes(8)
+        \\    size_out := e7_alloc_bytes(8)
+        \\    drew := scene_draw(scene, pixels_out, size_out)
+        \\    pixels := e7_load_u64(pixels_out) as u64
+        \\    count := 0
+        \\    max_row := 0
+        \\    rows := 0
+        \\    row := 0
+        \\    while row < 96:
+        \\        row_count := 0
+        \\        col := 0
+        \\        while col < 96:
+        \\            offset := ((row * 96 + col) * 4) as u64
+        \\            pixel := e7_load_u32(pixels + offset)
+        \\            if pixel != 0 and pixel != 4278190080:
+        \\                row_count = row_count + 1
+        \\            col = col + 1
+        \\        count = count + row_count
+        \\        if row_count > max_row:
+        \\            max_row = row_count
+        \\        if row_count > 0:
+        \\            rows = rows + 1
+        \\        row = row + 1
+        \\    e7_free_ptr(pixels)
+        \\    e7_free_ptr(pixels_out)
+        \\    e7_free_ptr(size_out)
+        \\    scene_destroy(scene)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if drew == 0:
+        \\        ret -4
+        \\    # Round-trip the counters through float helpers: besides checking the
+        \\    # float ABI, this keeps the loop-heavy helper under the LLVM
+        \\    # InstCombine fixed-point attribute LLVM 23 requires for such IR.
+        \\    count_value := e7_f32_to_i64(e7_f32_from_i64(count))
+        \\    width_value := e7_f32_to_i64(e7_f32_from_i64(max_row))
+        \\    rows_value := e7_f32_to_i64(e7_f32_from_i64(rows))
+        \\    ret count_value * 1000000 + width_value * 1000 + rows_value
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("shape probe parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("shape probe diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-shape-probe");
+    const Probe = *const fn (i64, i64) callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "shape_metric");
+
+    const Metrics = struct {
+        count: i64,
+        width: i64,
+        rows: i64,
+        fn decode(value: i64) @This() {
+            return .{
+                .count = @divTrunc(value, 1_000_000),
+                .width = @mod(@divTrunc(value, 1000), 1000),
+                .rows = @mod(value, 1000),
+            };
+        }
+        fn fill(self: @This()) f64 {
+            if (self.width <= 0 or self.rows <= 0) return 0;
+            return @as(f64, @floatFromInt(self.count)) / @as(f64, @floatFromInt(self.width * self.rows));
+        }
+    };
+
+    const box = probe_fn(0, 0);
+    const sphere = probe_fn(1, 0);
+    const capsule = probe_fn(2, 0);
+    const plane_edge_on = probe_fn(3, 0);
+    const plane_above = probe_fn(3, 1000);
+    if (box < 0 or sphere < 0 or capsule < 0 or plane_edge_on < 0 or plane_above < 0) {
+        std.debug.print("skipping e7 procedural shape test: scene/device unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+    const box_m = Metrics.decode(box);
+    const sphere_m = Metrics.decode(sphere);
+    const capsule_m = Metrics.decode(capsule);
+    const plane_edge_m = Metrics.decode(plane_edge_on);
+    const plane_above_m = Metrics.decode(plane_above);
+
+    // Every kind must render something: the box reference and the sphere,
+    // capsule and plane (the plane also from above, where it is face-on).
+    try std.testing.expect(box_m.count > 100);
+    try std.testing.expect(sphere_m.count > 50);
+    try std.testing.expect(capsule_m.count > 100);
+    try std.testing.expect(plane_above_m.count > 20);
+
+    // The box silhouette is a full square: every pixel of its bounding box is
+    // covered.
+    try std.testing.expect(box_m.fill() > 0.9);
+
+    // The sphere silhouette is a disc: square bounding box (width == rows) but
+    // ~pi/4 = 0.785 of the bounding box area instead of a full square, and its
+    // inscribed diameter is smaller than the box front face (depth parallax).
+    try std.testing.expect(sphere_m.fill() > 0.72 and sphere_m.fill() < 0.85);
+    try std.testing.expect(@abs(sphere_m.width - sphere_m.rows) <= 2);
+    try std.testing.expect(sphere_m.width * 100 >= box_m.width * 75);
+    try std.testing.expect(sphere_m.width * 100 <= box_m.width * 95);
+    try std.testing.expect(sphere_m.count < box_m.count);
+
+    // The capsule keeps the sphere radius on x/z but its cylinder band doubles
+    // the silhouette height relative to the box.
+    try std.testing.expect(capsule_m.width <= sphere_m.width + 2);
+    try std.testing.expect(capsule_m.rows > box_m.rows + 10);
+    try std.testing.expect(capsule_m.rows <= box_m.rows * 2 + 8);
+    try std.testing.expect(capsule_m.count > sphere_m.count);
+
+    // The capsule silhouette is a cylinder band plus two half-disc caps: its
+    // bounding-box fill is between the sphere's pi/4 disc and the box's square
+    // (28x56 px measured: (pi/4*28^2 + 28*28) / (28*56) ~= 0.89).
+    try std.testing.expect(capsule_m.fill() > sphere_m.fill());
+    try std.testing.expect(capsule_m.fill() < box_m.fill());
+    try std.testing.expect(capsule_m.fill() > 0.85);
+
+    // A flat XZ plane is invisible edge-on at eye level, while it covers real
+    // area from above: flatness instead of a box slab silhouette.
+    try std.testing.expect(plane_edge_m.count * 10 < box_m.count);
+    try std.testing.expect(plane_above_m.count > plane_edge_m.count * 3 + 10);
+}
+
 test "e7 text module loads a font, measures, and rasterizes text" {
     const text_source = try readRepoSource(std.testing.allocator, "engine/platform/text.e7");
     defer std.testing.allocator.free(text_source);
