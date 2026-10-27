@@ -211,8 +211,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   pixels (e.g. text/image raster output), repoint the static UI descriptor, and
   sample them through the UI quad. The scene test swaps in a green 8x8 texture
   and captures the exact green center pixel. Runtime: **136/136**.
-- Remaining: render on borrowed windows, wire engine to e7 scene/host, image
-  port, and remove runtime renderer/window wrappers.
+- **7q (done):** e7 text raster output now feeds the UI texture upload path:
+  font load -> `text_image` -> image pixels -> `scene_set_ui_texture` is
+  JIT-verified on a real font. Drawing the text texture is still isolated (the
+  upload succeeds but a captured text-texture frame currently crashes
+  lavapipe). Runtime: **137/137**.
+- Remaining: draw text textures, render on borrowed windows, wire engine to e7
+  scene/host, image port, and remove runtime renderer/window wrappers.
 
 ## Migration stages
 

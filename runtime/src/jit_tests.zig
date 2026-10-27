@@ -1584,6 +1584,87 @@ test "e7 native window binding exposes a stable SDL pointer" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 text image uploads through the UI texture path" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(scene_source);
+    const text_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/text.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(text_source);
+    const probe =
+        \\text_ui_probe <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        ret -1
+        \\    win := window_create("e7 text ui", 64, 48, 268435464)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret 0
+        \\    scene := scene_create(win, 64, 48)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        video_quit()
+        \\        ret -2
+        \\    font := e7_font_load("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 24)
+        \\    if font == 0:
+        \\        scene_destroy(scene)
+        \\        video_quit()
+        \\        ret -3
+        \\    image := e7_text_image(font, "Hello", 255, 255, 255)
+        \\    if image == 0:
+        \\        e7_font_free(font)
+        \\        scene_destroy(scene)
+        \\        video_quit()
+        \\        ret -4
+        \\    image_width := e7_image_width(image)
+        \\    image_height := e7_image_height(image)
+        \\    image_pixels := e7_image_pixels(image)
+        \\    pixel_ptr := e7_str_data(image_pixels)
+        \\    if scene_set_ui_texture(scene, pixel_ptr as u64, image_width, image_height) == 0:
+        \\        e7_image_free(image)
+        \\        e7_font_free(font)
+        \\        scene_destroy(scene)
+        \\        video_quit()
+        \\        ret -5
+        \\    e7_image_free(image)
+        \\    e7_font_free(font)
+        \\    scene_destroy(scene)
+        \\    video_quit()
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, text_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("text ui parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("text ui diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = ".e7-text-ui-fail.e7", .data = source }) catch {};
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-text-ui");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "text_ui_probe");
+    const result = probe_fn();
+    std.debug.print("text ui probe result {}\n", .{result});
+    if (result == 0 or result == -1) return;
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
 test "e7 scene module draws an indexed cube and captures it" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
     const io = std.testing.io;
