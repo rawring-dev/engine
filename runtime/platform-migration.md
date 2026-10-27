@@ -257,9 +257,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   Async i64 return propagation and inline mode are JIT-tested. Inline mode alone
   does not fix the empty engine frame. Suite: **129 pass, 10 skipped**;
   compiler 207.
-- Remaining: fix the empty engine frame (still empty with inline/main-thread
-  execution), restore skipped tests, draw text textures, borrowed-window
-  rendering, image port, and removing remaining runtime SDL/Vulkan wrappers.
+- **9j (done):** added a regression test compiling the scene as *separate
+  modules* (sdl/vulkan/scene + root) and rendering a cube frame. It passes,
+  proving module-call lowering and scene rendering work; the empty engine frame
+  is therefore specific to the engine project lifecycle/resources, not module
+  ABI. Suite: **130 pass, 10 skipped**; compiler 207.
+- Remaining: fix the engine-project empty frame, restore skipped tests, draw
+  text textures, borrowed-window rendering, image port, and removing remaining
+  runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 
