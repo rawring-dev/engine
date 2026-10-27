@@ -237,9 +237,15 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   frame is empty (geometry/camera path), and ten engine-subset/legacy tests are
   temporarily skipped while their module lists are migrated to include
   `platform`. Runtime: **128 passed, 10 skipped**; compiler 207.
-- Remaining: fix empty engine frame, restore skipped tests, draw text textures,
-  borrowed-window rendering, image port, and removing remaining runtime
-  SDL/Vulkan wrappers.
+- **9g (done):** `engine_scene` now sizes the scene from the actual window
+  (`window_size`) instead of hardcoding 960x540. Empty-frame debugging shows the
+  engine scene module itself draws objects (count/UBO non-zero) but captures an
+  empty frame in its direct JIT test too, so the issue is inside the engine_scene
+  module path rather than the async engine-task context. Temporary probes were
+  reverted; suite remains green (128 pass, 10 skipped; compiler 207).
+- Remaining: fix engine_scene empty capture, restore skipped tests, draw text
+  textures, borrowed-window rendering, image port, and removing remaining
+  runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 

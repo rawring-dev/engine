@@ -5,7 +5,16 @@
 # the runtime manifest is removed.
 
 e7_engine_scene_create <- (window: u64, vertex_shader: str, fragment_shader: str) -> u64:
-    ret scene_create(window, 960, 540)
+    width_out := e7_alloc_bytes(4)
+    height_out := e7_alloc_bytes(4)
+    window_size(window, width_out, height_out)
+    width := e7_load_u32(width_out)
+    height := e7_load_u32(height_out)
+    e7_free_ptr(width_out)
+    e7_free_ptr(height_out)
+    if width == 0 or height == 0:
+        ret 0
+    ret scene_create(window, width as i64, height as i64)
 
 e7_engine_scene_destroy <- (scene: u64) -> nil:
     if scene == 0:
@@ -125,3 +134,4 @@ e7_engine_scene_end_frame <- (scene: u64) -> nil:
     e7_free_ptr(pixels_out)
     e7_free_ptr(size_out)
     e7_host_note_frame()
+
