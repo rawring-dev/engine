@@ -252,9 +252,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   task runs. e7 platform tests now execute for real; suite: **128 pass,
   10 skipped**; compiler 207. Engine project still captures an empty frame,
   which is now reproducible with genuinely initialized SDL.
-- Remaining: fix engine_scene empty capture with working SDL init, restore
-  skipped tests, draw text textures, borrowed-window rendering, image port, and
-  removing remaining runtime SDL/Vulkan wrappers.
+- **9i (done):** added opt-in inline task execution (`e7_task_set_inline`), used
+  by `engine-run` so the engine task runs synchronously on the host main thread.
+  Async i64 return propagation and inline mode are JIT-tested. Inline mode alone
+  does not fix the empty engine frame. Suite: **129 pass, 10 skipped**;
+  compiler 207.
+- Remaining: fix the empty engine frame (still empty with inline/main-thread
+  execution), restore skipped tests, draw text textures, borrowed-window
+  rendering, image port, and removing remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 

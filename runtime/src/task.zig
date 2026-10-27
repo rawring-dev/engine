@@ -434,6 +434,7 @@ fn yieldCurrent() void {
 // ---------------------------------------------------------------------------
 
 var global_runtime: ?*Runtime = null;
+var inline_execution: bool = false;
 
 pub fn ensureGlobal(allocator: std.mem.Allocator) Error!void {
     if (global_runtime != null) return;
@@ -456,13 +457,24 @@ pub export fn e7_task_create(entry: usize, argc: i64, args: [*]const i64) callco
     const runtime = global_runtime orelse return 0;
     if (argc < 0 or argc > max_args) return 0;
     const task = runtime.create(entry, args[0..@intCast(argc)]) catch return 0;
+    if (inline_execution) {
+        task.result = callEntry(entry, @intCast(@intFromPtr(task)), task.args[0..task.argc]);
+        task.state = .done;
+    }
     return @intCast(@intFromPtr(task));
+}
+
+/// Run newly created tasks synchronously on the creating thread.  The host
+/// enables this for `engine-run` so SDL/Vulkan work happens on the main thread.
+pub export fn e7_task_set_inline(enabled: i64) callconv(.c) void {
+    inline_execution = enabled != 0;
 }
 
 pub export fn e7_task_spawn(task_ptr: i64) callconv(.c) i64 {
     const runtime = global_runtime orelse return 0;
     if (task_ptr == 0) return 0;
     const task: *Task = @ptrFromInt(@as(usize, @intCast(task_ptr)));
+    if (inline_execution and task.state == .done) return task_ptr;
     runtime.spawn(task);
     return task_ptr;
 }

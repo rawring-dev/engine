@@ -1603,6 +1603,26 @@ test "e7 engine scene module renders and captures a frame" {
     try std.testing.expect(capture.pixels.len == 64 * 48 * 4);
 }
 
+test "e7 async task returns an i64 result" {
+    const source =
+        \\async_seven <- async () -> i64:
+        \\    ret 7
+    ;
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-async-result");
+    task.e7_task_set_inline(1);
+    defer task.e7_task_set_inline(0);
+    const Fn = *const fn () callconv(.c) i64;
+    const fn_ptr = try jit.get(Fn, "async_seven");
+    const handle = fn_ptr();
+    try std.testing.expect(handle != 0);
+    const result = task.e7_task_await(handle);
+    try std.testing.expectEqual(@as(i64, 7), result);
+}
+
 test "e7 engine window module creates, pumps, and destroys a window" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
     const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
