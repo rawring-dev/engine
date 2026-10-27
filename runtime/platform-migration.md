@@ -312,3 +312,38 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 The existing Zig platform layer is ~180 KB of renderer/engine code and is
 exercised by 128 runtime tests. Stage 3 must reach visual parity before stage 4
 deletes it; otherwise window/scene/UI behavior and capture tests regress.
+
+## Status at round 60
+
+Verified working:
+
+- generic C FFI (`e7_cffi_bind`, `e7_ffi_call0..16`, f32 trampoline)
+- e7 SDL window/input module, e7 Vulkan instance/surface/device/queue/
+  swapchain/render-pass/depth/pipelines/descriptors/readback
+- dynamic per-object UBO slots (16 objects), camera/light/spin
+- texture upload + sampled texture frames, blending UI quad, dynamic UI texture
+- engine-style lit UBO + texture shader
+- e7 SDL_ttf text/font module integrated into the engine
+- SDL/Vulkan-free host module (headless flag, frame limit, RGBA capture)
+- engine project compiles and runs on e7 window/scene modules; `engine-run`
+  writes PPM frames and frame limits via the host module
+- runtime engine window/input/scene JIT symbols removed; only
+  `e7_engine_read_shader`/`e7_engine_time_now_ms` remain host intrinsics
+
+Known blocker:
+
+- Creating the SDL window/Vulkan scene through an **extra e7 user-function
+  boundary** (the shape used by engine systems → gpu methods → platform modules)
+  produces a valid scene handle but an empty captured frame. Creation directly
+  from the probe function renders correctly. This is isolated to nested e7
+  function-call/FFI behavior and is the remaining blocker for engine visual
+  parity. Ten engine-subset/legacy tests are skipped while this is resolved.
+
+Not yet done:
+
+- engine visual parity and restoration of the skipped tests
+- drawing text-raster textures through the UI quad
+- borrowed-window rendering
+- image module port
+- removal of the remaining runtime SDL/Vulkan/png/turbojpeg links and the
+  runtime `engine/window/renderer/vulkan/image` wrapper modules
