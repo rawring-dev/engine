@@ -178,8 +178,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   pipeline and a static draw path; scene renders and captures a static-
   descriptor frame, proving the static binding/layout path independently of the
   textured shader. Runtime: **134/134**.
-- Remaining: textured shader pipeline/UI draw, engine draw parity, engine scene
-  wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
+- **7l (done):** textured shader pipeline: single-set combined sampler bound
+  statically through the mesh pipeline helper; `scene_draw_textured` samples the
+  uploaded 4x4 white texture and the captured center is exactly white. Runtime:
+  **134/134**.
+- Remaining: UI quad pipeline/draw, engine draw parity, engine scene wiring,
+  image port, and deletion of remaining SDL/Vulkan wrappers.
 
 ## Migration stages
 
