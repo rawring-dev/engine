@@ -275,9 +275,15 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   validity, helper-local scene rendering, and helper-window scene rendering
   after pumping. Suite: **133 pass, 10 skipped**; compiler 206. The full engine
   frame is still empty for a further reason.
-- Remaining: fix the full engine frame (survives window pumping), restore
-  skipped tests, draw text textures, borrowed-window rendering, image port, and
-  removing remaining runtime SDL/Vulkan wrappers.
+- **9m (done):** restored the lost inline-task wiring in `engine-run` and
+  registered `e7_task_set_inline` in the task symbol manifest, so the engine
+  task now executes on the host main thread (verified by matching thread IDs at
+  scene create/end/draw). This addresses C FFI/Vulkan thread affinity. The
+  engine frame is still empty, so thread affinity was not the remaining sole
+  cause. Suite: **133 pass, 10 skipped**; compiler 206.
+- Remaining: fix the full engine frame (same-thread, pumped, clean ABIs),
+  restore skipped tests, draw text textures, borrowed-window rendering, image
+  port, and removing remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 

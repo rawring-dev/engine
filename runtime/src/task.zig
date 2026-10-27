@@ -567,7 +567,7 @@ pub export fn e7_trigger_leave(trigger_id: i64) callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [7]@import("intrinsics.zig").Symbol {
+pub fn symbols() [8]@import("intrinsics.zig").Symbol {
     return .{
         .{ .name = "e7_task_create", .address = @intFromPtr(&e7_task_create), .callable = true },
         .{ .name = "e7_task_spawn", .address = @intFromPtr(&e7_task_spawn), .callable = true },
@@ -576,6 +576,7 @@ pub fn symbols() [7]@import("intrinsics.zig").Symbol {
         .{ .name = "e7_task_cancel", .address = @intFromPtr(&e7_task_cancel), .callable = true },
         .{ .name = "e7_trigger_enter", .address = @intFromPtr(&e7_trigger_enter), .callable = true },
         .{ .name = "e7_trigger_leave", .address = @intFromPtr(&e7_trigger_leave), .callable = true },
+        .{ .name = "e7_task_set_inline", .address = @intFromPtr(&e7_task_set_inline), .callable = true },
     };
 }
 

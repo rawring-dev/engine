@@ -145,6 +145,9 @@ pub fn main(init: std.process.Init) !void {
     defer jit.deinit();
     try jit.addBytecodeBytes(serialized, "engine-project");
 
+    const SetInline = *const fn (i64) callconv(.c) void;
+    const set_inline = try jit.get(SetInline, "e7_task_set_inline");
+    set_inline(1);
     const MainCtor = *const fn () callconv(.c) i64;
     const main_ctor = jit.get(MainCtor, "main") catch {
         std.debug.print("run-engine: compiled project has no callable `main`\n", .{});
