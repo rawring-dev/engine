@@ -54,7 +54,9 @@ e7_engine_scene_draw_box <- (scene: u64, x: i64, y: i64, z: i64, sx: i64, sy: i6
 e7_engine_scene_draw_shape <- (scene: u64, shape: i32, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, r: i64, g: i64, b: i64, angle: i64) -> nil:
     if scene == 0:
         ret
-    scene_draw_box(scene, x, y, z, sx, sy, sz, r, g, b, angle)
+    # The lit 3D pipeline draws the shared cube geometry; sphere/capsule/plane
+    # kinds keep the documented box approximation.
+    scene_draw_shape_rot(scene, shape, x, y, z, sx, sy, sz, 0, angle, 0, r, g, b, 0 as u64)
 
 e7_engine_scene_draw_shape_rot <- (
     scene: u64,
@@ -75,12 +77,12 @@ e7_engine_scene_draw_shape_rot <- (
 ) -> nil:
     if scene == 0:
         ret
-    scene_draw_box(scene, x, y, z, sx, sy, sz, r, g, b, ry)
+    scene_draw_shape_rot(scene, shape, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
 
 e7_engine_scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, r: i64, g: i64, b: i64, angle: i64) -> nil:
     if scene == 0:
         ret
-    scene_draw_box(scene, x, y, z, sx, sy, sz, r, g, b, angle)
+    scene_draw_custom(scene, mesh, x, y, z, sx, sy, sz, 0, angle, 0, r, g, b, 0 as u64)
 
 e7_engine_scene_draw_custom_rot <- (
     scene: u64,
@@ -101,23 +103,27 @@ e7_engine_scene_draw_custom_rot <- (
 ) -> nil:
     if scene == 0:
         ret
-    scene_draw_box(scene, x, y, z, sx, sy, sz, r, g, b, ry)
+    scene_draw_custom(scene, mesh, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
 
 e7_engine_scene_draw_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) -> nil:
     if scene == 0:
         ret
-    ret
+    scene_ui_quad(scene, texture, x, y, w, h, r, g, b, a)
 
 e7_engine_scene_texture_create <- (scene: u64, image: u64) -> u64:
-    ret 0
+    if scene == 0:
+        ret 0
+    ret scene_texture_create(scene, image) as u64
 
 e7_engine_scene_texture_destroy <- (scene: u64, texture: u64) -> nil:
     if scene == 0:
         ret
-    ret
+    scene_texture_destroy(scene, texture)
 
 e7_engine_scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) -> u64:
-    ret 0
+    if scene == 0:
+        ret 0
+    ret scene_mesh_upload(scene, vertices, indices, layout) as u64
 
 e7_engine_scene_end_frame <- (scene: u64) -> nil:
     if scene == 0:

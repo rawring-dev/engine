@@ -103,14 +103,38 @@ engine/
   torques are visible. `render_scene` reads the Camera row, then submits
   a frame with the split intrinsics: `set_camera`, `set_light`, `begin_frame`,
   one `draw_shape_rot` per `Renderable` + `Transform` + `BodyBounds` +
-  `Material` row (object count is dynamic; there is no fixed per-frame limit),
-  one `draw_custom_rot` per uploaded OBJ mesh row, calls the `ui_render`
-  hook, and `end_frame`.  The draw calls receive the full `Transform.rotation`
-  XYZ Euler triple, so physics rotation around any axis is rendered.
-- `ui_render(gpu)` in `engine/gfx/scene.e7` calls `ui::draw_widget(...)` after the
-  3D draws while the frame is still open. UI panels/buttons/text use
-  `Gpu.draw_ui_quad(texture, x, y, w, h, r, g, b, a)` (pixels from top-left,
-  RGBA 0..255, straight alpha over the 3D scene).
+  `Material` row, one `draw_custom_rot` per uploaded OBJ mesh row, one
+  `draw_ui_quad` per widget layer, and `end_frame`.  The draw calls receive the
+  full `Transform.rotation` XYZ Euler triple, so physics rotation around any
+  axis is rendered.  There is a per-frame recording capacity of 24 3D draws
+  (16 procedural + 8 uploaded meshes) and 88 total draws including UI quads;
+  object count below those caps is dynamic.
+- Frames are recorded, not submitted per draw: `engine/platform/scene.e7`
+  writes one 80-byte entry per object into the scene draw list (pipeline,
+  buffers, per-object 320-byte `Scene` UBO slot, texture descriptor sets) and
+  `scene_draw` captures the whole list in a single command buffer.  The 3D
+  entries use the lit pipeline (`lit.vert`/`lit.frag`: 320-byte dynamic
+  `Scene` UBO at set 0, combined image-sampler at set 1 binding 1), so the
+  material tint and texture are applied per object.  UI entries are appended
+  after the 3D entries and use the blended UI pipeline (`ui.vert`/`ui.frag`,
+  set 0 binding 0) with a 64-quad dynamic vertex buffer updated at draw time;
+  this is the screen-space pass over the 3D scene (pixels from top-left,
+  RGBA 0..255, straight alpha).
+- Engine textures: `e7_engine_scene_texture_create` uploads an e7 image handle
+  (font glyph images and material PNGs) through
+  `e7_image_width/height/pixels`; ids are stable (1..24, free-list reuse after
+  `e7_engine_scene_texture_destroy`), id 0 is the built-in white texture.
+  Each texture owns two combined-sampler descriptor sets (set 0 binding 0 for
+  UI, set 1 binding 1 for the lit material path) and is freed with the scene.
+- Uploaded meshes: `e7_engine_scene_mesh_upload` converts the e7 OBJ
+  interleaved vertex aggregate (position, normal, uv; 8 floats per vertex)
+  and 32-bit index aggregate into tightly packed GPU buffers, rendered through
+  the 32-byte-stride variant of the lit pipeline.  The normal slot is uploaded
+  as neutral vertex colour and the lit vertex stage derives UVs from
+  position.xy; material tint/texture still apply.
+- Approximation: the procedural shape kinds (sphere, capsule, plane) are all
+  rendered with the shared cube geometry; the transform, full XYZ rotation,
+  tint and texture id are honored, but the silhouette remains a box.
 - UI widgets (each row carries all five component slots; zero/empty selects
   the role): `UIRect`, `UIPanel`, `UILabel`, `UIButton { label, action }`,
   `UITextField { text, max_len, focused, revision, texture, ... }`.
@@ -139,6 +163,10 @@ engine/
   `e7_engine_scene_mesh_upload` for `cube.obj`.  The demo adds one
   `Transform + MeshRenderer + Material` row that is drawn as a textured custom
   mesh; `render_scene` skips it until the mesh id is assigned.
+- Capture limitation: the headless PPM writer copies the swapchain bytes as
+  RGB, while the lavapipe surface format is BGRA, so red and blue are swapped
+  in captured PPMs (window presentation is unaffected).  Captures also show
+  the UI over the lit 3D frame, so text/panel pixels are directly visible.
 
 ## Running
 
