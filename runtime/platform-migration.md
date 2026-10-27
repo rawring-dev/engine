@@ -143,7 +143,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   multiple indexed draws before submit; the scene fills a second object slot
   (translated/red-tinted cube) and records two objects in one captured frame.
   Runtime: **136/136**.
-- Remaining: engine draw API parity, image/text, and deletion of the Zig layer.
+- **7f (done):** added the e7 object draw API: `scene_begin_frame`,
+  `scene_draw_box` (position/scale/color), per-object model/tint UBO slots, and
+  up to four indexed draw calls per frame with dynamic offsets. Scene test now
+  records four colored cubes and captures the frame. Runtime: **136/136**.
+- Remaining: engine draw-shape/mesh/texture/UI parity, image/text, and deletion
+  of the Zig layer.
 
 ## Migration stages
 
