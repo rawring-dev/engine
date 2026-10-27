@@ -1,0 +1,38 @@
+# Lit vertex stage: per-frame 320-byte SceneUniform UBO (set 0, binding 0) plus
+# position (location 0) / colour (location 1) vertex inputs, stride 24, matching
+# `vulkan_mesh_pipeline_two`.  Outputs world position (0), colour (1) and uv (2)
+# for the lit fragment shader.
+#
+# The uv output reproduces the original GLSL-derived SPIR-V: position.xy + 0.5.
+
+Scene <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+    camera_pos: [f32; 4]
+    light_pos: [f32; 4]
+    light_color: [f32; 4]
+    params: [f32; 4]
+    tint: [f32; 4]
+
+@binding(0, 0)
+scene: Scene
+
+In <- struct
+    @location(0) position: [f32; 3]
+    @location(1) color: [f32; 3]
+
+Out <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) world_pos: [f32; 3]
+    @location(1) vcolor: [f32; 3]
+    @location(2) uv: [f32; 2]
+
+@vertex
+main <- (input: In) -> Out:
+    position := [input.position.x, input.position.y, input.position.z, 1.0] as [f32; 4]
+    world := scene.model * position
+    view := scene.view * world
+    clip := scene.proj * view
+    uv := [input.position.x + 0.5, input.position.y + 0.5] as [f32; 2]
+    ret Out{position: clip, world_pos: world.xyz, vcolor: input.color, uv: uv}
