@@ -222,9 +222,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   Functions currently use `ew_*` names to avoid colliding with the still-live
   runtime engine symbol manifest; they will take the `e7_engine_*` names when
   that manifest is removed. Runtime: **138/138**.
-- Remaining: e7 engine scene module, engine wiring/host capture, draw text
-  textures, borrowed-window rendering, image port, and removing runtime
-  renderer/window wrappers.
+- **9e (done):** e7 engine scene module (`engine/platform/engine_scene.e7`):
+  create/destroy/resize, camera/light/cube state, begin frame, box/shape/custom
+  draws, and end-frame capture into the host module + frame counter. Temporary
+  `es_*` names. JIT-verified full frame on an e7 window: capture is 64x48 RGBA
+  and the host frame counter advances. Runtime: **139/139**.
+- Remaining: engine wiring + remove runtime manifest, draw text textures,
+  borrowed-window rendering, image port, and removing runtime SDL/Vulkan
+  wrappers.
 
 ## Migration stages
 

@@ -1534,6 +1534,75 @@ test "e7 input module maps actions and mouse state through SDL" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 engine scene module renders and captures a frame" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(scene_source);
+    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(window_source);
+    const engine_scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(engine_scene_source);
+    const probe =
+        \\scene_probe <- () -> i64:
+        \\    win := ew_window_create("e7 engine scene", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    scene := es_create(win, 0, 0)
+        \\    if scene == 0:
+        \\        ew_window_destroy(win)
+        \\        ret -2
+        \\    es_set_camera(scene, 0, 0, 3000, 0, 0)
+        \\    es_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    es_begin_frame(scene)
+        \\    es_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
+        \\    es_end_frame(scene)
+        \\    es_destroy(scene)
+        \\    ew_window_destroy(win)
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, window_source, engine_scene_source, probe });
+    defer std.testing.allocator.free(source);
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
+    host_mod.setCaptureEnabled(true);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("engine scene parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("engine scene diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-engine-scene");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "scene_probe");
+    const result = probe_fn();
+    if (result == 0) return;
+    try std.testing.expectEqual(@as(i64, 1), result);
+    try std.testing.expect(host_mod.frames() == 1);
+    var capture = host_mod.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 64), capture.width);
+    try std.testing.expectEqual(@as(u32, 48), capture.height);
+    try std.testing.expect(capture.pixels.len == 64 * 48 * 4);
+}
+
 test "e7 engine window module creates, pumps, and destroys a window" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
     const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
