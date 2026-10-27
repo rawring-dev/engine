@@ -1225,6 +1225,7 @@ vulkan_draw_triangle_capture <- (
     descriptor_set: i64,
     pipeline_layout: i64,
     dynamic_offset: i64,
+    descriptor_dynamic: i64,
     has_depth: i64,
     extra_objects: i64,
     out_pixels: u64,
@@ -1349,7 +1350,10 @@ vulkan_draw_triangle_capture <- (
         e7_store_u64(descriptor_sets, descriptor_set)
         dynamic_offsets := e7_alloc_bytes(4)
         e7_store_u32(dynamic_offsets, dynamic_offset)
-        e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, dynamic_offsets)
+        dynamic_count := 0
+        if descriptor_dynamic != 0:
+            dynamic_count = 1
+        e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, dynamic_count, dynamic_offsets)
         e7_free_ptr(dynamic_offsets)
     if index_buffer != 0:
         record_indexed_draw(command, index_buffer, index_count, descriptor_set, pipeline_layout, dynamic_offset, extra_objects, descriptor_sets, bind_descriptor)
