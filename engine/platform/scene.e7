@@ -542,8 +542,9 @@ scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy
 
 # Capture the recorded frame.  The main draw is degenerate (zero indices); all
 # object and UI draws live in the extension list so each keeps its own pipeline,
-# material texture and dynamic UBO slot.
-scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
+# material texture and dynamic UBO slot.  A non-zero `present` additionally
+# presents the acquired swapchain image for desktop windows.
+scene_draw_with_present <- (scene: u64, out_pixels: u64, out_size: u64, present: i64) -> i64:
     extra := e7_load_u64(scene + 1280)
     count := e7_load_u32(scene + 1300)
     pipeline := e7_load_u64(scene + 1256)
@@ -579,7 +580,15 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         out_size,
         extra as u64,
         count,
+        present,
     )
+
+scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
+    ret scene_draw_with_present(scene, out_pixels, out_size, 0)
+
+# Capture a frame and present it to the window (visible desktop engine path).
+scene_draw_present <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
+    ret scene_draw_with_present(scene, out_pixels, out_size, 1)
 
 scene_draw_static <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
     ret vulkan_draw_triangle_capture(

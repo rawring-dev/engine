@@ -13,9 +13,13 @@
 #   24  mouse dy           (f32 bits)
 #   28  mouse buttons      (u32)
 #   32  keyboard state*    (u64)
-#   40  text buffer*       (u64)
+#   40  (unused)
 #   48  numkeys            (u64)
 #   64  SDL_Event buffer   (128 bytes)
+#   192 text buffer*       (u64)
+#   200 text length        (u32)
+#   204 text capacity      (u32)
+#   208 mouse captured     (u32)
 
 bind_sdl <- (name: str) -> u64:
     ret e7_cffi_bind("SDL3", name)
@@ -40,6 +44,100 @@ video_quit <- () -> nil:
     quit := bind_sdl("SDL_QuitSubSystem")
     e7_ffi_call1(quit, 32)
 
+# Start SDL video without forcing a driver (real window on a desktop session).
+video_start <- () -> i64:
+    init := bind_sdl("SDL_InitSubSystem")
+    rc := e7_ffi_call1(init, 32)
+    if rc == 0:
+        init_all := bind_sdl("SDL_Init")
+        rc = e7_ffi_call1(init_all, 32)
+    if rc != 0:
+        ret 1
+    ret 0
+
+# Enable keyboard text input for this window; dispatches SDL_EVENT_TEXT_INPUT
+# events that `window_handle_event` buffers as UTF-8.
+start_text_input <- (state: u64) -> nil:
+    window := e7_load_u64(state)
+    if window == 0:
+        ret
+    start := bind_sdl("SDL_StartTextInput")
+    e7_ffi_call1(start, window)
+    ret
+
+# Append `length` UTF-8 bytes to the per-window text buffer.  The buffer is
+# allocated on first use (256 bytes total, matching the old runtime engine) and
+# reused so event pumping stays free of per-event reallocation.
+append_text <- (state: u64, text: i64, length: i64) -> nil:
+    if text == 0:
+        ret
+    if length <= 0:
+        ret
+    current := e7_load_u32(state + 200)
+    if current >= 256:
+        ret
+    available := 256 - current
+    count := length
+    if count > available:
+        count = available
+    buffer := e7_load_u64(state + 192)
+    if buffer == 0:
+        buffer = e7_alloc_bytes(256) as i64
+        if buffer == 0:
+            ret
+        e7_store_u64(state + 192, buffer)
+        e7_store_u32(state + 204, 256)
+    e7_memcpy(buffer + current, text, count)
+    e7_store_u32(state + 200, current + count)
+    ret
+
+# Drop the pending text but keep the allocated buffer for the next frame.
+text_input_reset <- (state: u64) -> nil:
+    e7_store_u32(state + 200, 0)
+    ret
+
+# Return the pending UTF-8 text as an e7 str and clear the pending length.
+text_input_pending <- (state: u64) -> str:
+    length := e7_load_u32(state + 200)
+    buffer := e7_load_u64(state + 192)
+    e7_store_u32(state + 200, 0)
+    if length <= 0:
+        ret e7_str_new(0, 0)
+    if buffer == 0:
+        ret e7_str_new(0, 0)
+    ret e7_str_new(buffer as u64, length)
+
+free_text_buffer <- (state: u64) -> nil:
+    buffer := e7_load_u64(state + 192)
+    if buffer != 0:
+        e7_free_ptr(buffer)
+        e7_store_u64(state + 192, 0)
+    e7_store_u32(state + 200, 0)
+    e7_store_u32(state + 204, 0)
+    ret
+
+# Relative mouse capture: hide the cursor and stop text input while the
+# first-person camera owns the pointer, and restore both for UI interaction.
+set_relative_mouse <- (state: u64, enabled: i64) -> nil:
+    window := e7_load_u64(state)
+    set_mode := bind_sdl("SDL_SetWindowRelativeMouseMode")
+    e7_ffi_call2(set_mode, window, enabled)
+    if enabled != 0:
+        hide := bind_sdl("SDL_HideCursor")
+        e7_ffi_call0(hide)
+        stop := bind_sdl("SDL_StopTextInput")
+        e7_ffi_call1(stop, window)
+        e7_store_u32(state + 208, 1)
+    else:
+        show := bind_sdl("SDL_ShowCursor")
+        e7_ffi_call0(show)
+        start_text_input(state)
+        e7_store_u32(state + 208, 0)
+    ret
+
+mouse_captured <- (state: u64) -> i64:
+    ret e7_load_u32(state + 208)
+
 window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
     create := bind_sdl("SDL_CreateWindow")
     title_z := e7_cstr(title)
@@ -48,9 +146,46 @@ window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
     if win == 0:
         ret 0
     state := e7_alloc_bytes(256)
+    if state == 0:
+        destroy := bind_sdl("SDL_DestroyWindow")
+        e7_ffi_call1(destroy, win)
+        ret 0
     e7_store_u64(state, win)
     e7_store_u32(state + 8, 0)
+    e7_store_u64(state + 192, 0)
+    e7_store_u32(state + 200, 0)
+    e7_store_u32(state + 204, 0)
+    e7_store_u32(state + 208, 0)
     ret state
+
+# Apply one polled SDL event to the window state.  Kept separate from
+# `window_pump` so engine tests can drive synthetic events without a device.
+window_handle_event <- (state: u64, event: u64) -> nil:
+    kind := e7_load_u32(event)
+    if kind == 256:
+        e7_store_u32(state + 8, 1)
+    if kind == 528:
+        e7_store_u32(state + 8, 1)
+    if kind == 1024:
+        e7_store_u32(state + 12, e7_load_u32(event + 28))
+        e7_store_u32(state + 16, e7_load_u32(event + 32))
+        e7_store_u32(state + 20, e7_load_u32(event + 36))
+        e7_store_u32(state + 24, e7_load_u32(event + 40))
+    if kind == 526:
+        start_text_input(state)
+    if kind == 768:
+        # Escape releases relative capture so the cursor can drive the UI; the
+        # engine UI recaptures on a world click, like the old runtime engine.
+        if e7_load_u32(event + 28) == 27:
+            set_relative_mouse(state, 0)
+    if kind == 771:
+        # SDL_TextInputEvent.text lives at offset 24; the event is a C string.
+        text := e7_load_u64(event + 24)
+        if text != 0:
+            strlen := bind_sdl("SDL_strlen")
+            length := e7_ffi_call1(strlen, text) as i64
+            append_text(state, text, length)
+    ret
 
 # Poll one event.  Callers pump repeatedly per frame; keeping this loop-free
 # also avoids a known LLVM instcombine non-fixpoint on the generated CFG.
@@ -59,16 +194,7 @@ window_pump <- (state: u64) -> i64:
     event := state + 64
     rc := e7_ffi_call1(poll, event)
     if rc != 0:
-        kind := e7_load_u32(event)
-        if kind == 256:
-            e7_store_u32(state + 8, 1)
-        if kind == 528:
-            e7_store_u32(state + 8, 1)
-        if kind == 1024:
-            e7_store_u32(state + 12, e7_load_u32(event + 28))
-            e7_store_u32(state + 16, e7_load_u32(event + 32))
-            e7_store_u32(state + 20, e7_load_u32(event + 36))
-            e7_store_u32(state + 24, e7_load_u32(event + 40))
+        window_handle_event(state, event)
     ret e7_load_u32(state + 8)
 
 window_should_close <- (state: u64) -> i64:
@@ -80,10 +206,14 @@ window_size <- (state: u64, out_width: u64, out_height: u64) -> i64:
     ret e7_ffi_call3(size, win, out_width, out_height) as i64
 
 window_destroy <- (state: u64) -> nil:
+    if state == 0:
+        ret
+    free_text_buffer(state)
     win := e7_load_u64(state)
     destroy := bind_sdl("SDL_DestroyWindow")
     e7_ffi_call1(destroy, win)
     e7_free_ptr(state)
+    ret
 
 key_down <- (state: u64, scancode: i64) -> i64:
     keyboard := e7_load_u64(state + 32)
@@ -110,6 +240,20 @@ mouse_dx <- (state: u64) -> i64:
 mouse_dy <- (state: u64) -> i64:
     ret e7_load_u32(state + 24)
 
+# SDL_GetMouseState button mask: bit 0 left, bit 1 middle, bit 2 right,
+# bit 3/4 extra buttons.  The engine button ids keep the old runtime mapping:
+# 0 left, 1 right, 2 middle.
+mouse_button_mask_down <- (mask: i64, button: i64) -> i64:
+    if button < 0:
+        ret 0
+    if button == 0:
+        ret mask % 2
+    if button == 1:
+        ret (mask / 4) % 2
+    if button == 2:
+        ret (mask / 2) % 2
+    ret 0
+
 mouse_buttons <- (state: u64) -> i64:
     get_mouse := bind_sdl("SDL_GetMouseState")
     x := e7_alloc_bytes(4)
@@ -120,34 +264,6 @@ mouse_buttons <- (state: u64) -> i64:
     e7_free_ptr(x)
     e7_free_ptr(y)
     ret buttons as i64
-
-# Start SDL video without forcing a driver (real window on a desktop session).
-video_start <- () -> i64:
-    init := bind_sdl("SDL_InitSubSystem")
-    rc := e7_ffi_call1(init, 32)
-    if rc == 0:
-        init_all := bind_sdl("SDL_Init")
-        rc = e7_ffi_call1(init_all, 32)
-    if rc != 0:
-        ret 1
-    ret 0
-
-# Relative mouse capture / cursor visibility for engine input.
-set_relative_mouse <- (state: u64, enabled: i64) -> nil:
-    window := e7_load_u64(state)
-    set_mode := bind_sdl("SDL_SetWindowRelativeMouseMode")
-    e7_ffi_call2(set_mode, window, enabled)
-    if enabled != 0:
-        hide := bind_sdl("SDL_HideCursor")
-        e7_ffi_call0(hide)
-        e7_store_u32(state + 60, 1)
-    else:
-        show := bind_sdl("SDL_ShowCursor")
-        e7_ffi_call0(show)
-        e7_store_u32(state + 60, 0)
-
-mouse_captured <- (state: u64) -> i64:
-    ret e7_load_u32(state + 60)
 
 window_flags <- (state: u64) -> i64:
     win := e7_load_u64(state)
