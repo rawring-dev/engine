@@ -297,9 +297,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   renders correctly, so the remaining engine-only failure is inside the
   project/system lifecycle rather than function-boundary behavior. Suite:
   **134 pass, 10 skipped**; compiler 206.
-- Remaining: engine project lifecycle (clear/readback zeros), restore skipped
-  tests, draw text textures, borrowed-window rendering, image port, and removing
-  remaining runtime SDL/Vulkan wrappers.
+- **9q (done):** added passing regressions for every engine call shape:
+  cross-module `scene_draw`, `&receiver` method draw, and inline async-task scene
+  draw. All render correctly, leaving the engine project's resource/plugin
+  lifecycle as the only remaining difference behind the all-zero engine
+  readback. Suite: **137 pass, 10 skipped**; compiler 206.
+- Remaining: engine project resource/plugin lifecycle (zero clear/readback only
+  there), restore skipped tests, draw text textures, borrowed-window rendering,
+  image port, and removing remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 
