@@ -138,6 +138,24 @@ set_relative_mouse <- (state: u64, enabled: i64) -> nil:
 mouse_captured <- (state: u64) -> i64:
     ret e7_load_u32(state + 208)
 
+# SDL3 creates windows hidden; call this for visible desktop windows.
+window_show <- (state: u64) -> nil:
+    window := e7_load_u64(state)
+    if window == 0:
+        ret
+    show := bind_sdl("SDL_ShowWindow")
+    e7_ffi_call1(show, window)
+    raise := bind_sdl("SDL_RaiseWindow")
+    e7_ffi_call1(raise, window)
+    ret
+
+# Give the compositor a moment to map/configure a shown window before the
+# engine queries its pixel size for swapchain creation.
+wait_ms <- (milliseconds: i64) -> nil:
+    delay := bind_sdl("SDL_Delay")
+    e7_ffi_call1(delay, milliseconds)
+    ret
+
 window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
     create := bind_sdl("SDL_CreateWindow")
     title_z := e7_cstr(title)
@@ -167,10 +185,13 @@ window_handle_event <- (state: u64, event: u64) -> nil:
     if kind == 528:
         e7_store_u32(state + 8, 1)
     if kind == 1024:
-        e7_store_u32(state + 12, e7_load_u32(event + 28))
-        e7_store_u32(state + 16, e7_load_u32(event + 32))
-        e7_store_u32(state + 20, e7_load_u32(event + 36))
-        e7_store_u32(state + 24, e7_load_u32(event + 40))
+        # SDL3 SDL_MouseMotionEvent: x@40, y@44, xrel@48, yrel@52 (floats).
+        e7_store_u32(state + 12, e7_load_u32(event + 40))
+        e7_store_u32(state + 16, e7_load_u32(event + 44))
+        dx := e7_load_f32(state + 20) + e7_load_f32(event + 48)
+        dy := e7_load_f32(state + 24) + e7_load_f32(event + 52)
+        e7_store_f32(state + 20, dx)
+        e7_store_f32(state + 24, dy)
     if kind == 526:
         start_text_input(state)
     if kind == 768:
@@ -185,6 +206,12 @@ window_handle_event <- (state: u64, event: u64) -> nil:
             strlen := bind_sdl("SDL_strlen")
             length := e7_ffi_call1(strlen, text) as i64
             append_text(state, text, length)
+    ret
+
+# Reset accumulated relative motion for a new frame.
+mouse_reset_delta <- (state: u64) -> nil:
+    e7_store_f32(state + 20, 0.0)
+    e7_store_f32(state + 24, 0.0)
     ret
 
 # Poll one event.  Callers pump repeatedly per frame; keeping this loop-free
@@ -229,16 +256,16 @@ key_down <- (state: u64, scancode: i64) -> i64:
     ret e7_load_u8(keyboard + scancode)
 
 mouse_x <- (state: u64) -> i64:
-    ret e7_load_u32(state + 12)
+    ret e7_f32_to_i64(e7_load_f32(state + 12))
 
 mouse_y <- (state: u64) -> i64:
-    ret e7_load_u32(state + 16)
+    ret e7_f32_to_i64(e7_load_f32(state + 16))
 
 mouse_dx <- (state: u64) -> i64:
-    ret e7_load_u32(state + 20)
+    ret e7_f32_to_i64(e7_load_f32(state + 20))
 
 mouse_dy <- (state: u64) -> i64:
-    ret e7_load_u32(state + 24)
+    ret e7_f32_to_i64(e7_load_f32(state + 24))
 
 # SDL_GetMouseState button mask: bit 0 left, bit 1 middle, bit 2 right,
 # bit 3/4 extra buttons.  The engine button ids keep the old runtime mapping:

@@ -1050,6 +1050,7 @@ pub const declarations =
     \\declare i64 @e7_load_u16(i64)
     \\declare void @e7_store_u16(i64, i64)
     \\declare i64 @e7_load_u32(i64)
+    \\declare i64 @e7_load_f32(i64)
     \\declare void @e7_store_u32(i64, i64)
     \\declare i64 @e7_load_u64(i64)
     \\declare void @e7_store_u64(i64, i64)

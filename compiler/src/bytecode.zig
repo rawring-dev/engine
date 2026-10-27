@@ -142,6 +142,7 @@ pub const RuntimeFunction = enum(u8) {
     load_u16,
     store_u16,
     load_u32,
+    load_f32,
     store_u32,
     load_u64,
     store_u64,
@@ -248,6 +249,7 @@ pub const RuntimeFunction = enum(u8) {
             .load_u16 => "e7_load_u16",
             .store_u16 => "e7_store_u16",
             .load_u32 => "e7_load_u32",
+            .load_f32 => "e7_load_f32",
             .store_u32 => "e7_store_u32",
             .load_u64 => "e7_load_u64",
             .store_u64 => "e7_store_u64",
@@ -329,7 +331,7 @@ pub const RuntimeFunction = enum(u8) {
             .memcpy => 3,
             .handle => 1,
             .store_f32 => 2,
-            .load_i64, .load_u8, .load_u16, .load_u32, .load_u64 => 1,
+            .load_i64, .load_u8, .load_u16, .load_u32, .load_f32, .load_u64 => 1,
             .store_i64, .store_u8, .store_u16, .store_u32, .store_u64 => 2,
         };
     }

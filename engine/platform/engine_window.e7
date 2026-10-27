@@ -24,6 +24,10 @@ e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
     flags := e7_engine_window_flags(headless)
     created := window_create(title, width, height, flags)
     if created != 0:
+        # SDL3 creates windows hidden by default; desktop runs must show it.
+        if headless == 0:
+            window_show(created)
+            wait_ms(100)
         window_pump(created)
         window_pump(created)
         window_pump(created)
@@ -44,6 +48,7 @@ e7_engine_window_pump <- (handle: u64) -> i64:
         ret 1
     e7_store_u32(handle + 8, 0)
     text_input_reset(handle)
+    mouse_reset_delta(handle)
     window_pump(handle)
     window_pump(handle)
     window_pump(handle)

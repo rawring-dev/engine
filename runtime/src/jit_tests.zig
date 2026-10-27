@@ -966,6 +966,91 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 SDL platform decodes SDL3 mouse motion fields and accumulates deltas" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) {
+        std.debug.print("skipping e7 SDL mouse test: libSDL3 unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+
+    const module_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(module_source);
+
+    const selftest =
+        \\mouse_selftest <- () -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret -1
+        \\    win := window_create("e7 sdl mouse", 64, 48, 8)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret -2
+        \\    ev := e7_alloc_bytes(128)
+        \\    e7_store_u32(ev, 1024)
+        \\    e7_store_f32(ev + 40, 100.0)
+        \\    e7_store_f32(ev + 44, 200.0)
+        \\    e7_store_f32(ev + 48, 5.0)
+        \\    e7_store_f32(ev + 52, -7.0)
+        \\    window_handle_event(win, ev)
+        \\    x1 := mouse_x(win)
+        \\    y1 := mouse_y(win)
+        \\    dx1 := mouse_dx(win)
+        \\    dy1 := mouse_dy(win)
+        \\    e7_store_f32(ev + 40, 110.0)
+        \\    e7_store_f32(ev + 44, 220.0)
+        \\    e7_store_f32(ev + 48, 7.0)
+        \\    e7_store_f32(ev + 52, -3.0)
+        \\    window_handle_event(win, ev)
+        \\    x2 := mouse_x(win)
+        \\    y2 := mouse_y(win)
+        \\    dx2 := mouse_dx(win)
+        \\    dy2 := mouse_dy(win)
+        \\    e7_free_ptr(ev)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if x1 != 100 or y1 != 200 or dx1 != 5 or dy1 != -7:
+        \\        ret -3
+        \\    if x2 != 110 or y2 != 220 or dx2 != 12 or dy2 != -10:
+        \\        ret -4
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ module_source, selftest });
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |diagnostic| {
+            std.debug.print("e7 SDL mouse parse diagnostic: {s}\n", .{diagnostic.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |diagnostic| {
+            std.debug.print("e7 SDL mouse diagnostic: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+        return error.TestUnexpectedResult;
+    }
+
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-sdl-mouse");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "mouse_selftest");
+    const result = selftest_fn();
+    if (result == -1) {
+        std.debug.print("skipping e7 SDL mouse test: SDL video unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+    if (result != 1) std.debug.print("e7 SDL mouse selftest result {d}\n", .{result});
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
 test "e7 SDL+Vulkan platform module creates a window surface" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) {
         std.debug.print("skipping e7 Vulkan surface test: SDL Vulkan or Vulkan loader unavailable\n", .{});

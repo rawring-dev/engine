@@ -597,7 +597,7 @@ pub export fn e7_vec_push(vec: i64, value: i64) callconv(.c) i64 {
     return result;
 }
 
-pub fn symbols() [48]Symbol {
+pub fn symbols() [49]Symbol {
     return .{
         .{ .name = "e7_alloc_i64", .address = @intFromPtr(&e7_alloc_i64) },
         .{ .name = "e7_load_i64", .address = @intFromPtr(&e7_load_i64) },
@@ -620,6 +620,7 @@ pub fn symbols() [48]Symbol {
         .{ .name = "e7_load_u16", .address = @intFromPtr(&e7_load_u16) },
         .{ .name = "e7_store_u16", .address = @intFromPtr(&e7_store_u16) },
         .{ .name = "e7_load_u32", .address = @intFromPtr(&e7_load_u32) },
+        .{ .name = "e7_load_f32", .address = @intFromPtr(&e7_load_f32) },
         .{ .name = "e7_store_u32", .address = @intFromPtr(&e7_store_u32) },
         .{ .name = "e7_load_u64", .address = @intFromPtr(&e7_load_u64) },
         .{ .name = "e7_store_u64", .address = @intFromPtr(&e7_store_u64) },
@@ -813,6 +814,13 @@ pub export fn e7_store_u16(ptr: i64, value: i64) callconv(.c) void {
 pub export fn e7_load_u32(ptr: i64) callconv(.c) i64 {
     if (ptr == 0) return 0;
     return @as(*align(1) const u32, @ptrFromInt(@as(usize, @intCast(ptr)))).*;
+}
+
+pub export fn e7_load_f32(ptr: i64) callconv(.c) i64 {
+    if (ptr == 0) return 0;
+    const single = @as(*align(1) const f32, @ptrFromInt(@as(usize, @intCast(ptr)))).*;
+    const double: f64 = @floatCast(single);
+    return @bitCast(double);
 }
 
 pub export fn e7_store_u32(ptr: i64, value: i64) callconv(.c) void {

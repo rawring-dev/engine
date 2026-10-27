@@ -116,6 +116,7 @@ pub const functions = [_]Function{
     .{ .name = "e7_load_u16", .params = &.{.any_}, .result = .i64_ },
     .{ .name = "e7_store_u16", .params = &.{ .any_, .any_ }, .result = .unit },
     .{ .name = "e7_load_u32", .params = &.{.any_}, .result = .i64_ },
+    .{ .name = "e7_load_f32", .params = &.{.any_}, .result = .float_ },
     .{ .name = "e7_store_u32", .params = &.{ .any_, .any_ }, .result = .unit },
     .{ .name = "e7_load_u64", .params = &.{.any_}, .result = .i64_ },
     .{ .name = "e7_store_u64", .params = &.{ .any_, .any_ }, .result = .unit },
