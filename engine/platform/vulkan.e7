@@ -712,9 +712,12 @@ vulkan_capture_clear <- (
     clear_image := bind_vk("vkCmdClearColorImage")
     e7_ffi_call6(clear_image, command, image, 7, clear_color, 1, clear_range)
     transition_image(command, image, 7, 6, 4096, 2048, 4096, 4096)
+    # VkBufferImageCopy: aspectMask@16, mipLevel@20, baseArrayLayer@24,
+    # layerCount@28.  layerCount must be 1 (the earlier offset selected
+    # baseArrayLayer=1/layerCount=0, which made the copy a no-op).
     region := e7_alloc_bytes(56)
     e7_store_u32(region + 16, 1)
-    e7_store_u32(region + 24, 1)
+    e7_store_u32(region + 28, 1)
     e7_store_u32(region + 44, width)
     e7_store_u32(region + 48, height)
     e7_store_u32(region + 52, 1)
@@ -1368,9 +1371,12 @@ vulkan_draw_triangle_capture <- (
     end_render_pass := bind_vk("vkCmdEndRenderPass")
     e7_ffi_call1(end_render_pass, command)
     transition_image(command, image, 1000001002, 6, 0, 2048, 8192, 4096)
+    # VkBufferImageCopy: aspectMask@16, mipLevel@20, baseArrayLayer@24,
+    # layerCount@28.  layerCount must be 1 (the earlier offset selected
+    # baseArrayLayer=1/layerCount=0, which made the copy a no-op).
     region := e7_alloc_bytes(56)
     e7_store_u32(region + 16, 1)
-    e7_store_u32(region + 24, 1)
+    e7_store_u32(region + 28, 1)
     e7_store_u32(region + 44, width)
     e7_store_u32(region + 48, height)
     e7_store_u32(region + 52, 1)
@@ -2175,9 +2181,12 @@ vulkan_texture_upload <- (device: i64, queue: i64, queue_family: i64, physical: 
     e7_store_u32(begin_info, 42)
     e7_ffi_call2(bind_vk("vkBeginCommandBuffer"), command, begin_info)
     transition_image(command, image, 0, 7, 0, 4096, 1, 4096)
+    # VkBufferImageCopy: aspectMask@16, mipLevel@20, baseArrayLayer@24,
+    # layerCount@28.  layerCount must be 1 (the earlier offset selected
+    # baseArrayLayer=1/layerCount=0, which made the copy a no-op).
     region := e7_alloc_bytes(56)
     e7_store_u32(region + 16, 1)
-    e7_store_u32(region + 24, 1)
+    e7_store_u32(region + 28, 1)
     e7_store_u32(region + 44, width)
     e7_store_u32(region + 48, height)
     e7_store_u32(region + 52, 1)
