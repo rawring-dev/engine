@@ -56,15 +56,6 @@ pub fn build(b: *std.Build) void {
     platform_shader_build.has_side_effects = true;
     shaders_step.dependOn(&platform_shader_build.step);
 
-    // Native Vulkan scene demo (`zig build run-scene [-- --frames N]`).  The
-    // demo executable is defined by runtime/build.zig.
-    const scene_demo = runtime_dep.artifact("scene-demo");
-    const run_scene = b.addRunArtifact(scene_demo);
-    if (b.args) |args| run_scene.addArgs(args);
-    run_scene.has_side_effects = true;
-    const run_scene_step = b.step("run-scene", "Build and run the Vulkan scene demo");
-    run_scene_step.dependOn(&run_scene.step);
-
     // e7 engine host (`zig build run-engine [-- --frames 2 --headless --capture out.ppm]`).
     // The executable is defined by runtime/build.zig; this step forwards CLI
     // arguments and runs from the workspace root so `engine/main.e7` resolves.

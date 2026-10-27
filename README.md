@@ -56,24 +56,19 @@ it through the iterative pass pipeline and LLJIT.
 │       └── iterative.zig  fixed-point LLVM New Pass Manager driver
 └── runtime/
     ├── build.zig
-    ├── vendor/
-    │   ├── vulkan/        vendored Khronos Vulkan headers (Apache-2.0)
-    │   └── vk_video/      Vulkan video codec headers
     └── src/
         ├── bytecode_ir.zig bytecode -> textual LLVM IR
         ├── task.zig       stackful task runtime, work-stealing queue, triggers
         ├── aggregate.zig  heap slots, strings, vectors/matrices, maps
         ├── orc.zig        LLVM ORC LLJIT bindings; absolute-symbol registration
         ├── intrinsics.zig e7_* C ABI manifest + LLVM IR declarations
+        ├── host_engine.zig SDL/Vulkan-free e7 host helpers (shader read, clock)
         ├── jit_tests.zig  ORC tests that call the ABI from generated IR
         ├── ffi/
         │   ├── abi.zig    status codes, allocation, last-error buffer
         │   ├── io.zig     process-wide std.Io + mutex helpers
         │   ├── handles.zig opaque u64 handle tables
         │   ├── time.zig   monotonic/wall clocks and sleep
-        │   ├── sdl.zig    shared SDL3 + Vulkan C import
-        │   ├── window.zig SDL3 window creation and events
-        │   ├── vulkan.zig instance/device/swapchain + RGBA capture
         │   ├── fs.zig     sandbox rooted at the executable directory
         │   ├── stdio.zig  stdin/stdout/stderr reads, writes, and line input
         │   ├── dl.zig     dlopen/LoadLibrary, symbols, trampolines, data I/O
@@ -90,10 +85,6 @@ it through the iterative pass pipeline and LLJIT.
 - Zig **0.16.0**
 - LLVM **23.1.3** (`llvm-config --version`), linked as `LLVM-23`
 - System LAPACK and BLAS (`-llapack -lblas`)
-- SDL3 (`-lSDL3`) for windows, events, and Vulkan surface creation
-- Vulkan loader (`-lvulkan`); the Khronos headers are vendored under
-  `runtime/vendor/vulkan` so the build does not depend on a `vulkan-headers`
-  package being installed
 - libcurl (`-lcurl`) for HTTP/HTTPS
 - OpenSSL (`-lssl -lcrypto`) and ngtcp2 with its OpenSSL crypto adapter
   (`-lngtcp2 -lngtcp2_crypto_ossl`) for QUIC
@@ -468,7 +459,6 @@ zig build run-engine                     # interactive: WASD, Q/E, Shift, mouse 
 zig build run-engine -- --frames 120
 zig build run-engine -- --headless --capture /tmp/engine.ppm
 zig build shaders                        # both e7s shader sets -> SPIR-V
-zig build run-scene                      # native renderer demo/fallback
 ```
 
 `run-engine` loads the `engine/` module tree (`main`, `events`, `ecs`, `gfx`,
@@ -476,8 +466,10 @@ zig build run-scene                      # native renderer demo/fallback
 initializes the columnar ECS world, JITs the e7 `main`, and runs the `Init`,
 `FrameInit`, `PreUpdate`, `Update`, `PostUpdate`, `Render`, and `DeInit`
 triggers. SDL
-window/input and Vulkan scene access are compiler-known intrinsics
-(`e7_engine_*`); the ECS/Commands/plugin/query runtime is in
+window/input and Vulkan scene access are implemented in e7 platform modules
+that bind SDL3 and Vulkan dynamically through the generic C FFI; the runtime
+keeps only the SDL/Vulkan-free `e7_engine_read_shader` and
+`e7_engine_time_now_ms` host helpers. The ECS/Commands/plugin/query runtime is in
 [`runtime/src/ecs.zig`](runtime/src/ecs.zig). Engine libraries are organized by behavior (`events`, `ecs`, `gfx`, `time`,
 `window`, `input`, `camera`, `scene`, `physics`, `bootstrap`, `ui`), with each
 exposing a plugin; `main.e7` is the demo-specific composition point.
@@ -524,13 +516,11 @@ append-only rows.
 Engine policy now lives in e7: shader asset selection/loading
 (`e7_engine_read_shader`), `gather_input`, time updates, camera look/movement,
 rigid-body rotation, light animation, ECS queries, and render submission all live in the
-the nested `engine/` modules. `runtime/src/engine.zig` is limited to SDL/Vulkan
-window/scene/time/raw input/asset-read/frame-state/frame-limit and capture
-facilities; `e7_engine_scene_draw` has been replaced by separate
-`set_cube_angle`, `set_light`, `begin_frame`, `draw_mesh`, and `end_frame`
-intrinsics dispatched by e7.
-[`runtime/src/ffi/renderer.zig`](runtime/src/ffi/renderer.zig) owns the
-depth-tested cube/point-light raster pipeline and the SPIR-V shader modules.
+the nested `engine/` modules. `runtime/src/host_engine.zig` is limited to the
+SDL/Vulkan-free asset-read and monotonic-time helpers; the window, input, and
+scene surface pipeline are owned by `engine/platform/*.e7` through the generic C
+FFI. [`runtime/src/host.zig`](runtime/src/host.zig) keeps the frame limiter and
+capture bookkeeping.
 
 ![engine scene](engine/scene-preview.png)
 
@@ -551,15 +541,13 @@ from that `.so`/`.dylib`/`.dll`; `Jit.addProcessSymbols` additionally reflects
 symbols already loaded into the process. [`intrinsics.zig`](runtime/src/intrinsics.zig)
 maintains the complete `e7_*` manifest (`symbols()`) and a matching LLVM IR
 declaration block (`declarations`). [`jit_tests.zig`](runtime/src/jit_tests.zig)
-compiles IR that calls the filesystem, TCP, UDP, HTTP, SDL window, Vulkan probe,
-QUIC, and WebRTC entry points.
+compiles IR that calls the filesystem, TCP, UDP, HTTP, QUIC, and WebRTC entry
+points; SDL and Vulkan are exercised from e7 source through the generic C FFI.
 
 The FFI layer under `runtime/src/ffi/` provides:
 
 | Area | Backend | Intrinsics |
 | --- | --- | --- |
-| windows/events | SDL3 | `e7_window_*` |
-| Vulkan surface + capture | Vulkan | `e7_vk_*` |
 | filesystem | Zig `std.Io.Dir` | `e7_fs_*` |
 | standard I/O | Zig `std.Io.File` | `e7_stdio_*` |
 | dynamic C libraries | `dlopen`/`LoadLibrary` + ORC generators | `e7_dl_*`, `e7_ffi_call*`, `e7_ffi_read/write` |
@@ -610,15 +598,13 @@ transpiler 23.
   products, matrix 2D indexing/row assignment, strings, maps (including string
   keys), map/vector/string iteration, container methods, aggregate references,
   unsafe raw pointers, uninitialized locals, normal sys lowering, lease
-  release/reacquire, a Vulkan cube/point-light scene renderer (headless
-  capture and JIT scene ABI), ECS resources/rows/Commands/plugins/queries,
-  executable e7 engine project (headless capture + injected input/camera),
-  filesystem sandbox
+  release/reacquire, ECS resources/rows/Commands/plugins/queries,
+  executable e7 engine project (headless run), filesystem sandbox
   escapes, STDIO file/line handling and JITed stderr writes, shared-library
   loading, symbol resolution, `cos`/`strlen` calls, data-symbol access,
   JIT-callback `qsort`, TCP/UDP loopback,
-  HTTP request/response, SDL window lifecycle, Vulkan device probing, QUIC
-  client/server handshake and stream exchange, WebRTC
+  HTTP request/response, QUIC client/server handshake and stream exchange, e7
+  platform SDL/Vulkan tests through the generic C FFI, WebRTC
   offer/answer/data-channel loopback, and JITed IR calling each of those
   intrinsic families.
 
