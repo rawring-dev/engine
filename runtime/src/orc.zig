@@ -24,7 +24,6 @@ const engine = @import("engine.zig");
 const float = @import("float.zig");
 const json = @import("json.zig");
 const image = @import("image.zig");
-const text_render = @import("text.zig");
 const cbridge = @import("ffi/cbridge.zig");
 
 const c = @cImport({
@@ -144,8 +143,6 @@ pub const Jit = struct {
         try self.defineSymbols(&json_symbols);
         const image_symbols = image.symbols();
         try self.defineSymbols(&image_symbols);
-        const text_symbols = text_render.symbols();
-        try self.defineSymbols(&text_symbols);
         const ffi_symbols = cbridge.symbols();
         try self.defineSymbols(&ffi_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {

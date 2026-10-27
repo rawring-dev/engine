@@ -40,10 +40,8 @@ pub fn build(b: *std.Build) void {
     runtime.linkSystemLibrary("ngtcp2_crypto_ossl", .{});
     runtime.linkSystemLibrary("datachannel", .{});
     // Image asset decoding (PNG via libpng, JPEG via libjpeg-turbo) and text
-    // rasterization (SDL3_ttf; runtime/src/text.zig).
     runtime.linkSystemLibrary("png", .{});
-    runtime.linkSystemLibrary("SDL3_ttf", .{});
-    runtime.linkSystemLibrary("turbojpeg", .{});
+        runtime.linkSystemLibrary("turbojpeg", .{});
 
     // Shader assets: `runtime/shaders/assets.zig` embeds the generated SPIR-V
     // from its own package directory.  The canonical sources are e7s files in
@@ -120,7 +118,6 @@ pub fn build(b: *std.Build) void {
     engine_run.root_module.linkSystemLibrary("ngtcp2_crypto_ossl", .{});
     engine_run.root_module.linkSystemLibrary("datachannel", .{});
     engine_run.root_module.linkSystemLibrary("png", .{});
-    engine_run.root_module.linkSystemLibrary("SDL3_ttf", .{});
     engine_run.root_module.linkSystemLibrary("turbojpeg", .{});
     b.installArtifact(engine_run);
 

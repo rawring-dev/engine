@@ -5,7 +5,7 @@
 bind_ttf <- (name: str) -> u64:
     ret e7_cffi_bind("SDL3_ttf", name)
 
-text_font_load <- (path: str, size: i64) -> u64:
+e7_font_load <- (path: str, size: i64) -> u64:
     init := bind_ttf("TTF_Init")
     e7_ffi_call0(init)
     open_font := bind_ttf("TTF_OpenFont")
@@ -14,14 +14,14 @@ text_font_load <- (path: str, size: i64) -> u64:
     e7_free_ptr(path_c)
     ret font
 
-text_font_free <- (font: u64) -> i64:
+e7_font_free <- (font: u64) -> i64:
     if font == 0:
         ret 0
     close_font := bind_ttf("TTF_CloseFont")
     e7_ffi_call1(close_font, font)
     ret 0
 
-text_measure <- (font: u64, text: str) -> i64:
+e7_text_measure <- (font: u64, text: str) -> i64:
     if font == 0:
         ret 0
     text_c := e7_cstr(text)
@@ -38,7 +38,7 @@ text_measure <- (font: u64, text: str) -> i64:
         ret 0
     ret width * 4294967296 + height
 
-text_render <- (font: u64, text: str, r: i64, g: i64, b: i64) -> u64:
+e7_text_image <- (font: u64, text: str, r: i64, g: i64, b: i64) -> u64:
     if font == 0:
         ret 0
     text_c := e7_cstr(text)

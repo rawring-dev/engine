@@ -1,5 +1,6 @@
 # engine7 entry point. All engine behavior lives in the imported libraries:
 # events, ecs, gfx, time, window, input, camera, scene, bootstrap and ui.
+mod platform
 mod core
 mod gfx
 mod physics

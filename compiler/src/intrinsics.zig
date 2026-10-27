@@ -286,33 +286,6 @@ pub const functions = [_]Function{
         .params = &.{},
         .result = .str_,
     },
-    .{
-        // SDL3_ttf font loading and text rasterization (runtime/src/text.zig).
-        .name = "e7_font_load",
-        .params = &.{ .str_, .i64_ },
-        .result = .u64_,
-        .units = "font path + point size -> font handle",
-    },
-    .{
-        .name = "e7_font_free",
-        .params = &.{.u64_},
-        .result = .i64_,
-    },
-    .{
-        // Packed (width << 32) | height in pixels.
-        .name = "e7_text_measure",
-        .params = &.{ .u64_, .str_ },
-        .result = .i64_,
-        .units = "packed width<<32|height",
-    },
-    .{
-        // Font handle + text + 0..255 RGB -> image handle (RGBA8, transparent
-        // background) usable with e7_image_width/height/pixels/free.
-        .name = "e7_text_image",
-        .params = &.{ .u64_, .str_, .i64_, .i64_, .i64_ },
-        .result = .u64_,
-    },
-
     // Float helpers: values are f64 bit patterns stored in i64 slots.
     .{ .name = "e7_f32_add", .params = &.{ .float_, .float_ }, .result = .float_ },
     .{ .name = "e7_f32_sub", .params = &.{ .float_, .float_ }, .result = .float_ },
@@ -441,10 +414,6 @@ test "compiler-known intrinsics map to bytecode runtime calls with matching arit
     const ui_quad = lookup("e7_engine_scene_draw_ui_quad").?;
     try std.testing.expectEqual(@as(usize, 10), ui_quad.params.len);
     try std.testing.expectEqual(ValueType.i64_, ui_quad.result);
-    const text_image = lookup("e7_text_image").?;
-    try std.testing.expectEqual(@as(usize, 5), text_image.params.len);
-    try std.testing.expectEqual(ValueType.u64_, text_image.result);
-    try std.testing.expectEqual(ValueType.u64_, lookup("e7_font_load").?.result);
     try std.testing.expectEqual(@as(usize, 0), lookup("e7_engine_text_input").?.params.len);
     const draw_custom_rot = lookup("e7_engine_scene_draw_custom_rot").?;
     try std.testing.expectEqual(@as(usize, 15), draw_custom_rot.params.len);

@@ -154,8 +154,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `TTF_OpenFont`, switched to `TTF_GetStringSize`/`TTF_RenderText_Blended`, and
   taught the IR translator to skip runtime declarations shadowed by e7
   definitions. Runtime: **137/137**.
+- **8b (done):** engine integration: `engine/main.e7` imports `platform`,
+  `engine/ui/main.e7` uses `platform::text::*`, and the e7 text module now
+  defines the original intrinsic names. Removed the compiler text intrinsics,
+  `runtime/src/text.zig`, its symbol manifest, SDL3_ttf link directives, and the
+  old text-dependent runtime tests. `zig build run-engine -- --frames 1
+  --headless` passes. Runtime: **134/134**.
 - Remaining: engine draw-shape/mesh/texture/UI parity, image port, and deletion
-  of the Zig layer.
+  of the remaining SDL/Vulkan Zig wrappers.
 
 ## Migration stages
 

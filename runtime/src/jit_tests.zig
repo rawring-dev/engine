@@ -1563,15 +1563,15 @@ test "e7 text module loads a font, measures, and rasterizes text" {
     defer std.testing.allocator.free(text_source);
     const selftest =
         \\text_selftest <- () -> i64:
-        \\    font := text_font_load("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 24)
+        \\    font := e7_font_load("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 24)
         \\    if font == 0:
         \\        ret 0
-        \\    packed := text_measure(font, "Hello")
+        \\    packed := e7_text_measure(font, "Hello")
         \\    width := packed / 4294967296
-        \\    image := text_render(font, "Hello", 255, 255, 255)
+        \\    image := e7_text_image(font, "Hello", 255, 255, 255)
         \\    image_width := e7_image_width(image)
         \\    e7_image_free(image)
-        \\    text_font_free(font)
+        \\    e7_font_free(font)
         \\    if width <= 0:
         \\        ret -2
         \\    if image == 0:

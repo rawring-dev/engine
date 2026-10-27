@@ -10,6 +10,7 @@
 
 use core::ecs::*;
 use core::events::*;
+use platform::text::*;
 use gfx::gpu::*;
 use core::input::*;
 
