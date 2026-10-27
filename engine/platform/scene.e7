@@ -320,14 +320,20 @@ scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_mill
     e7_store_u32(base + 36, angle_milli)
     e7_store_u32(scene + 232, count + 1)
 
+milli_to_f32 <- (value: i64) -> f32:
+    signed := value
+    if value > 2147483647:
+        signed = value - 4294967296
+    ret e7_f32_div(e7_f32_from_i64(signed), 1000.0)
+
 prepare_object_slot <- (ubo: u64, scene: u64, index: i64) -> nil:
     slot := ubo + ((index * 320) as u64)
     if index > 0:
         e7_memcpy(slot, ubo, 320)
     source := scene + 256 + ((index * 40) as u64)
-    sx := e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 12)), 1000.0)
-    sy := e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 16)), 1000.0)
-    sz := e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 20)), 1000.0)
+    sx := milli_to_f32(e7_load_u32(source + 12))
+    sy := milli_to_f32(e7_load_u32(source + 16))
+    sz := milli_to_f32(e7_load_u32(source + 20))
     e7_store_f32(slot, sx)
     e7_store_f32(slot + 4, 0.0)
     e7_store_f32(slot + 8, 0.0)
@@ -340,9 +346,9 @@ prepare_object_slot <- (ubo: u64, scene: u64, index: i64) -> nil:
     e7_store_f32(slot + 36, 0.0)
     e7_store_f32(slot + 40, sz)
     e7_store_f32(slot + 44, 0.0)
-    e7_store_f32(slot + 48, e7_f32_div(e7_f32_from_i64(e7_load_u32(source)), 1000.0))
-    e7_store_f32(slot + 52, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 4)), 1000.0))
-    e7_store_f32(slot + 56, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 8)), 1000.0))
+    e7_store_f32(slot + 48, milli_to_f32(e7_load_u32(source)))
+    e7_store_f32(slot + 52, milli_to_f32(e7_load_u32(source + 4)))
+    e7_store_f32(slot + 56, milli_to_f32(e7_load_u32(source + 8)))
     e7_store_f32(slot + 60, 1.0)
     e7_store_f32(slot + 256, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 24)), 1000.0))
     e7_store_f32(slot + 260, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 28)), 1000.0))
