@@ -197,7 +197,7 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ubo_memory_out := e7_alloc_bytes(8)
     ubo_mapped_out := e7_alloc_bytes(8)
     ubo_size_out := e7_alloc_bytes(8)
-    if vulkan_uniform_resources(device, physical, 16, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
+    if vulkan_uniform_resources(device, physical, 24, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
         ret 0
     ubo_layout := e7_load_u64(ubo_layout_out)
     ubo_mapped := e7_load_u64(ubo_mapped_out)
@@ -259,6 +259,63 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_free_ptr(static_pipeline_layout_out)
     e7_free_ptr(mesh_vert_handle)
     e7_free_ptr(mesh_frag_handle)
+
+    # Engine extension state (offsets relative to the scene block):
+    #   1192/1200 UI pipeline + layout, 1208/1216/1224 UI vertex buffer,
+    #   memory and mapped pointer, 1232 UI quad count,
+    #   1256/1264 lit pipeline + layout (3D tint/texture), 1272 borrowed flag,
+    #   1280 extension block pointer,
+    #   1288 texture count, 1292 texture free count,
+    #   1296 mesh count, 1300 extra draw count,
+    #   1304/1312 wide (32-byte vertex stride) lit pipeline + layout.
+    # Extension block: draw list 88 x 80 bytes at 0, texture table 24 x 96 at
+    # 7040, texture free list 24 x 4 at 9344, mesh table 8 x 48 at 9440.
+    extra := e7_alloc_bytes(9856)
+    e7_store_u64(scene + 1280, extra)
+    ui_vertex_bytes := 64 * 6 * 32
+    ui_buffer_out := e7_alloc_bytes(8)
+    ui_memory_out := e7_alloc_bytes(8)
+    ui_mapped_out := e7_alloc_bytes(8)
+    if vulkan_dynamic_buffer(device, physical, ui_vertex_bytes, 128, ui_buffer_out, ui_memory_out, ui_mapped_out) != 0:
+        e7_store_u64(scene + 1208, e7_load_u64(ui_buffer_out))
+        e7_store_u64(scene + 1216, e7_load_u64(ui_memory_out))
+        e7_store_u64(scene + 1224, e7_load_u64(ui_mapped_out))
+    e7_free_ptr(ui_buffer_out)
+    e7_free_ptr(ui_memory_out)
+    e7_free_ptr(ui_mapped_out)
+    static_texture_layout := e7_load_u64(scene + 1136)
+    lit_texture_layout := e7_load_u64(scene + 1056)
+    ui_vert := e7_engine_read_shader("engine/platform/shaders/ui.vert.spv")
+    ui_frag := e7_engine_read_shader("engine/platform/shaders/ui.frag.spv")
+    ui_vert_handle := e7_handle(ui_vert)
+    ui_frag_handle := e7_handle(ui_frag)
+    ui_pipeline_out := e7_alloc_bytes(8)
+    ui_layout_out := e7_alloc_bytes(8)
+    if ui_vert_handle != 0 and ui_frag_handle != 0:
+        if vulkan_ui_pipeline(device, render_pass, ui_vert_handle, ui_frag_handle, static_texture_layout, ui_pipeline_out, ui_layout_out) != 0:
+            e7_store_u64(scene + 1192, e7_load_u64(ui_pipeline_out))
+            e7_store_u64(scene + 1200, e7_load_u64(ui_layout_out))
+    e7_free_ptr(ui_vert_handle)
+    e7_free_ptr(ui_frag_handle)
+    e7_free_ptr(ui_pipeline_out)
+    e7_free_ptr(ui_layout_out)
+    lit_vert := e7_engine_read_shader("engine/platform/shaders/lit.vert.spv")
+    lit_frag := e7_engine_read_shader("engine/platform/shaders/lit.frag.spv")
+    lit_vert_handle := e7_handle(lit_vert)
+    lit_frag_handle := e7_handle(lit_frag)
+    lit_pipeline_out := e7_alloc_bytes(8)
+    lit_layout_out := e7_alloc_bytes(8)
+    if lit_vert_handle != 0 and lit_frag_handle != 0:
+        if vulkan_mesh_pipeline_two(device, render_pass, lit_vert_handle, lit_frag_handle, ubo_layout, lit_texture_layout, 24, lit_pipeline_out, lit_layout_out) != 0:
+            e7_store_u64(scene + 1256, e7_load_u64(lit_pipeline_out))
+            e7_store_u64(scene + 1264, e7_load_u64(lit_layout_out))
+        if vulkan_mesh_pipeline_two(device, render_pass, lit_vert_handle, lit_frag_handle, ubo_layout, lit_texture_layout, 32, lit_pipeline_out, lit_layout_out) != 0:
+            e7_store_u64(scene + 1304, e7_load_u64(lit_pipeline_out))
+            e7_store_u64(scene + 1312, e7_load_u64(lit_layout_out))
+    e7_free_ptr(lit_vert_handle)
+    e7_free_ptr(lit_frag_handle)
+    e7_free_ptr(lit_pipeline_out)
+    e7_free_ptr(lit_layout_out)
     e7_free_ptr(ubo_layout_out)
     e7_free_ptr(ubo_pool_out)
     e7_free_ptr(ubo_set_out)
@@ -302,23 +359,21 @@ scene_height <- (scene: u64) -> i64:
 
 scene_begin_frame <- (scene: u64) -> nil:
     e7_store_u32(scene + 232, 0)
+    e7_store_u32(scene + 1232, 0)
+    e7_store_u32(scene + 1300, 0)
 
-scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, angle_milli: i64) -> nil:
-    count := e7_load_u32(scene + 232)
-    if count >= 16:
-        ret
-    base := scene + 256 + ((count * 40) as u64)
-    e7_store_u32(base, x_milli)
-    e7_store_u32(base + 4, y_milli)
-    e7_store_u32(base + 8, z_milli)
-    e7_store_u32(base + 12, sx_milli)
-    e7_store_u32(base + 16, sy_milli)
-    e7_store_u32(base + 20, sz_milli)
-    e7_store_u32(base + 24, r_milli)
-    e7_store_u32(base + 28, g_milli)
-    e7_store_u32(base + 32, b_milli)
-    e7_store_u32(base + 36, angle_milli)
-    e7_store_u32(scene + 232, count + 1)
+# ---------------------------------------------------------------------------
+# Draw recording
+#
+# Scene draws are recorded as 80-byte entries in the scene's extension block.
+# Each entry carries its own pipeline, vertex/index buffers, dynamic UBO slot,
+# and combined-sampler descriptor sets, so one captured frame can mix the lit
+# 3D pipeline with the blended screen-space UI pipeline:
+#   0 pipeline, 8 pipeline layout, 16 vertex buffer, 24 index buffer,
+#   32 index count (u32), 36 index type (u32), 40 first index/vertex (u32),
+#   44 draw kind (0 indexed, 1 plain), 48 set 0, 56 set 0 dynamic flag (u32),
+#   60 dynamic offset (u32), 64 set 1, 72 reserved.
+# ---------------------------------------------------------------------------
 
 milli_to_f32 <- (value: i64) -> f32:
     signed := value
@@ -326,99 +381,204 @@ milli_to_f32 <- (value: i64) -> f32:
         signed = value - 4294967296
     ret e7_f32_div(e7_f32_from_i64(signed), 1000.0)
 
-prepare_object_slot <- (ubo: u64, scene: u64, index: i64) -> nil:
-    slot := ubo + ((index * 320) as u64)
-    if index > 0:
+append_draw <- (scene: u64, pipeline: i64, layout: i64, vertex_buffer: i64, index_buffer: i64, index_count: i64, index_type: i64, first: i64, kind: i64, set0: i64, set0_dynamic: i64, dynamic_offset: i64, set1: i64) -> nil:
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    count := e7_load_u32(scene + 1300)
+    if count >= 88:
+        ret
+    entry := extra + count * 80
+    e7_store_u64(entry, pipeline)
+    e7_store_u64(entry + 8, layout)
+    e7_store_u64(entry + 16, vertex_buffer)
+    e7_store_u64(entry + 24, index_buffer)
+    e7_store_u32(entry + 32, index_count)
+    e7_store_u32(entry + 36, index_type)
+    e7_store_u32(entry + 40, first)
+    e7_store_u32(entry + 44, kind)
+    e7_store_u64(entry + 48, set0)
+    e7_store_u32(entry + 56, set0_dynamic)
+    e7_store_u32(entry + 60, dynamic_offset)
+    e7_store_u64(entry + 64, set1)
+    e7_store_u64(entry + 72, 0)
+    e7_store_u32(scene + 1300, count + 1)
+
+# Descriptor set for an engine texture id; 0 and unknown ids use the built-in
+# white texture so untextured materials stay tint-only.  `texture_set` is the
+# UI set-0 view (static layout, binding 0); `texture_set_lit` is the lit set-1
+# view (binding 1) used by the 3D material path.
+texture_set <- (scene: u64, texture: i64) -> i64:
+    white := e7_load_u64(scene + 1152)
+    if texture == 0:
+        ret white
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret white
+    count := e7_load_u32(scene + 1288)
+    if texture > count:
+        ret white
+    entry := extra + 7040 + (texture as i64 - 1) * 96
+    set := e7_load_u64(entry + 32)
+    if set == 0:
+        ret white
+    ret set
+
+texture_set_lit <- (scene: u64, texture: i64) -> i64:
+    white := e7_load_u64(scene + 1072)
+    if texture == 0:
+        ret white
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret white
+    count := e7_load_u32(scene + 1288)
+    if texture > count:
+        ret white
+    entry := extra + 7040 + (texture as i64 - 1) * 96
+    set := e7_load_u64(entry + 56)
+    if set == 0:
+        ret white
+    ret set
+
+# Write the 320-byte per-object UBO slot (model = T * R * S with R = Ry*Rx*Rz,
+# then the material tint).  Slot 0's frame block (view/proj/camera/light) is
+# copied from the previous slot; scene_set_camera/scene_set_light write it
+# before the frame is recorded.
+write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    slot := ubo + slot_index * 320
+    if slot_index > 0:
         e7_memcpy(slot, ubo, 320)
-    source := scene + 256 + ((index * 40) as u64)
-    sx := milli_to_f32(e7_load_u32(source + 12))
-    sy := milli_to_f32(e7_load_u32(source + 16))
-    sz := milli_to_f32(e7_load_u32(source + 20))
-    e7_store_f32(slot, sx)
-    e7_store_f32(slot + 4, 0.0)
-    e7_store_f32(slot + 8, 0.0)
+    px := milli_to_f32(x_milli)
+    py := milli_to_f32(y_milli)
+    pz := milli_to_f32(z_milli)
+    sx := milli_to_f32(sx_milli)
+    sy := milli_to_f32(sy_milli)
+    sz := milli_to_f32(sz_milli)
+    rx := e7_f32_div(e7_f32_from_i64(rx_milli), 1000.0)
+    ry := e7_f32_div(e7_f32_from_i64(ry_milli), 1000.0)
+    rz := e7_f32_div(e7_f32_from_i64(rz_milli), 1000.0)
+    cx := e7_f32_cos(rx)
+    sxr := e7_f32_sin(rx)
+    cy := e7_f32_cos(ry)
+    syr := e7_f32_sin(ry)
+    cz := e7_f32_cos(rz)
+    szr := e7_f32_sin(rz)
+    m00 := e7_f32_add(e7_f32_mul(cy, cz), e7_f32_mul(e7_f32_mul(syr, sxr), szr))
+    m01 := e7_f32_sub(e7_f32_mul(e7_f32_mul(syr, sxr), cz), e7_f32_mul(cy, szr))
+    m02 := e7_f32_mul(syr, cx)
+    m10 := e7_f32_mul(cx, szr)
+    m11 := e7_f32_mul(cx, cz)
+    m12 := e7_f32_neg(sxr)
+    m20 := e7_f32_sub(e7_f32_mul(e7_f32_mul(cy, sxr), szr), e7_f32_mul(syr, cz))
+    m21 := e7_f32_add(e7_f32_mul(syr, szr), e7_f32_mul(e7_f32_mul(cy, sxr), cz))
+    m22 := e7_f32_mul(cy, cx)
+    e7_store_f32(slot, e7_f32_mul(m00, sx))
+    e7_store_f32(slot + 4, e7_f32_mul(m10, sx))
+    e7_store_f32(slot + 8, e7_f32_mul(m20, sx))
     e7_store_f32(slot + 12, 0.0)
-    e7_store_f32(slot + 16, 0.0)
-    e7_store_f32(slot + 20, sy)
-    e7_store_f32(slot + 24, 0.0)
+    e7_store_f32(slot + 16, e7_f32_mul(m01, sy))
+    e7_store_f32(slot + 20, e7_f32_mul(m11, sy))
+    e7_store_f32(slot + 24, e7_f32_mul(m21, sy))
     e7_store_f32(slot + 28, 0.0)
-    e7_store_f32(slot + 32, 0.0)
-    e7_store_f32(slot + 36, 0.0)
-    e7_store_f32(slot + 40, sz)
+    e7_store_f32(slot + 32, e7_f32_mul(m02, sz))
+    e7_store_f32(slot + 36, e7_f32_mul(m12, sz))
+    e7_store_f32(slot + 40, e7_f32_mul(m22, sz))
     e7_store_f32(slot + 44, 0.0)
-    e7_store_f32(slot + 48, milli_to_f32(e7_load_u32(source)))
-    e7_store_f32(slot + 52, milli_to_f32(e7_load_u32(source + 4)))
-    e7_store_f32(slot + 56, milli_to_f32(e7_load_u32(source + 8)))
+    e7_store_f32(slot + 48, px)
+    e7_store_f32(slot + 52, py)
+    e7_store_f32(slot + 56, pz)
     e7_store_f32(slot + 60, 1.0)
-    e7_store_f32(slot + 256, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 24)), 1000.0))
-    e7_store_f32(slot + 260, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 28)), 1000.0))
-    e7_store_f32(slot + 264, e7_f32_div(e7_f32_from_i64(e7_load_u32(source + 32)), 1000.0))
+    e7_store_f32(slot + 256, e7_f32_div(e7_f32_from_i64(r_milli), 1000.0))
+    e7_store_f32(slot + 260, e7_f32_div(e7_f32_from_i64(g_milli), 1000.0))
+    e7_store_f32(slot + 264, e7_f32_div(e7_f32_from_i64(b_milli), 1000.0))
     e7_store_f32(slot + 268, 1.0)
 
+# Record one procedural draw.  The 3D pipelines only support triangle geometry
+# from the shared cube buffer, so `shape` (0 box, 1 sphere, 2 capsule, 3
+# plane) is an approximation consistently rendered as a box; the transform,
+# full XYZ Euler rotation, tint and texture id are honored.
+scene_draw_shape_rot <- (scene: u64, shape: i32, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
+    if scene == 0:
+        ret
+    count := e7_load_u32(scene + 1300)
+    if count >= 24:
+        ret
+    write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
+    pipeline := e7_load_u64(scene + 1256)
+    layout := e7_load_u64(scene + 1264)
+    set1 := texture_set_lit(scene, texture as i64)
+    if pipeline == 0:
+        # Lit pipeline unavailable: vertex-colour mesh pipeline has no texture.
+        pipeline = e7_load_u64(scene + 160)
+        layout = e7_load_u64(scene + 168)
+        set1 = 0
+    append_draw(scene, pipeline, layout, e7_load_u64(scene + 176), e7_load_u64(scene + 192), 36, 0, 0, 0, e7_load_u64(scene + 128), 1, count * 320, set1)
+
+scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, angle_milli: i64) -> nil:
+    scene_draw_shape_rot(scene, 0, x_milli, y_milli, z_milli, sx_milli, sy_milli, sz_milli, 0, angle_milli, 0, r_milli, g_milli, b_milli, 0 as u64)
+
+# Record a draw of an uploaded OBJ mesh.  Mesh layout 0 is the engine OBJ
+# interleaved format (position xyz, normal xyz, uv xy -> 32-byte stride) with
+# 32-bit indices, consumed by the wide lit pipeline.
+scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
+    if scene == 0:
+        ret
+    mesh_count := e7_load_u32(scene + 1296)
+    pipeline := e7_load_u64(scene + 1304)
+    if mesh == 0 or (mesh as i64) > mesh_count or pipeline == 0:
+        # Unknown mesh or missing pipeline: documented box approximation.
+        scene_draw_shape_rot(scene, 0, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
+        ret
+    count := e7_load_u32(scene + 1300)
+    if count >= 24:
+        ret
+    write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
+    extra := e7_load_u64(scene + 1280)
+    entry := extra + 9440 + (mesh as i64 - 1) * 48
+    append_draw(scene, pipeline, e7_load_u64(scene + 1312), e7_load_u64(entry), e7_load_u64(entry + 16), e7_load_u32(entry + 32), 1, 0, 0, e7_load_u64(scene + 128), 1, count * 320, texture_set_lit(scene, texture as i64))
+
+# Capture the recorded frame.  The main draw is degenerate (zero indices); all
+# object and UI draws live in the extension list so each keeps its own pipeline,
+# material texture and dynamic UBO slot.
 scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
-    ubo := e7_load_u64(scene + 152)
-    count := e7_load_u32(scene + 232)
-    extra := 0
-    if ubo != 0:
-        if count == 0:
-            prepare_object_slot(ubo as u64, scene, 0 as i64)
-        else:
-            prepare_object_slot(ubo as u64, scene, 0 as i64)
-            if count > 1:
-                prepare_object_slot(ubo as u64, scene, 1 as i64)
-            if count > 2:
-                prepare_object_slot(ubo as u64, scene, 2 as i64)
-            if count > 3:
-                prepare_object_slot(ubo as u64, scene, 3 as i64)
-            if count > 4:
-                prepare_object_slot(ubo as u64, scene, 4 as i64)
-            if count > 5:
-                prepare_object_slot(ubo as u64, scene, 5 as i64)
-            if count > 6:
-                prepare_object_slot(ubo as u64, scene, 6 as i64)
-            if count > 7:
-                prepare_object_slot(ubo as u64, scene, 7 as i64)
-            if count > 8:
-                prepare_object_slot(ubo as u64, scene, 8 as i64)
-            if count > 9:
-                prepare_object_slot(ubo as u64, scene, 9 as i64)
-            if count > 10:
-                prepare_object_slot(ubo as u64, scene, 10 as i64)
-            if count > 11:
-                prepare_object_slot(ubo as u64, scene, 11 as i64)
-            if count > 12:
-                prepare_object_slot(ubo as u64, scene, 12 as i64)
-            if count > 13:
-                prepare_object_slot(ubo as u64, scene, 13 as i64)
-            if count > 14:
-                prepare_object_slot(ubo as u64, scene, 14 as i64)
-            if count > 15:
-                prepare_object_slot(ubo as u64, scene, 15 as i64)
-            extra = count - 1
-    ret vulkan_draw_triangle_capture(
+    extra := e7_load_u64(scene + 1280)
+    count := e7_load_u32(scene + 1300)
+    pipeline := e7_load_u64(scene + 1256)
+    layout := e7_load_u64(scene + 1264)
+    texture := e7_load_u64(scene + 1072)
+    if pipeline == 0:
+        pipeline = e7_load_u64(scene + 160)
+        layout = e7_load_u64(scene + 168)
+        texture = 0
+    ret vulkan_capture_frame(
         e7_load_u64(scene + 32),
         e7_load_u64(scene + 40),
         e7_load_u32(scene + 48),
         e7_load_u64(scene + 24),
         e7_load_u64(scene + 56),
         e7_load_u64(scene + 64),
-        e7_load_u64(scene + 160),
+        pipeline,
         e7_load_u64(scene + 80),
         e7_load_u32(scene + 52),
         e7_load_u32(scene + 88),
         e7_load_u32(scene + 92),
         e7_load_u64(scene + 176),
         e7_load_u64(scene + 192),
-        36,
+        0,
         e7_load_u64(scene + 128),
-        e7_load_u64(scene + 168),
+        layout,
         0,
         1,
-        0,
+        texture,
         1,
-        extra,
+        0,
         out_pixels,
         out_size,
+        extra as u64,
+        count,
     )
 
 scene_draw_static <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
@@ -466,33 +626,6 @@ scene_draw_textured <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         0,
         e7_load_u64(scene + 1152),
         e7_load_u64(scene + 1184),
-        0,
-        0,
-        0,
-        1,
-        0,
-        out_pixels,
-        out_size,
-    )
-
-scene_draw_ui <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
-    ret vulkan_draw_triangle_capture(
-        e7_load_u64(scene + 32),
-        e7_load_u64(scene + 40),
-        e7_load_u32(scene + 48),
-        e7_load_u64(scene + 24),
-        e7_load_u64(scene + 56),
-        e7_load_u64(scene + 64),
-        e7_load_u64(scene + 1192),
-        e7_load_u64(scene + 80),
-        e7_load_u32(scene + 52),
-        e7_load_u32(scene + 88),
-        e7_load_u32(scene + 92),
-        e7_load_u64(scene + 1208),
-        e7_load_u64(scene + 1224),
-        6,
-        e7_load_u64(scene + 1152),
-        e7_load_u64(scene + 1200),
         0,
         0,
         0,
@@ -594,6 +727,333 @@ scene_set_ui_texture <- (scene: u64, pixels: u64, width: i64, height: i64) -> i6
     e7_free_ptr(sampler_out)
     ret 1
 
+# ---------------------------------------------------------------------------
+# Engine textures, meshes, and screen-space UI quads
+# ---------------------------------------------------------------------------
+
+push_texture_free <- (scene: u64, index: i64) -> nil:
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    free_count := e7_load_u32(scene + 1292)
+    if free_count >= 24:
+        ret
+    e7_store_u32(extra + 9344 + free_count * 4, index)
+    e7_store_u32(scene + 1292, free_count + 1)
+
+# Upload an e7 image (text glyph or material image) as a sampled texture with
+# its own combined-image-sampler descriptor set.  Returns a stable non-zero
+# texture id (1..24); id 0 is the built-in white texture.
+scene_texture_create <- (scene: u64, image: u64) -> i64:
+    if scene == 0 or image == 0:
+        ret 0
+    width := e7_image_width(image)
+    height := e7_image_height(image)
+    if width <= 0 or height <= 0:
+        ret 0
+    pixels := e7_image_pixels(image)
+    pixels_ptr := e7_str_data(pixels)
+    if pixels_ptr == 0:
+        ret 0
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret 0
+    free_count := e7_load_u32(scene + 1292)
+    index := -1
+    if free_count > 0:
+        free_count = free_count - 1
+        index = e7_load_u32(extra + 9344 + free_count * 4)
+        e7_store_u32(scene + 1292, free_count)
+    else:
+        count := e7_load_u32(scene + 1288)
+        if count >= 24:
+            ret 0
+        index = count
+        e7_store_u32(scene + 1288, count + 1)
+    device := e7_load_u64(scene + 32)
+    physical := e7_load_u64(scene + 24)
+    image_out := e7_alloc_bytes(8)
+    memory_out := e7_alloc_bytes(8)
+    view_out := e7_alloc_bytes(8)
+    sampler_out := e7_alloc_bytes(8)
+    if vulkan_texture_empty(device, physical, width, height, image_out, memory_out, view_out, sampler_out) == 0:
+        push_texture_free(scene, index)
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        ret 0
+    texture_image := e7_load_u64(image_out)
+    texture_memory := e7_load_u64(memory_out)
+    texture_view := e7_load_u64(view_out)
+    texture_sampler := e7_load_u64(sampler_out)
+    if vulkan_texture_upload(device, e7_load_u64(scene + 40), e7_load_u32(scene + 48), physical, texture_image, pixels_ptr, width, height) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
+        push_texture_free(scene, index)
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        ret 0
+    layout_out := e7_alloc_bytes(8)
+    pool_out := e7_alloc_bytes(8)
+    set_out := e7_alloc_bytes(8)
+    if vulkan_texture_descriptor_static(device, texture_view, texture_sampler, layout_out, pool_out, set_out) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
+        push_texture_free(scene, index)
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        e7_free_ptr(layout_out)
+        e7_free_ptr(pool_out)
+        e7_free_ptr(set_out)
+        ret 0
+    lit_layout_out := e7_alloc_bytes(8)
+    lit_pool_out := e7_alloc_bytes(8)
+    lit_set_out := e7_alloc_bytes(8)
+    if vulkan_texture_descriptor_one(device, texture_view, texture_sampler, lit_layout_out, lit_pool_out, lit_set_out) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
+        vulkan_texture_descriptor_one_destroy(device, e7_load_u64(layout_out), e7_load_u64(pool_out))
+        push_texture_free(scene, index)
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        e7_free_ptr(layout_out)
+        e7_free_ptr(pool_out)
+        e7_free_ptr(set_out)
+        e7_free_ptr(lit_layout_out)
+        e7_free_ptr(lit_pool_out)
+        e7_free_ptr(lit_set_out)
+        ret 0
+    entry := extra + 7040 + index * 96
+    e7_store_u64(entry, texture_image)
+    e7_store_u64(entry + 8, texture_memory)
+    e7_store_u64(entry + 16, texture_view)
+    e7_store_u64(entry + 24, texture_sampler)
+    e7_store_u64(entry + 32, e7_load_u64(set_out))
+    e7_store_u64(entry + 40, e7_load_u64(layout_out))
+    e7_store_u64(entry + 48, e7_load_u64(pool_out))
+    e7_store_u64(entry + 56, e7_load_u64(lit_set_out))
+    e7_store_u64(entry + 64, e7_load_u64(lit_layout_out))
+    e7_store_u64(entry + 72, e7_load_u64(lit_pool_out))
+    e7_store_u32(entry + 80, width)
+    e7_store_u32(entry + 84, height)
+    e7_free_ptr(image_out)
+    e7_free_ptr(memory_out)
+    e7_free_ptr(view_out)
+    e7_free_ptr(sampler_out)
+    e7_free_ptr(layout_out)
+    e7_free_ptr(pool_out)
+    e7_free_ptr(set_out)
+    e7_free_ptr(lit_layout_out)
+    e7_free_ptr(lit_pool_out)
+    e7_free_ptr(lit_set_out)
+    ret index + 1
+
+release_texture <- (scene: u64, index: i64) -> nil:
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    entry := extra + 7040 + index * 96
+    image := e7_load_u64(entry)
+    if image == 0:
+        ret
+    device := e7_load_u64(scene + 32)
+    vulkan_texture_empty_destroy(device, image, e7_load_u64(entry + 8), e7_load_u64(entry + 16), e7_load_u64(entry + 24))
+    if e7_load_u64(entry + 40) != 0:
+        vulkan_texture_descriptor_one_destroy(device, e7_load_u64(entry + 40), e7_load_u64(entry + 48))
+    if e7_load_u64(entry + 64) != 0:
+        vulkan_texture_descriptor_one_destroy(device, e7_load_u64(entry + 64), e7_load_u64(entry + 72))
+    e7_store_u64(entry, 0)
+    e7_store_u64(entry + 8, 0)
+    e7_store_u64(entry + 16, 0)
+    e7_store_u64(entry + 24, 0)
+    e7_store_u64(entry + 32, 0)
+    e7_store_u64(entry + 40, 0)
+    e7_store_u64(entry + 48, 0)
+    e7_store_u64(entry + 56, 0)
+    e7_store_u64(entry + 64, 0)
+    e7_store_u64(entry + 72, 0)
+    e7_store_u32(entry + 80, 0)
+    e7_store_u32(entry + 84, 0)
+
+scene_texture_destroy <- (scene: u64, texture: u64) -> nil:
+    if scene == 0 or texture == 0:
+        ret
+    count := e7_load_u32(scene + 1288)
+    if (texture as i64) > count:
+        ret
+    index := (texture as i64) - 1
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    entry := extra + 7040 + index * 96
+    if e7_load_u64(entry) == 0:
+        ret
+    release_texture(scene, index)
+    push_texture_free(scene, index)
+
+# Upload OBJ vertex/index data.  Layout 0 is the engine OBJ interleaved 8-float
+# vertex format (32-byte stride) plus 32-bit indices; the wide lit pipeline
+# consumes it directly.  Returns a stable non-zero mesh id.
+scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) -> i64:
+    if scene == 0:
+        ret 0
+    vertex_floats := vertices.len() as i64
+    index_count := indices.len() as i64
+    if vertex_floats <= 0 or index_count <= 0:
+        ret 0
+    count := e7_load_u32(scene + 1296)
+    if count >= 8:
+        ret 0
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret 0
+    vertex_bytes := vertex_floats * 4
+    index_bytes := index_count * 4
+    device := e7_load_u64(scene + 32)
+    physical := e7_load_u64(scene + 24)
+    vertex_buffer_out := e7_alloc_bytes(8)
+    vertex_memory_out := e7_alloc_bytes(8)
+    vertex_mapped_out := e7_alloc_bytes(8)
+    if vulkan_dynamic_buffer(device, physical, vertex_bytes, 128, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+        e7_free_ptr(vertex_buffer_out)
+        e7_free_ptr(vertex_memory_out)
+        e7_free_ptr(vertex_mapped_out)
+        ret 0
+    index_buffer_out := e7_alloc_bytes(8)
+    index_memory_out := e7_alloc_bytes(8)
+    index_mapped_out := e7_alloc_bytes(8)
+    if vulkan_dynamic_buffer(device, physical, index_bytes, 64, index_buffer_out, index_memory_out, index_mapped_out) == 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(vertex_buffer_out), e7_load_u64(vertex_memory_out))
+        e7_free_ptr(vertex_buffer_out)
+        e7_free_ptr(vertex_memory_out)
+        e7_free_ptr(vertex_mapped_out)
+        e7_free_ptr(index_buffer_out)
+        e7_free_ptr(index_memory_out)
+        e7_free_ptr(index_mapped_out)
+        ret 0
+    # e7 [f32]/[i32] aggregates store each element in an 8-byte slot, so the
+    # GPU buffers are filled element by element into tightly packed 32-bit
+    # values (indexing also gives this loop the JIT fixpoint attribute).  The
+    # OBJ 8-float vertex (position, normal, uv) is uploaded as the lit
+    # pipeline's 32-byte layout: position xyz, white vertex colour, uv.  The
+    # lit vertex stage derives its uv from position.xy, so the normal slot is
+    # repurposed as neutral colour and the material tint/texture drive shading.
+    vertex_mapped := e7_load_u64(vertex_mapped_out)
+    vertex_records := vertex_floats / 8
+    vertex_index := 0
+    while vertex_index < vertex_records:
+        source := vertex_index * 8
+        destination := vertex_mapped + vertex_index * 32
+        e7_store_f32(destination, vertices[source as usize])
+        e7_store_f32(destination + 4, vertices[(source + 1) as usize])
+        e7_store_f32(destination + 8, vertices[(source + 2) as usize])
+        e7_store_f32(destination + 12, 1.0)
+        e7_store_f32(destination + 16, 1.0)
+        e7_store_f32(destination + 20, 1.0)
+        e7_store_f32(destination + 24, vertices[(source + 6) as usize])
+        e7_store_f32(destination + 28, vertices[(source + 7) as usize])
+        vertex_index = vertex_index + 1
+    index_mapped := e7_load_u64(index_mapped_out)
+    index_position := 0
+    while index_position < index_count:
+        e7_store_u32(index_mapped + index_position * 4, indices[index_position as usize])
+        index_position = index_position + 1
+    entry := extra + 9440 + count * 48
+    e7_store_u64(entry, e7_load_u64(vertex_buffer_out))
+    e7_store_u64(entry + 8, e7_load_u64(vertex_memory_out))
+    e7_store_u64(entry + 16, e7_load_u64(index_buffer_out))
+    e7_store_u64(entry + 24, e7_load_u64(index_memory_out))
+    e7_store_u32(entry + 32, index_count)
+    e7_store_u32(entry + 36, 0)
+    e7_store_u64(entry + 40, 0)
+    e7_store_u32(scene + 1296, count + 1)
+    e7_free_ptr(vertex_buffer_out)
+    e7_free_ptr(vertex_memory_out)
+    e7_free_ptr(vertex_mapped_out)
+    e7_free_ptr(index_buffer_out)
+    e7_free_ptr(index_memory_out)
+    e7_free_ptr(index_mapped_out)
+    ret count + 1
+
+release_mesh <- (scene: u64, index: i64) -> nil:
+    device := e7_load_u64(scene + 32)
+    extra := e7_load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    entry := extra + 9440 + index * 48
+    if e7_load_u64(entry) != 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(entry), e7_load_u64(entry + 8))
+    if e7_load_u64(entry + 16) != 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(entry + 16), e7_load_u64(entry + 24))
+    e7_store_u64(entry, 0)
+    e7_store_u64(entry + 8, 0)
+    e7_store_u64(entry + 16, 0)
+    e7_store_u64(entry + 24, 0)
+    e7_store_u32(entry + 32, 0)
+
+# One UI vertex: position/uv in clip/texture space plus straight-alpha RGBA.
+ui_vertex <- (mapped: i64, index: i64, px: f32, py: f32, u: f32, v: f32, cr: f32, cg: f32, cb: f32, ca: f32) -> nil:
+    base := mapped + index * 32
+    e7_store_f32(base, px)
+    e7_store_f32(base + 4, py)
+    e7_store_f32(base + 8, u)
+    e7_store_f32(base + 12, v)
+    e7_store_f32(base + 16, cr)
+    e7_store_f32(base + 20, cg)
+    e7_store_f32(base + 24, cb)
+    e7_store_f32(base + 28, ca)
+
+# Record one screen-space UI quad.  Pixel coordinates are top-left origin; the
+# vertices are converted to Vulkan clip space here.  The quad samples its own
+# texture descriptor (0 = built-in white) through the blended UI pipeline and
+# is drawn after the 3D draws in record order.
+scene_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) -> nil:
+    if scene == 0:
+        ret
+    mapped := e7_load_u64(scene + 1224)
+    pipeline := e7_load_u64(scene + 1192)
+    if mapped == 0 or pipeline == 0:
+        ret
+    quad := e7_load_u32(scene + 1232)
+    count := e7_load_u32(scene + 1300)
+    if quad >= 64 or count >= 88:
+        ret
+    width := e7_f32_from_i64(e7_load_u32(scene + 88))
+    height := e7_f32_from_i64(e7_load_u32(scene + 92))
+    if e7_f32_le(width, 0.0):
+        ret
+    if e7_f32_le(height, 0.0):
+        ret
+    x0 := e7_f32_from_i64(x)
+    x1 := e7_f32_add(x0, e7_f32_from_i64(w))
+    y0 := e7_f32_from_i64(y)
+    y1 := e7_f32_add(y0, e7_f32_from_i64(h))
+    inv_w := e7_f32_div(2.0, width)
+    inv_h := e7_f32_div(2.0, height)
+    cx0 := e7_f32_sub(e7_f32_mul(x0, inv_w), 1.0)
+    cx1 := e7_f32_sub(e7_f32_mul(x1, inv_w), 1.0)
+    # Vulkan NDC y = -1 is the top of the framebuffer, so top-left pixel
+    # coordinates map directly (y * 2 / height - 1).
+    cy0 := e7_f32_sub(e7_f32_mul(y0, inv_h), 1.0)
+    cy1 := e7_f32_sub(e7_f32_mul(y1, inv_h), 1.0)
+    cr := e7_f32_abs(e7_f32_div(e7_f32_from_i64(r), 255.0))
+    cg := e7_f32_abs(e7_f32_div(e7_f32_from_i64(g), 255.0))
+    cb := e7_f32_abs(e7_f32_div(e7_f32_from_i64(b), 255.0))
+    ca := e7_f32_abs(e7_f32_div(e7_f32_from_i64(a), 255.0))
+    base := quad * 6
+    ui_vertex(mapped, base, cx0, cy0, 0.0, 0.0, cr, cg, cb, ca)
+    ui_vertex(mapped, base + 1, cx1, cy0, 1.0, 0.0, cr, cg, cb, ca)
+    ui_vertex(mapped, base + 2, cx1, cy1, 1.0, 1.0, cr, cg, cb, ca)
+    ui_vertex(mapped, base + 3, cx0, cy0, 0.0, 0.0, cr, cg, cb, ca)
+    ui_vertex(mapped, base + 4, cx1, cy1, 1.0, 1.0, cr, cg, cb, ca)
+    ui_vertex(mapped, base + 5, cx0, cy1, 0.0, 1.0, cr, cg, cb, ca)
+    append_draw(scene, pipeline, e7_load_u64(scene + 1200), e7_load_u64(scene + 1208), 0, 6, 0, base, 1, texture_set(scene, texture as i64), 0, 0, 0)
+    e7_store_u32(scene + 1232, quad + 1)
+
 scene_destroy <- (scene: u64) -> nil:
     device := e7_load_u64(scene + 32)
     instance := e7_load_u64(scene + 8)
@@ -602,7 +1062,50 @@ scene_destroy <- (scene: u64) -> nil:
     vulkan_depth_target_destroy(device, e7_load_u64(scene + 208), e7_load_u64(scene + 216), e7_load_u64(scene + 224))
     vulkan_texture_descriptor_one_destroy(device, e7_load_u64(scene + 1056), e7_load_u64(scene + 1064))
     vulkan_texture_empty_destroy(device, e7_load_u64(scene + 1024), e7_load_u64(scene + 1032), e7_load_u64(scene + 1040), e7_load_u64(scene + 1048))
+    vulkan_texture_descriptor_one_destroy(device, e7_load_u64(scene + 1136), e7_load_u64(scene + 1144))
     vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 160), e7_load_u64(scene + 168))
+    if e7_load_u64(scene + 1192) != 0:
+        vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 1192), e7_load_u64(scene + 1200))
+    if e7_load_u64(scene + 1256) != 0:
+        vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 1256), e7_load_u64(scene + 1264))
+    if e7_load_u64(scene + 1304) != 0:
+        vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 1304), e7_load_u64(scene + 1312))
+    if e7_load_u64(scene + 1208) != 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 1208), e7_load_u64(scene + 1216))
+    if e7_load_u64(scene + 1280) != 0:
+        release_texture(scene, 0)
+        release_texture(scene, 1)
+        release_texture(scene, 2)
+        release_texture(scene, 3)
+        release_texture(scene, 4)
+        release_texture(scene, 5)
+        release_texture(scene, 6)
+        release_texture(scene, 7)
+        release_texture(scene, 8)
+        release_texture(scene, 9)
+        release_texture(scene, 10)
+        release_texture(scene, 11)
+        release_texture(scene, 12)
+        release_texture(scene, 13)
+        release_texture(scene, 14)
+        release_texture(scene, 15)
+        release_texture(scene, 16)
+        release_texture(scene, 17)
+        release_texture(scene, 18)
+        release_texture(scene, 19)
+        release_texture(scene, 20)
+        release_texture(scene, 21)
+        release_texture(scene, 22)
+        release_texture(scene, 23)
+        release_mesh(scene, 0)
+        release_mesh(scene, 1)
+        release_mesh(scene, 2)
+        release_mesh(scene, 3)
+        release_mesh(scene, 4)
+        release_mesh(scene, 5)
+        release_mesh(scene, 6)
+        release_mesh(scene, 7)
+        e7_free_ptr(e7_load_u64(scene + 1280))
     vulkan_uniform_resources_destroy(device, e7_load_u64(scene + 112), e7_load_u64(scene + 120), e7_load_u64(scene + 136), e7_load_u64(scene + 144))
     vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 176), e7_load_u64(scene + 184))
     vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 192), e7_load_u64(scene + 200))
@@ -723,9 +1226,9 @@ scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, r_mill
     e7_store_f32(ubo + 228, e7_f32_div(e7_f32_from_i64(g_milli), 1000.0))
     e7_store_f32(ubo + 232, e7_f32_div(e7_f32_from_i64(b_milli), 1000.0))
     e7_store_f32(ubo + 236, e7_f32_div(e7_f32_from_i64(intensity_milli), 1000.0))
-    e7_store_f32(ubo + 240, 0.02)
-    e7_store_f32(ubo + 244, 0.02)
-    e7_store_f32(ubo + 248, 0.03)
+    e7_store_f32(ubo + 240, 0.35)
+    e7_store_f32(ubo + 244, 0.35)
+    e7_store_f32(ubo + 248, 0.40)
     e7_store_f32(ubo + 252, 1.0)
     e7_store_f32(ubo + 256, 1.0)
     e7_store_f32(ubo + 260, 1.0)

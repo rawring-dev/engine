@@ -1210,7 +1210,12 @@ record_plain_draw <- (command: i64) -> nil:
     e7_ffi_call5(draw, command, 3, 1, 0, 0)
     ret
 
-vulkan_draw_triangle_capture <- (
+# Record one captured frame.  The main draw (pipeline + shared vertex/index
+# buffers + dynamic UBO descriptor set + texture set) is followed by an
+# optional draw list of 80-byte entries; engine scene code uses the list for
+# per-object materials and the screen-space UI quads.  The list entry layout is
+# documented in scene.e7 next to `append_draw`.
+vulkan_capture_frame <- (
     device: i64,
     queue: i64,
     queue_family: i64,
@@ -1234,6 +1239,8 @@ vulkan_draw_triangle_capture <- (
     extra_objects: i64,
     out_pixels: u64,
     out_size: u64,
+    extra_draws: u64,
+    extra_count: i64,
 ) -> i64:
     pixel_size := width * height * 4
     buffer_info := e7_alloc_bytes(56)
@@ -1368,6 +1375,55 @@ vulkan_draw_triangle_capture <- (
         record_indexed_draw(command, index_buffer, index_count, descriptor_set, pipeline_layout, dynamic_offset, extra_objects, descriptor_sets, bind_descriptor)
     else:
         record_plain_draw(command)
+    # Additional per-object UI/material draws recorded by scene.e7.  Each entry
+    # carries its own pipeline, buffers, descriptor sets and dynamic UBO offset,
+    # so one captured frame can mix the 3D pipelines with the blended UI pass.
+    if extra_count > 0:
+        extra_sets := e7_alloc_bytes(8)
+        extra_offsets := e7_alloc_bytes(4)
+        draw_plain := bind_vk("vkCmdDraw")
+        bind_vertex := bind_vk("vkCmdBindVertexBuffers")
+        extra := 0
+        while extra < extra_count:
+            entry := extra_draws + ((extra * 80) as u64)
+            entry_pipeline := e7_load_u64(entry)
+            entry_layout := e7_load_u64(entry + 8)
+            entry_vertex_buffer := e7_load_u64(entry + 16)
+            entry_index_buffer := e7_load_u64(entry + 24)
+            entry_index_count := e7_load_u32(entry + 32)
+            entry_index_type := e7_load_u32(entry + 36)
+            entry_first := e7_load_u32(entry + 40)
+            entry_kind := e7_load_u32(entry + 44)
+            entry_set0 := e7_load_u64(entry + 48)
+            entry_set0_dynamic := e7_load_u32(entry + 56)
+            entry_dynamic_offset := e7_load_u32(entry + 60)
+            entry_set1 := e7_load_u64(entry + 64)
+            e7_ffi_call3(bind_pipeline, command, 0, entry_pipeline)
+            if entry_vertex_buffer != 0:
+                e7_store_u64(vertex_buffers, entry_vertex_buffer)
+                e7_store_u64(vertex_offsets, 0)
+                e7_ffi_call5(bind_vertex, command, 0, 1, vertex_buffers, vertex_offsets)
+            if entry_kind == 0:
+                bind_index := bind_vk("vkCmdBindIndexBuffer")
+                e7_ffi_call4(bind_index, command, entry_index_buffer, 0, entry_index_type)
+            if entry_set0 != 0:
+                e7_store_u64(extra_sets, entry_set0)
+                if entry_set0_dynamic != 0:
+                    e7_store_u32(extra_offsets, entry_dynamic_offset)
+                    e7_ffi_call8(bind_descriptor, command, 0, entry_layout, 0, 1, extra_sets, 1, extra_offsets)
+                else:
+                    e7_ffi_call8(bind_descriptor, command, 0, entry_layout, 0, 1, extra_sets, 0, 0)
+            if entry_set1 != 0:
+                e7_store_u64(extra_sets, entry_set1)
+                e7_ffi_call8(bind_descriptor, command, 0, entry_layout, 1, 1, extra_sets, 0, 0)
+            if entry_kind == 0:
+                draw_indexed := bind_vk("vkCmdDrawIndexed")
+                e7_ffi_call6(draw_indexed, command, entry_index_count, 1, entry_first, 0, 0)
+            else:
+                e7_ffi_call5(draw_plain, command, entry_index_count, 1, entry_first, 0)
+            extra = extra + 1
+        e7_free_ptr(extra_sets)
+        e7_free_ptr(extra_offsets)
     end_render_pass := bind_vk("vkCmdEndRenderPass")
     e7_ffi_call1(end_render_pass, command)
     transition_image(command, image, 1000001002, 6, 0, 2048, 8192, 4096)
@@ -1478,6 +1534,61 @@ vulkan_draw_triangle_capture <- (
         ret -22
     ret 1
 
+# Legacy single-pipeline capture entry point kept for the runtime e7 tests and
+# the older scene draw variants: no additional draw list.
+vulkan_draw_triangle_capture <- (
+    device: i64,
+    queue: i64,
+    queue_family: i64,
+    physical: i64,
+    swapchain: i64,
+    render_pass: i64,
+    pipeline: i64,
+    framebuffers: i64,
+    image_count: i64,
+    width: i64,
+    height: i64,
+    vertex_buffer: i64,
+    index_buffer: i64,
+    index_count: i64,
+    descriptor_set: i64,
+    pipeline_layout: i64,
+    dynamic_offset: i64,
+    descriptor_dynamic: i64,
+    texture_set: i64,
+    has_depth: i64,
+    extra_objects: i64,
+    out_pixels: u64,
+    out_size: u64,
+) -> i64:
+    ret vulkan_capture_frame(
+        device,
+        queue,
+        queue_family,
+        physical,
+        swapchain,
+        render_pass,
+        pipeline,
+        framebuffers,
+        image_count,
+        width,
+        height,
+        vertex_buffer,
+        index_buffer,
+        index_count,
+        descriptor_set,
+        pipeline_layout,
+        dynamic_offset,
+        descriptor_dynamic,
+        texture_set,
+        has_depth,
+        extra_objects,
+        out_pixels,
+        out_size,
+        0,
+        0,
+    )
+
 # Create a host-visible uniform buffer and a one-binding descriptor set.  The
 # engine shaders use this for the per-frame SceneUniform block.
 vulkan_uniform_resources <- (
@@ -1530,7 +1641,8 @@ vulkan_uniform_resources <- (
     e7_store_u32(binding, 0)
     e7_store_u32(binding + 4, 8)
     e7_store_u32(binding + 8, 1)
-    e7_store_u32(binding + 12, 1)
+    # VERTEX | FRAGMENT: the lit fragment stage also reads the Scene block.
+    e7_store_u32(binding + 12, 17)
     layout_info := e7_alloc_bytes(32)
     e7_store_u32(layout_info, 32)
     e7_store_u32(layout_info + 20, 1)
@@ -1665,6 +1777,47 @@ vulkan_vertex_buffer_destroy <- (device: i64, buffer: i64, memory: i64) -> nil:
     e7_ffi_call3(destroy_buffer, device, buffer, 0)
     free_memory := bind_vk("vkFreeMemory")
     e7_ffi_call3(free_memory, device, memory, 0)
+
+# Create a host-visible, host-coherent mapped buffer.  `usage` is the Vulkan
+# VkBufferUsageFlagBits value (128 vertex, 64 index).
+vulkan_dynamic_buffer <- (device: i64, physical: i64, byte_size: i64, usage: i64, out_buffer: u64, out_memory: u64, out_mapped: u64) -> i64:
+    info := e7_alloc_bytes(56)
+    e7_store_u32(info, 12)
+    e7_store_u64(info + 24, byte_size)
+    e7_store_u32(info + 32, usage)
+    buffer_out := e7_alloc_bytes(8)
+    e7_ffi_call4(bind_vk("vkCreateBuffer"), device, info, 0, buffer_out)
+    buffer := e7_load_u64(buffer_out)
+    requirements := e7_alloc_bytes(24)
+    e7_ffi_call3(bind_vk("vkGetBufferMemoryRequirements"), device, buffer, requirements)
+    memory_size := e7_load_u64(requirements)
+    memory_type := find_memory_type(physical, e7_load_u32(requirements + 16))
+    if memory_type < 0:
+        e7_ffi_call3(bind_vk("vkDestroyBuffer"), device, buffer, 0)
+        e7_free_ptr(info)
+        e7_free_ptr(buffer_out)
+        e7_free_ptr(requirements)
+        ret 0
+    alloc_info := e7_alloc_bytes(32)
+    e7_store_u32(alloc_info, 5)
+    e7_store_u64(alloc_info + 16, memory_size)
+    e7_store_u32(alloc_info + 24, memory_type)
+    memory_out := e7_alloc_bytes(8)
+    e7_ffi_call4(bind_vk("vkAllocateMemory"), device, alloc_info, 0, memory_out)
+    memory := e7_load_u64(memory_out)
+    e7_ffi_call4(bind_vk("vkBindBufferMemory"), device, buffer, memory, 0)
+    mapped_out := e7_alloc_bytes(8)
+    e7_ffi_call6(bind_vk("vkMapMemory"), device, memory, 0, memory_size, 0, mapped_out)
+    e7_store_u64(out_buffer, buffer)
+    e7_store_u64(out_memory, memory)
+    e7_store_u64(out_mapped, e7_load_u64(mapped_out))
+    e7_free_ptr(info)
+    e7_free_ptr(buffer_out)
+    e7_free_ptr(requirements)
+    e7_free_ptr(alloc_info)
+    e7_free_ptr(memory_out)
+    e7_free_ptr(mapped_out)
+    ret 1
 
 vulkan_ubo_set_layout <- (device: i64, out_set_layout: u64) -> i64:
     binding := e7_alloc_bytes(24)
@@ -1906,6 +2059,32 @@ vulkan_cube_buffers <- (
     e7_store_f32(mapped + 168, 0.5)
     e7_store_f32(mapped + 172, 0.5)
     e7_store_f32(mapped + 176, 0.5)
+    e7_store_f32(mapped + 180, 1.0)
+    e7_store_f32(mapped + 184, 1.0)
+    e7_store_f32(mapped + 188, 1.0)
+    # Neutral vertex colours: the scene passes the per-object material tint
+    # through the UBO, so the shared cube geometry stays white and tinted.
+    e7_store_f32(mapped + 12, 1.0)
+    e7_store_f32(mapped + 16, 1.0)
+    e7_store_f32(mapped + 20, 1.0)
+    e7_store_f32(mapped + 36, 1.0)
+    e7_store_f32(mapped + 40, 1.0)
+    e7_store_f32(mapped + 44, 1.0)
+    e7_store_f32(mapped + 60, 1.0)
+    e7_store_f32(mapped + 64, 1.0)
+    e7_store_f32(mapped + 68, 1.0)
+    e7_store_f32(mapped + 84, 1.0)
+    e7_store_f32(mapped + 88, 1.0)
+    e7_store_f32(mapped + 92, 1.0)
+    e7_store_f32(mapped + 108, 1.0)
+    e7_store_f32(mapped + 112, 1.0)
+    e7_store_f32(mapped + 116, 1.0)
+    e7_store_f32(mapped + 132, 1.0)
+    e7_store_f32(mapped + 136, 1.0)
+    e7_store_f32(mapped + 140, 1.0)
+    e7_store_f32(mapped + 156, 1.0)
+    e7_store_f32(mapped + 160, 1.0)
+    e7_store_f32(mapped + 164, 1.0)
     e7_store_f32(mapped + 180, 1.0)
     e7_store_f32(mapped + 184, 1.0)
     e7_store_f32(mapped + 188, 1.0)
@@ -2351,7 +2530,7 @@ vulkan_texture_descriptor_static <- (device: i64, view: i64, sampler: i64, out_l
     ret 1
 
 
-vulkan_mesh_pipeline_two <- (device: i64, render_pass: i64, vertex_shader: u64, fragment_shader: u64, ubo_layout: i64, texture_layout: i64, out_pipeline: u64, out_layout: u64) -> i64:
+vulkan_mesh_pipeline_two <- (device: i64, render_pass: i64, vertex_shader: u64, fragment_shader: u64, ubo_layout: i64, texture_layout: i64, vertex_stride: i64, out_pipeline: u64, out_layout: u64) -> i64:
     vert_info := e7_alloc_bytes(40)
     e7_store_u32(vert_info, 16)
     e7_store_u64(vert_info + 24, e7_str_len(vertex_shader))
@@ -2387,7 +2566,7 @@ vulkan_mesh_pipeline_two <- (device: i64, render_pass: i64, vertex_shader: u64, 
     e7_store_u64(stages + 80, entry)
     binding := e7_alloc_bytes(12)
     e7_store_u32(binding, 0)
-    e7_store_u32(binding + 4, 24)
+    e7_store_u32(binding + 4, vertex_stride)
     e7_store_u32(binding + 8, 0)
     attributes := e7_alloc_bytes(32)
     e7_store_u32(attributes, 0)
