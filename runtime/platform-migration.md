@@ -207,6 +207,10 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   w, h)` creates the e7 Vulkan surface/swapchain on a runtime-owned SDL window
   and `scene_destroy` no longer destroys that window. Borrowed create/destroy is
   JIT-verified on a runtime-created window. Runtime: **136/136**.
+- **7p (done):** dynamic UI texture replacement: upload arbitrary RGBA8
+  pixels (e.g. text/image raster output), repoint the static UI descriptor, and
+  sample them through the UI quad. The scene test swaps in a green 8x8 texture
+  and captures the exact green center pixel. Runtime: **136/136**.
 - Remaining: render on borrowed windows, wire engine to e7 scene/host, image
   port, and remove runtime renderer/window wrappers.
 

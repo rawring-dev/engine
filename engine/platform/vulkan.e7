@@ -2687,3 +2687,20 @@ vulkan_ui_buffers <- (device: i64, physical: i64, out_vertex_buffer: u64, out_ve
     if vertex_type < 0 or index_type < 0:
         ret 0
     ret 1
+
+# Update an existing combined-image-sampler descriptor set (set 0, binding 0).
+vulkan_texture_descriptor_write <- (device: i64, descriptor_set: i64, view: i64, sampler: i64) -> nil:
+    image_info := e7_alloc_bytes(24)
+    e7_store_u64(image_info, sampler)
+    e7_store_u64(image_info + 8, view)
+    e7_store_u32(image_info + 16, 5)
+    write := e7_alloc_bytes(64)
+    e7_store_u32(write, 35)
+    e7_store_u64(write + 16, descriptor_set)
+    e7_store_u32(write + 24, 0)
+    e7_store_u32(write + 32, 1)
+    e7_store_u32(write + 36, 1)
+    e7_store_u64(write + 40, image_info)
+    e7_ffi_call5(bind_vk("vkUpdateDescriptorSets"), device, 1, write, 0, 0)
+    e7_free_ptr(image_info)
+    e7_free_ptr(write)

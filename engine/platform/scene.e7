@@ -550,6 +550,44 @@ scene_draw_lit <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
         out_size,
     )
 
+# Replace the UI quad texture with tightly packed RGBA8 pixels (text/image
+# raster output) and repoint the static UI descriptor set.
+scene_set_ui_texture <- (scene: u64, pixels: u64, width: i64, height: i64) -> i64:
+    device := e7_load_u64(scene + 32)
+    physical := e7_load_u64(scene + 24)
+    image_out := e7_alloc_bytes(8)
+    memory_out := e7_alloc_bytes(8)
+    view_out := e7_alloc_bytes(8)
+    sampler_out := e7_alloc_bytes(8)
+    if vulkan_texture_empty(device, physical, width, height, image_out, memory_out, view_out, sampler_out) == 0:
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        ret 0
+    image := e7_load_u64(image_out)
+    memory := e7_load_u64(memory_out)
+    view := e7_load_u64(view_out)
+    sampler := e7_load_u64(sampler_out)
+    if vulkan_texture_upload(device, e7_load_u64(scene + 40), e7_load_u32(scene + 48), physical, image, pixels, width, height) == 0:
+        vulkan_texture_empty_destroy(device, image, memory, view, sampler)
+        e7_free_ptr(image_out)
+        e7_free_ptr(memory_out)
+        e7_free_ptr(view_out)
+        e7_free_ptr(sampler_out)
+        ret 0
+    vulkan_texture_descriptor_write(device, e7_load_u64(scene + 1152), view, sampler)
+    vulkan_texture_empty_destroy(device, e7_load_u64(scene + 1024), e7_load_u64(scene + 1032), e7_load_u64(scene + 1040), e7_load_u64(scene + 1048))
+    e7_store_u64(scene + 1024, image)
+    e7_store_u64(scene + 1032, memory)
+    e7_store_u64(scene + 1040, view)
+    e7_store_u64(scene + 1048, sampler)
+    e7_free_ptr(image_out)
+    e7_free_ptr(memory_out)
+    e7_free_ptr(view_out)
+    e7_free_ptr(sampler_out)
+    ret 1
+
 scene_destroy <- (scene: u64) -> nil:
     device := e7_load_u64(scene + 32)
     instance := e7_load_u64(scene + 8)
