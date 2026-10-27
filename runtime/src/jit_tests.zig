@@ -1538,21 +1538,37 @@ test "e7 native window binding exposes a stable SDL pointer" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
     const probe =
         \\native_window_probe <- () -> i64:
+        \\    if video_init("dummy") != 0:
+        \\        video_quit()
+        \\        ret 0
         \\    win := e7_engine_window_create("e7 native probe", 64, 48)
         \\    if win == 0:
         \\        ret 0
         \\    first := e7_engine_native_window(win)
-        \\    second := e7_engine_native_window(win)
-        \\    e7_engine_window_destroy(win)
         \\    if first == 0:
+        \\        e7_engine_window_destroy(win)
         \\        ret -2
-        \\    if first != second:
+        \\    scene := scene_create_borrowed(first, 64, 48)
+        \\    if scene == 0:
+        \\        e7_engine_window_destroy(win)
+        \\        video_quit()
         \\        ret -3
+        \\    scene_destroy(scene)
+        \\    e7_engine_window_destroy(win)
+        \\    video_quit()
         \\    ret 1
     ;
     engine.reset();
     defer engine.shutdown();
-    var compiled = try compiler.pipeline.compile(std.testing.allocator, probe, .{});
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(scene_source);
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
     defer compiled.deinit();
     if (!compiled.analysis.ok()) {
         for (compiled.analysis.diagnostics) |d| std.debug.print("native window diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });

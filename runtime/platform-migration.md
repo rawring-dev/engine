@@ -203,8 +203,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   the runtime SDL window pointer to e7, so the e7 Vulkan scene can create its
   own surface while the runtime still owns event/window plumbing. Verified
   stable across repeated queries. Runtime: **136/136**.
-- Remaining: wire e7 engine/scene/window to the host module and remove runtime
-  renderer/window wrappers; image port.
+- **9c (done):** borrowed-window scene: `scene_create_borrowed(native_window,
+  w, h)` creates the e7 Vulkan surface/swapchain on a runtime-owned SDL window
+  and `scene_destroy` no longer destroys that window. Borrowed create/destroy is
+  JIT-verified on a runtime-created window. Runtime: **136/136**.
+- Remaining: render on borrowed windows, wire engine to e7 scene/host, image
+  port, and remove runtime renderer/window wrappers.
 
 ## Migration stages
 

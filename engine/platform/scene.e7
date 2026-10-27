@@ -572,6 +572,19 @@ scene_destroy <- (scene: u64) -> nil:
 # Convert milli-unit eye/yaw/pitch into view/projection matrices and write the
 # engine SceneUniform block.  Matches the host renderer's FPS conventions:
 # yaw 0 looks down -Z, +X right, Vulkan Y-flipped projection.
+# Create a scene on a native `SDL_Window*` owned by the caller.  The scene
+# creates its own Vulkan surface/swapchain but leaves window destruction to the
+# owner.
+scene_create_borrowed <- (native_window: u64, requested_width: i64, requested_height: i64) -> u64:
+    state := e7_alloc_bytes(256)
+    e7_store_u64(state, native_window)
+    scene := scene_create(state, requested_width, requested_height)
+    if scene == 0:
+        e7_free_ptr(state)
+        ret 0
+    e7_store_u32(scene + 1272, 1)
+    ret scene
+
 scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli: i64, yaw_milli: i64, pitch_milli: i64) -> nil:
     ubo := e7_load_u64(scene + 152)
     if ubo == 0:
