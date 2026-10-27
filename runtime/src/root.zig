@@ -1067,7 +1067,6 @@ test "JIT executes the ECS resource, row, Commands, and query ABI end-to-end" {
 }
 
 test "JIT runs the e7 engine project headless and captures a rendered frame" {
-    if (true) return error.SkipZigTest;
     host.reset();
     defer host.reset();
     host.setHeadless(true);
@@ -1090,7 +1089,7 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
         std.testing.allocator.free(absolute);
         break;
     }
-    if (root_path.len == 0) return error.SkipZigTest;
+    if (root_path.len == 0) return error.TestUnexpectedResult;
 
     var compiled = compiler.pipeline.compileProject(std.testing.allocator, root_path, .{}) catch |err| {
         std.debug.print("engine project compile failed: {s}\n", .{@errorName(err)});
@@ -1132,6 +1131,19 @@ test "JIT runs the e7 engine project headless and captures a rendered frame" {
     defer capture.deinit();
     try std.testing.expectEqual(@as(u32, 960), capture.width);
     try std.testing.expectEqual(@as(u32, 540), capture.height);
+    try std.testing.expectEqual(@as(usize, 960 * 540 * 4), capture.pixels.len);
+    // A captured headless frame must contain real rendered content, never a
+    // zero/empty buffer: the demo camera looks at the cube, so the centre pixel
+    // is scene content and differs from the black bands at the top edge.
+    var non_zero: usize = 0;
+    for (capture.pixels) |byte| {
+        if (byte != 0) non_zero += 1;
+    }
+    try std.testing.expect(non_zero > capture.pixels.len / 2);
+    const center = rgbaPixel(capture.pixels, 960, 480, 270);
+    const top_edge = rgbaPixel(capture.pixels, 960, 480, 10);
+    try std.testing.expect(center != 0xFF000000);
+    try std.testing.expect(center != top_edge);
 }
 
 test "JIT executes query projection iteration and mutable component writes" {
@@ -1391,24 +1403,131 @@ test "JIT round-trips JSON for derived structs" {
     try std.testing.expectEqual(@as(i64, 4518), roundtrip_line());
 }
 
-fn readRepoTextForTest(comptime relative: []const u8) ?[]u8 {
-    const candidates = [_][]const u8{
-        relative,
-        "../" ++ relative,
-        "../../" ++ relative,
-    };
-    for (candidates) |candidate| {
+fn readRepoTextRuntime(allocator: std.mem.Allocator, relative: []const u8) ?[]u8 {
+    const prefixes = [_][]const u8{ "", "../", "../../" };
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    for (prefixes) |prefix| {
+        const candidate = std.fmt.bufPrint(&buffer, "{s}{s}", .{ prefix, relative }) catch continue;
         const data = std.Io.Dir.readFileAlloc(
             std.Io.Dir.cwd(),
             std.testing.io,
             candidate,
-            std.testing.allocator,
+            allocator,
             .limited(8 * 1024 * 1024),
         ) catch continue;
         return data;
     }
     return null;
 }
+
+fn readRepoTextForTest(comptime relative: []const u8) ?[]u8 {
+    return readRepoTextRuntime(std.testing.allocator, relative);
+}
+
+/// One module for `compileProjectFromSources`.  Either inline `source` (a
+/// synthesized module such as `mod gpu` or `mod events`) or a repo-relative
+/// `path` is required.
+const RepoModule = struct {
+    name: []const u8,
+    path: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+};
+
+const LoadedRepoModules = struct {
+    sources: []compiler.pipeline.SourceFile,
+    owned: [][]u8,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *LoadedRepoModules) void {
+        for (self.owned) |buffer| self.allocator.free(buffer);
+        self.allocator.free(self.owned);
+        self.allocator.free(self.sources);
+    }
+};
+
+/// Load repo sources into `SourceFile` entries for `compileProjectFromSources`,
+/// failing the test (not skipping it) when a checked-in source is missing.
+fn loadRepoModules(allocator: std.mem.Allocator, specs: []const RepoModule) !LoadedRepoModules {
+    const sources = try allocator.alloc(compiler.pipeline.SourceFile, specs.len);
+    errdefer allocator.free(sources);
+    const owned = try allocator.alloc([]u8, specs.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |buffer| allocator.free(buffer);
+        allocator.free(owned);
+    }
+    for (specs, 0..) |spec, index| {
+        const source: []u8 = if (spec.source) |literal| blk: {
+            break :blk try allocator.dupe(u8, literal);
+        } else blk: {
+            const path = spec.path orelse {
+                std.debug.print("module '{s}' has neither repo path nor inline source\n", .{spec.name});
+                return error.TestUnexpectedResult;
+            };
+            break :blk readRepoTextRuntime(allocator, path) orelse {
+                std.debug.print("missing checked-in module source '{s}': {s}\n", .{ spec.name, path });
+                return error.TestUnexpectedResult;
+            };
+        };
+        owned[index] = source;
+        sources[index] = .{ .name = spec.name, .source = source };
+        initialized += 1;
+    }
+    return .{ .sources = sources, .owned = owned, .allocator = allocator };
+}
+
+/// Read one RGBA8 pixel from a captured frame as a little-endian u32
+/// (`0xAABBGGRR`-free canonical RGBA bytes become 0xAABBGGRR when read LE).
+fn rgbaPixel(pixels: []const u8, width: usize, x: usize, y: usize) u32 {
+    const offset = (y * width + x) * 4;
+    return std.mem.readInt(u32, pixels[offset..][0..4], .little);
+}
+
+/// Engine platform modules import `platform::engine_window` / `engine_scene`
+/// and the generated scene layer binds SDL/Vulkan through the generic C FFI.
+const platform_module_specs = [_]RepoModule{
+    .{ .name = "platform", .path = "engine/platform/main.e7" },
+    .{ .name = "text", .path = "engine/platform/text.e7" },
+    .{ .name = "sdl", .path = "engine/platform/sdl.e7" },
+    .{ .name = "vulkan", .path = "engine/platform/vulkan.e7" },
+    .{ .name = "scene", .path = "engine/platform/scene.e7" },
+    .{ .name = "engine_window", .path = "engine/platform/engine_window.e7" },
+    .{ .name = "engine_scene", .path = "engine/platform/engine_scene.e7" },
+};
+
+const core_module_specs = [_]RepoModule{
+    .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\nmod window\n" },
+    .{ .name = "events", .path = "engine/core/events.e7" },
+    .{ .name = "ecs", .path = "engine/core/ecs.e7" },
+    .{ .name = "time", .path = "engine/core/time.e7" },
+    .{ .name = "input", .path = "engine/core/input.e7" },
+    .{ .name = "camera", .path = "engine/core/camera.e7" },
+    .{ .name = "window", .path = "engine/core/window.e7" },
+};
+
+const physics_module_specs = [_]RepoModule{
+    .{ .name = "physics", .path = "engine/physics/main.e7" },
+    .{ .name = "broadphase", .path = "engine/physics/broadphase.e7" },
+    .{ .name = "narrowphase", .path = "engine/physics/narrowphase.e7" },
+};
+
+/// `engine/gfx/main.e7` also declares a `scene` submodule, which would collide
+/// with `engine/platform/scene.e7` in the flat in-memory module namespace, so
+/// synthesize a gfx root that only pulls in `gpu`.
+const gfx_module_specs = [_]RepoModule{
+    .{ .name = "gfx", .source = "mod gpu\n" },
+    .{ .name = "gpu", .path = "engine/gfx/gpu.e7" },
+};
+
+const asset_module_specs = [_]RepoModule{
+    .{ .name = "assets", .path = "engine/assets/main.e7" },
+    .{ .name = "obj", .path = "engine/assets/obj.e7" },
+};
+
+const engine_physics_module_specs =
+    core_module_specs ++ platform_module_specs ++ physics_module_specs;
+const engine_asset_module_specs =
+    core_module_specs ++ platform_module_specs ++ gfx_module_specs ++ asset_module_specs;
 
 test "JIT executes the generic text and parsing intrinsics" {
     var compiled = try compiler.pipeline.compile(
@@ -1474,22 +1593,12 @@ test "JIT loads an image through the e7 image intrinsics" {
 }
 
 test "JIT executes the compiled e7 OBJ parser from engine/assets/obj.e7" {
-    if (true) return error.SkipZigTest;
-    const obj_source = readRepoTextForTest("engine/assets/obj.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(obj_source);
-    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(window_source);
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_asset_module_specs);
+    defer modules.deinit();
 
     const root_source =
-        \\mod events
-        \\mod window
-        \\mod ecs
+        \\mod platform
+        \\mod core
         \\mod gfx
         \\mod obj
         \\main <- () -> i32:
@@ -1507,13 +1616,7 @@ test "JIT executes the compiled e7 OBJ parser from engine/assets/obj.e7" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "window", .source = window_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "gfx", .source = gfx_source },
-            .{ .name = "obj", .source = obj_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
@@ -1537,21 +1640,11 @@ test "JIT executes the compiled e7 OBJ parser from engine/assets/obj.e7" {
 }
 
 test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
-    if (true) return error.SkipZigTest;
-    const obj_source = readRepoTextForTest("engine/assets/obj.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(obj_source);
-    const assets_source = readRepoTextForTest("engine/assets/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(assets_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(window_source);
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_asset_module_specs);
+    defer modules.deinit();
 
     const root_source =
+        \\mod platform
         \\mod core
         \\mod gfx
         \\mod assets
@@ -1564,16 +1657,7 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "core", .source = "mod events\nmod window\nmod ecs\n" },
-            .{ .name = "events", .source = events_source },
-            .{ .name = "window", .source = window_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "gfx", .source = "mod gpu\n" },
-            .{ .name = "gpu", .source = gfx_source },
-            .{ .name = "obj", .source = obj_source },
-            .{ .name = "assets", .source = assets_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
@@ -1620,9 +1704,9 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
 }
 
 test "JIT executes broadphase aggregation and narrowphase helpers" {
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(narrow_source);
 
     // Minimal shared type surface; the real engine uses physics.e7's copies.
@@ -1828,9 +1912,9 @@ test "JIT removes, re-adds, and despawns dynamic ECS markers" {
 }
 
 test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(narrow_source);
 
     const root_source =
@@ -1962,25 +2046,17 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
 }
 
 test "JIT nearest pickup uses distance then body id tie-break" {
-    if (true) return error.SkipZigTest;
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(physics_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_physics_module_specs);
+    defer modules.deinit();
 
     const root_source =
+        \\# The e7 engine_window platform layer stubs mouse capture to 0, but the
+        \\# pickup interaction only runs while the pointer is captured.  Supply the
+        \\# captured state the old SDL input-injection intrinsic used to provide so
+        \\# the nearest-pickup distance/id tie-break policy still runs.
+        \\e7_engine_mouse_captured <- (handle: u64) -> i64:
+        \\    ret 1
+        \\mod platform
         \\mod core
         \\mod physics
         \\use core::events::*;
@@ -2003,6 +2079,7 @@ test "JIT nearest pickup uses distance then body id tie-break" {
         \\    pickup_scene_plugin_init <- sys (commands: &mut Commands):
         \\        commands.insert_resource(Probe { first: 0, second: 0 })
         \\        commands.insert_resource(Input {
+        \\            window: 0,
         \\            move_forward: false,
         \\            move_backward: false,
         \\            move_left: false,
@@ -2167,17 +2244,7 @@ test "JIT nearest pickup uses distance then body id tie-break" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "time", .source = time_source },
-            .{ .name = "input", .source = input_source },
-            .{ .name = "camera", .source = camera_source },
-            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
-            .{ .name = "broadphase", .source = broad_source },
-            .{ .name = "narrowphase", .source = narrow_source },
-            .{ .name = "physics", .source = physics_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
@@ -2212,25 +2279,11 @@ test "JIT nearest pickup uses distance then body id tie-break" {
 }
 
 test "JIT contact friction slows and tips boxes" {
-    if (true) return error.SkipZigTest;
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(physics_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_physics_module_specs);
+    defer modules.deinit();
 
     const root_source =
+        \\mod platform
         \\mod core
         \\mod physics
         \\use core::events::*;
@@ -2254,6 +2307,7 @@ test "JIT contact friction slows and tips boxes" {
         \\    contact_scene_plugin_init <- sys (commands: &mut Commands):
         \\        commands.insert_resource(Probe { vx: 0, rot_z: 0, max_speed: 0, max_angular: 0, min_y: 1000000, max_y: -1000000 })
         \\        commands.insert_resource(Input {
+        \\            window: 0,
         \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
         \\            move_up: false, move_down: false, sprint: false,
         \\            look_left: false, look_right: false, look_up: false, look_down: false,
@@ -2358,17 +2412,7 @@ test "JIT contact friction slows and tips boxes" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "time", .source = time_source },
-            .{ .name = "input", .source = input_source },
-            .{ .name = "camera", .source = camera_source },
-            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
-            .{ .name = "broadphase", .source = broad_source },
-            .{ .name = "narrowphase", .source = narrow_source },
-            .{ .name = "physics", .source = physics_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
@@ -2416,9 +2460,9 @@ fn e7Abs(comptime T: type, value: T) T {
 }
 
 test "JIT rotates body inverse inertia by quaternion" {
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
+    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
+    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.TestUnexpectedResult;
     defer std.testing.allocator.free(narrow_source);
     const root_source =
         \\mod physics_broadphase
@@ -2480,25 +2524,11 @@ test "JIT rotates body inverse inertia by quaternion" {
 }
 
 test "JIT body pairs exchange equal and opposite impulses" {
-    if (true) return error.SkipZigTest;
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(physics_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_physics_module_specs);
+    defer modules.deinit();
 
     const root_source =
+        \\mod platform
         \\mod core
         \\mod physics
         \\use core::events::*;
@@ -2520,6 +2550,7 @@ test "JIT body pairs exchange equal and opposite impulses" {
         \\    pair_scene_plugin_init <- sys (commands: &mut Commands):
         \\        commands.insert_resource(Probe { avx: 0, bvx: 0, awz: 0, bwz: 0 })
         \\        commands.insert_resource(Input {
+        \\            window: 0,
         \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
         \\            move_up: false, move_down: false, sprint: false,
         \\            look_left: false, look_right: false, look_up: false, look_down: false,
@@ -2581,17 +2612,7 @@ test "JIT body pairs exchange equal and opposite impulses" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "time", .source = time_source },
-            .{ .name = "input", .source = input_source },
-            .{ .name = "camera", .source = camera_source },
-            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
-            .{ .name = "broadphase", .source = broad_source },
-            .{ .name = "narrowphase", .source = narrow_source },
-            .{ .name = "physics", .source = physics_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
@@ -2630,25 +2651,11 @@ test "JIT body pairs exchange equal and opposite impulses" {
 }
 
 test "JIT sleeping body wakes on contact" {
-    if (true) return error.SkipZigTest;
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const time_source = readRepoTextForTest("engine/core/time.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(time_source);
-    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(input_source);
-    const camera_source = readRepoTextForTest("engine/core/camera.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(camera_source);
-    const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(broad_source);
-    const narrow_source = readRepoTextForTest("engine/physics/narrowphase.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(narrow_source);
-    const physics_source = readRepoTextForTest("engine/physics/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(physics_source);
+    var modules = try loadRepoModules(std.testing.allocator, &engine_physics_module_specs);
+    defer modules.deinit();
 
     const root_source =
+        \\mod platform
         \\mod core
         \\mod physics
         \\use core::events::*;
@@ -2669,6 +2676,7 @@ test "JIT sleeping body wakes on contact" {
         \\    wake_scene_plugin_init <- sys (commands: &mut Commands):
         \\        commands.insert_resource(Probe { ax: 0, ay: 0, avx: 0 })
         \\        commands.insert_resource(Input {
+        \\            window: 0,
         \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
         \\            move_up: false, move_down: false, sprint: false,
         \\            look_left: false, look_right: false, look_up: false, look_down: false,
@@ -2752,17 +2760,7 @@ test "JIT sleeping body wakes on contact" {
     var compiled = try compiler.pipeline.compileProjectFromSources(
         std.testing.allocator,
         root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "time", .source = time_source },
-            .{ .name = "input", .source = input_source },
-            .{ .name = "camera", .source = camera_source },
-            .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\n" },
-            .{ .name = "broadphase", .source = broad_source },
-            .{ .name = "narrowphase", .source = narrow_source },
-            .{ .name = "physics", .source = physics_source },
-        },
+        modules.sources,
         .{},
     );
     defer compiled.deinit();
