@@ -185,8 +185,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **7m (done):** UI quad pipeline: position/UV/color vertex buffer, combined
   texture descriptor, SrcAlpha/OneMinusSrcAlpha blending, indexed 6-vertex quad;
   `scene_draw_ui` captures a white textured quad. Runtime: **134/134**.
-- Remaining: engine draw parity, engine scene wiring, image port, and deletion
-  of remaining SDL/Vulkan wrappers.
+- **7n (done):** two-set pipeline and draw path: mesh pipeline layout with
+  set0 dynamic UBO + set1 combined texture; draw binds both sets, renders and
+  captures a two-set cube frame. This matches the engine shader descriptor
+  layout closely. Runtime: **134/134**.
+- Remaining: engine-lit shader, engine draw parity/wiring, image port, and
+  deletion of remaining SDL/Vulkan wrappers.
 
 ## Migration stages
 
