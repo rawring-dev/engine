@@ -142,7 +142,7 @@ results are rejected with a diagnostic.
 
 ```sh
 cd transpiler
-zig build test          # 24 end-to-end tests; no external tools required
+zig build test          # 26 end-to-end tests; no external tools required
 ```
 
 The golden tests exercise functions, structs, vectors/matrices, resources,

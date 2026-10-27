@@ -436,3 +436,21 @@ Final state (supersedes the round-79 notes above):
 - The runtime still links libpng/libjpeg-turbo for image decoding and the
   net/FFI backends (curl, OpenSSL, ngtcp2, libdatachannel); these are unrelated
   to SDL/Vulkan.
+
+
+## Final parity state
+
+- Engine capture is non-empty and includes the 3D scene, lit materials, uploaded
+  meshes, textured UI panels/buttons/labels, and SDL_ttf text glyphs.
+- Runtime SDL/Vulkan wrappers, vendored headers, link directives, dead
+  compiler/bytecode engine variants, and runtime shader copies are removed.
+- Engine window creation is headless-aware (dummy hidden in headless runs,
+  visible real-driver window otherwise), mouse capture/buttons and SDL text
+  input events are implemented, and non-headless frames present to the
+  swapchain.
+- All platform shaders use e7s -> Slang -> SPIR-V; e7s supports combined image
+  samplers (`Sampler2D<[f32;4]>`) for the textured/UI/lit fragment stages.
+- Host PPM capture writes RGB from BGRA swapchain bytes.
+- Full suite: scheduler 8, compiler 206, runtime 128, transpiler 26; all pass.
+- Known approximation: procedural sphere/capsule/plane shapes use the cube mesh
+  silhouette; transforms, rotation, tint and texture are honored.

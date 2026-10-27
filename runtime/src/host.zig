@@ -134,10 +134,11 @@ pub fn writePpm(io: std.Io, path: []const u8, capture: Capture) !void {
     var header_buffer: [64]u8 = undefined;
     const header = try std.fmt.bufPrint(&header_buffer, "P6\n{d} {d}\n255\n", .{ capture.width, capture.height });
     try file.writeStreamingAll(io, header);
+    // Captures come from the e7 Vulkan swapchain in BGRA8 order; PPM wants RGB.
     var rgb: [3]u8 = undefined;
     var index: usize = 0;
     while (index + 3 < capture.pixels.len) : (index += 4) {
-        rgb = .{ capture.pixels[index], capture.pixels[index + 1], capture.pixels[index + 2] };
+        rgb = .{ capture.pixels[index + 2], capture.pixels[index + 1], capture.pixels[index] };
         try file.writeStreamingAll(io, &rgb);
     }
 }
