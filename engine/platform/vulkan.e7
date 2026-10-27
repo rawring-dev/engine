@@ -2152,3 +2152,63 @@ vulkan_texture_upload <- (device: i64, queue: i64, queue_family: i64, physical: 
     if memory_type < 0:
         ret 0
     ret 1
+
+# Single combined-image-sampler descriptor set (set 1, binding 1).
+vulkan_texture_descriptor_one <- (device: i64, view: i64, sampler: i64, out_layout: u64, out_pool: u64, out_set: u64) -> i64:
+    binding := e7_alloc_bytes(24)
+    e7_store_u32(binding, 1)
+    e7_store_u32(binding + 4, 1)
+    e7_store_u32(binding + 8, 1)
+    e7_store_u32(binding + 12, 16)
+    layout_info := e7_alloc_bytes(32)
+    e7_store_u32(layout_info, 32)
+    e7_store_u32(layout_info + 20, 1)
+    e7_store_u64(layout_info + 24, binding)
+    e7_ffi_call4(bind_vk("vkCreateDescriptorSetLayout"), device, layout_info, 0, out_layout)
+    set_layout := e7_load_u64(out_layout)
+    pool_size := e7_alloc_bytes(8)
+    e7_store_u32(pool_size, 1)
+    e7_store_u32(pool_size + 4, 1)
+    pool_info := e7_alloc_bytes(40)
+    e7_store_u32(pool_info, 33)
+    e7_store_u32(pool_info + 20, 1)
+    e7_store_u32(pool_info + 24, 1)
+    e7_store_u64(pool_info + 32, pool_size)
+    e7_ffi_call4(bind_vk("vkCreateDescriptorPool"), device, pool_info, 0, out_pool)
+    pool := e7_load_u64(out_pool)
+    layouts := e7_alloc_bytes(8)
+    e7_store_u64(layouts, set_layout)
+    alloc_info := e7_alloc_bytes(40)
+    e7_store_u32(alloc_info, 34)
+    e7_store_u64(alloc_info + 16, pool)
+    e7_store_u32(alloc_info + 24, 1)
+    e7_store_u64(alloc_info + 32, layouts)
+    e7_ffi_call3(bind_vk("vkAllocateDescriptorSets"), device, alloc_info, out_set)
+    descriptor_set := e7_load_u64(out_set)
+    image_info := e7_alloc_bytes(24)
+    e7_store_u64(image_info, sampler)
+    e7_store_u64(image_info + 8, view)
+    e7_store_u32(image_info + 16, 5)
+    write := e7_alloc_bytes(64)
+    e7_store_u32(write, 35)
+    e7_store_u64(write + 16, descriptor_set)
+    e7_store_u32(write + 24, 1)
+    e7_store_u32(write + 32, 1)
+    e7_store_u32(write + 36, 1)
+    e7_store_u64(write + 40, image_info)
+    e7_ffi_call5(bind_vk("vkUpdateDescriptorSets"), device, 1, write, 0, 0)
+    e7_free_ptr(binding)
+    e7_free_ptr(layout_info)
+    e7_free_ptr(pool_size)
+    e7_free_ptr(pool_info)
+    e7_free_ptr(layouts)
+    e7_free_ptr(alloc_info)
+    e7_free_ptr(image_info)
+    e7_free_ptr(write)
+    if set_layout == 0 or pool == 0 or descriptor_set == 0:
+        ret 0
+    ret 1
+
+vulkan_texture_descriptor_one_destroy <- (device: i64, layout: i64, pool: i64) -> nil:
+    e7_ffi_call3(bind_vk("vkDestroyDescriptorPool"), device, pool, 0)
+    e7_ffi_call3(bind_vk("vkDestroyDescriptorSetLayout"), device, layout, 0)

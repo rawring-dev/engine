@@ -167,8 +167,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   image view, linear sampler, staging-buffer upload with barriers/copy/submit,
   and clean teardown. The scene creates/uploads a 4x4 texture at startup.
   Runtime: **134/134**.
-- Remaining: texture descriptor set pipeline + UI pipeline, engine draw parity,
-  engine scene wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
+- **7i (done):** single combined-image-sampler descriptor set (set 1,
+  binding 1) for the uploaded texture; the scene creates/updates/destroys it
+  without validation errors. The two-binding sampler path was the earlier crash
+  source and is not used. Runtime: **134/134**.
+- Remaining: textured pipeline/UI draw, engine draw parity, engine scene
+  wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
 
 ## Migration stages
 

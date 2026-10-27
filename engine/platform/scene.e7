@@ -133,6 +133,17 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     if vulkan_texture_upload(device, queue, family, physical, e7_load_u64(texture_image_out), texture_pixels as u64, 4, 4) == 0:
         ret 0
     e7_free_ptr(texture_pixels)
+    texture_layout_out := e7_alloc_bytes(8)
+    texture_pool_out := e7_alloc_bytes(8)
+    texture_set_out := e7_alloc_bytes(8)
+    if vulkan_texture_descriptor_one(device, e7_load_u64(texture_view_out), e7_load_u64(texture_sampler_out), texture_layout_out, texture_pool_out, texture_set_out) == 0:
+        ret 0
+    e7_store_u64(scene + 632, e7_load_u64(texture_layout_out))
+    e7_store_u64(scene + 640, e7_load_u64(texture_pool_out))
+    e7_store_u64(scene + 648, e7_load_u64(texture_set_out))
+    e7_free_ptr(texture_layout_out)
+    e7_free_ptr(texture_pool_out)
+    e7_free_ptr(texture_set_out)
     e7_store_u64(scene + 600, e7_load_u64(texture_image_out))
     e7_store_u64(scene + 608, e7_load_u64(texture_memory_out))
     e7_store_u64(scene + 616, e7_load_u64(texture_view_out))
@@ -366,6 +377,7 @@ scene_destroy <- (scene: u64) -> nil:
     surface := e7_load_u64(scene + 16)
     vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 72), e7_load_u64(scene + 104))
     vulkan_depth_target_destroy(device, e7_load_u64(scene + 208), e7_load_u64(scene + 216), e7_load_u64(scene + 224))
+    vulkan_texture_descriptor_one_destroy(device, e7_load_u64(scene + 632), e7_load_u64(scene + 640))
     vulkan_texture_empty_destroy(device, e7_load_u64(scene + 600), e7_load_u64(scene + 608), e7_load_u64(scene + 616), e7_load_u64(scene + 624))
     vulkan_graphics_pipeline_destroy(device, e7_load_u64(scene + 160), e7_load_u64(scene + 168))
     vulkan_uniform_resources_destroy(device, e7_load_u64(scene + 112), e7_load_u64(scene + 120), e7_load_u64(scene + 136), e7_load_u64(scene + 144))
