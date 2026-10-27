@@ -451,7 +451,7 @@ Final state (supersedes the round-79 notes above):
 - All platform shaders use e7s -> Slang -> SPIR-V; e7s supports combined image
   samplers (`Sampler2D<[f32;4]>`) for the textured/UI/lit fragment stages.
 - Host PPM capture writes RGB from BGRA swapchain bytes.
-- Full suite: scheduler 8, compiler 206, runtime 129, transpiler 26; all pass
+- Full suite: scheduler 8, compiler 206, runtime 130, transpiler 26; all pass
   with zero skipped tests (capture assertions now require actual frame content).
 - Procedural sphere (UV 16x24), capsule (24 slices, closed band, 8 cap stacks),
   and plane meshes render through the lit pipeline; box keeps the cube. Full
