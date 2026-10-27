@@ -2,14 +2,26 @@
 # C FFI.  The window state is the raw 256-byte e7 SDL state; engine resources
 # hold that handle and pass it explicitly to these functions.
 
+# SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE = 0x10000020; headless runs add
+# SDL_WINDOW_HIDDEN (0x8) so the dummy video driver never maps a window.
+e7_engine_window_flags <- (headless: i64) -> i64:
+    if headless != 0:
+        ret 268435496
+    ret 268435488
+
 e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
-    initialized := video_init("dummy")
-    if initialized == 0:
-        video_quit()
+    headless := e7_host_headless()
+    initialized := 0
+    if headless != 0:
         initialized = video_init("dummy")
+        if initialized == 0:
+            video_quit()
+            initialized = video_init("dummy")
+    else:
+        initialized = video_start()
     if initialized == 0:
         ret 0
-    flags := 268435464
+    flags := e7_engine_window_flags(headless)
     created := window_create(title, width, height, flags)
     if created != 0:
         window_pump(created)
@@ -20,12 +32,18 @@ e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
         window_pump(created)
         window_pump(created)
         window_pump(created)
+        if headless == 0:
+            # First-person look owns the pointer on desktop runs; text input is
+            # re-enabled automatically when capture is released.
+            set_relative_mouse(created, 1)
+            start_text_input(created)
     ret created
 
 e7_engine_window_pump <- (handle: u64) -> i64:
     if handle == 0:
         ret 1
     e7_store_u32(handle + 8, 0)
+    text_input_reset(handle)
     window_pump(handle)
     window_pump(handle)
     window_pump(handle)
@@ -100,18 +118,22 @@ e7_engine_mouse_y <- (handle: u64) -> i64:
     ret mouse_y(handle)
 
 e7_engine_text_input <- (handle: u64) -> str:
-    ret e7_str_new(0, 0)
+    if handle == 0:
+        ret e7_str_new(0, 0)
+    ret text_input_pending(handle)
 
 e7_engine_capture_mouse <- (handle: u64, enabled: i64) -> nil:
+    if handle == 0:
+        ret
+    set_relative_mouse(handle, enabled)
     ret
 
 e7_engine_mouse_down <- (handle: u64, button: i64) -> i64:
     if handle == 0:
         ret 0
-    if button != 0:
-        ret 0
-    buttons := mouse_buttons(handle)
-    ret buttons % 2
+    ret mouse_button_mask_down(mouse_buttons(handle), button)
 
 e7_engine_mouse_captured <- (handle: u64) -> i64:
-    ret 0
+    if handle == 0:
+        ret 0
+    ret mouse_captured(handle)

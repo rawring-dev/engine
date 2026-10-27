@@ -130,7 +130,14 @@ e7_engine_scene_end_frame <- (scene: u64) -> nil:
         ret
     pixels_out := e7_alloc_bytes(8)
     size_out := e7_alloc_bytes(8)
-    drew := scene_draw(scene, pixels_out, size_out)
+    drew := 0
+    if e7_host_headless() != 0:
+        drew = scene_draw(scene, pixels_out, size_out)
+    else:
+        # Desktop presentation: capture the frame and present the swapchain
+        # image so the visible window shows it.  Headless capture stays exactly
+        # as before and never touches the present queue.
+        drew = scene_draw_present(scene, pixels_out, size_out)
     if drew != 0:
         pixels := e7_load_u64(pixels_out)
         width := scene_width(scene)

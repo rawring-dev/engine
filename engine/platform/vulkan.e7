@@ -407,6 +407,28 @@ transition_image <- (command_buffer: i64, image: i64, old_layout: i64, new_layou
     e7_ffi_call10(pipeline_barrier, command_buffer, src_stage, dst_stage, 0, 0, 0, 0, 0, 1, barrier)
     e7_free_ptr(barrier)
 
+# Present the swapchain image acquired by a captured frame.  The render submit
+# already waited on its fence, so the image is in PRESENT_SRC_OPTIMAL and needs
+# no wait semaphore.  Returns 1 on success and 0 when presentation failed.
+vulkan_present_image <- (queue: i64, swapchain: i64, image_index: i64) -> i64:
+    swapchains := e7_alloc_bytes(8)
+    e7_store_u64(swapchains, swapchain)
+    image_indices := e7_alloc_bytes(4)
+    e7_store_u32(image_indices, image_index)
+    present_info := e7_alloc_bytes(64)
+    e7_store_u32(present_info, 1000001001)
+    e7_store_u32(present_info + 32, 1)
+    e7_store_u64(present_info + 40, swapchains)
+    e7_store_u64(present_info + 48, image_indices)
+    present := bind_vk("vkQueuePresentKHR")
+    present_result := e7_ffi_call2(present, queue, present_info)
+    e7_free_ptr(swapchains)
+    e7_free_ptr(image_indices)
+    e7_free_ptr(present_info)
+    if present_result != 0:
+        ret 0
+    ret 1
+
 vulkan_present_clear <- (device: i64, queue: i64, queue_family: i64, swapchain: i64, out_image_index: u64) -> i64:
     semaphore_info := e7_alloc_bytes(24)
     e7_store_u32(semaphore_info, 9)
@@ -1241,6 +1263,7 @@ vulkan_capture_frame <- (
     out_size: u64,
     extra_draws: u64,
     extra_count: i64,
+    present: i64,
 ) -> i64:
     pixel_size := width * height * 4
     buffer_info := e7_alloc_bytes(56)
@@ -1483,6 +1506,9 @@ vulkan_capture_frame <- (
     e7_ffi_call2(unmap, device, memory)
     e7_store_u64(out_pixels, pixels)
     e7_store_u64(out_size, pixel_size)
+    presented := 1
+    if present != 0:
+        presented = vulkan_present_image(queue, swapchain, image_index)
 
     destroy_buffer := bind_vk("vkDestroyBuffer")
     e7_ffi_call3(destroy_buffer, device, buffer, 0)
@@ -1532,6 +1558,15 @@ vulkan_capture_frame <- (
         ret -21
     if memory_type < 0:
         ret -22
+    if present != 0:
+        if presented == 0:
+            # Report the failure to the engine, which will skip capture for the
+            # frame; release the readback buffer so the desktop path does not
+            # leak when presentation fails (e.g. an out-of-date swapchain).
+            e7_free_ptr(e7_load_u64(out_pixels))
+            e7_store_u64(out_pixels, 0)
+            e7_store_u64(out_size, 0)
+            ret -40
     ret 1
 
 # Legacy single-pipeline capture entry point kept for the runtime e7 tests and
@@ -1585,6 +1620,7 @@ vulkan_draw_triangle_capture <- (
         extra_objects,
         out_pixels,
         out_size,
+        0,
         0,
         0,
     )

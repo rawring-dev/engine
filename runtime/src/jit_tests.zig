@@ -1719,6 +1719,9 @@ test "e7 scene renders inside a helper function" {
 
 test "e7 scene renders on a helper-created window after pumping" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
     const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
     const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
@@ -2109,6 +2112,9 @@ test "e7 scene draw inside an inline async task" {
 
 test "e7 engine window module creates, pumps, and destroys a window" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
     const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
     defer std.testing.allocator.free(sdl_source);
     const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
@@ -2154,6 +2160,268 @@ test "e7 engine window module creates, pumps, and destroys a window" {
     const result = probe_fn();
     if (result == 0) {
         std.debug.print("skipping e7 scene test: window/scene unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "e7 engine text input buffers UTF-8 events and clears on read" {
+    if (!canResolve("libSDL3.so", "SDL_strlen")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const probe =
+        \\text_input_probe <- () -> i64:
+        \\    state := e7_alloc_bytes(256)
+        \\    event := e7_alloc_bytes(128)
+        \\    first := e7_alloc_bytes(8)
+        \\    e7_store_u8(first, 195)
+        \\    e7_store_u8(first + 1, 169)
+        \\    e7_store_u8(first + 2, 0)
+        \\    e7_store_u32(event, 771)
+        \\    e7_store_u64(event + 24, first)
+        \\    window_handle_event(state, event)
+        \\    second := e7_alloc_bytes(8)
+        \\    e7_store_u8(second, 97)
+        \\    e7_store_u8(second + 1, 98)
+        \\    e7_store_u8(second + 2, 0)
+        \\    e7_store_u64(event + 24, second)
+        \\    window_handle_event(state, event)
+        \\    capacity := e7_load_u32(state + 204)
+        \\    pending := e7_load_u32(state + 200)
+        \\    typed := text_input_pending(state)
+        \\    length := e7_str_len(typed)
+        \\    data := e7_str_data(typed)
+        \\    b0 := e7_load_u8(data)
+        \\    b1 := e7_load_u8(data + 1)
+        \\    b2 := e7_load_u8(data + 2)
+        \\    b3 := e7_load_u8(data + 3)
+        \\    again := text_input_pending(state)
+        \\    again_length := e7_str_len(again)
+        \\    e7_free_ptr(typed)
+        \\    e7_free_ptr(again)
+        \\    text_input_reset(state)
+        \\    cleared := text_input_pending(state)
+        \\    cleared_length := e7_str_len(cleared)
+        \\    e7_free_ptr(cleared)
+        \\    free_text_buffer(state)
+        \\    e7_free_ptr(state)
+        \\    e7_free_ptr(event)
+        \\    e7_free_ptr(first)
+        \\    e7_free_ptr(second)
+        \\    if capacity != 256:
+        \\        ret -1
+        \\    if pending != 4:
+        \\        ret -2
+        \\    if length != 4:
+        \\        ret -3
+        \\    if b0 != 195:
+        \\        ret -4
+        \\    if b1 != 169:
+        \\        ret -5
+        \\    if b2 != 97:
+        \\        ret -6
+        \\    if b3 != 98:
+        \\        ret -7
+        \\    if again_length != 0:
+        \\        ret -8
+        \\    if cleared_length != 0:
+        \\        ret -9
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ sdl_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("e7 text input parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("e7 text input diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-text-input");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "text_input_probe");
+    try std.testing.expectEqual(@as(i64, 1), probe_fn());
+}
+
+test "e7 engine mouse capture flag and button decode" {
+    if (!canResolve("libSDL3.so", "SDL_SetWindowRelativeMouseMode")) return error.SkipZigTest;
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
+    defer std.testing.allocator.free(window_source);
+    const probe =
+        \\mouse_probe <- () -> i64:
+        \\    win := e7_engine_window_create("e7 engine mouse", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    before := e7_engine_mouse_captured(win)
+        \\    e7_engine_capture_mouse(win, 1)
+        \\    captured_on := e7_engine_mouse_captured(win)
+        \\    e7_engine_capture_mouse(win, 0)
+        \\    captured_off := e7_engine_mouse_captured(win)
+        \\    left := mouse_button_mask_down(7, 0)
+        \\    right := mouse_button_mask_down(7, 1)
+        \\    middle := mouse_button_mask_down(7, 2)
+        \\    left_only_right := mouse_button_mask_down(1, 1)
+        \\    middle_only_middle := mouse_button_mask_down(2, 2)
+        \\    middle_only_right := mouse_button_mask_down(2, 1)
+        \\    right_only_right := mouse_button_mask_down(4, 1)
+        \\    right_only_middle := mouse_button_mask_down(4, 2)
+        \\    extra := mouse_button_mask_down(7, 3)
+        \\    state_left := e7_engine_mouse_down(win, 0)
+        \\    e7_engine_window_destroy(win)
+        \\    if before != 0:
+        \\        ret -1
+        \\    if captured_on != 1:
+        \\        ret -2
+        \\    if captured_off != 0:
+        \\        ret -3
+        \\    if left != 1:
+        \\        ret -4
+        \\    if right != 1:
+        \\        ret -5
+        \\    if middle != 1:
+        \\        ret -6
+        \\    if left_only_right != 0:
+        \\        ret -7
+        \\    if middle_only_middle != 1:
+        \\        ret -8
+        \\    if middle_only_right != 0:
+        \\        ret -9
+        \\    if right_only_right != 1:
+        \\        ret -10
+        \\    if right_only_middle != 0:
+        \\        ret -11
+        \\    if extra != 0:
+        \\        ret -12
+        \\    if state_left != 0:
+        \\        ret -13
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, window_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("e7 mouse parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("e7 mouse diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-engine-mouse");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "mouse_probe");
+    const result = probe_fn();
+    if (result == 0) {
+        std.debug.print("skipping e7 mouse test: window unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "e7 engine headless window creation uses hidden dummy mode" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
+    defer std.testing.allocator.free(window_source);
+    const probe =
+        \\headless_window_probe <- () -> i64:
+        \\    if e7_host_headless() == 0:
+        \\        ret -1
+        \\    if e7_engine_window_flags(1) != 268435496:
+        \\        ret -2
+        \\    if e7_engine_window_flags(0) != 268435488:
+        \\        ret -3
+        \\    win := e7_engine_window_create("e7 headless window", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    flags := window_flags(win)
+        \\    hidden := (flags / 8) % 2
+        \\    resizable := (flags / 32) % 2
+        \\    vulkan := (flags / 268435456) % 2
+        \\    out_w := e7_alloc_bytes(4)
+        \\    out_h := e7_alloc_bytes(4)
+        \\    window_size(win, out_w, out_h)
+        \\    width := e7_load_u32(out_w)
+        \\    height := e7_load_u32(out_h)
+        \\    captured := e7_engine_mouse_captured(win)
+        \\    e7_free_ptr(out_w)
+        \\    e7_free_ptr(out_h)
+        \\    e7_engine_window_destroy(win)
+        \\    if hidden != 1:
+        \\        ret -4
+        \\    if resizable != 1:
+        \\        ret -5
+        \\    if vulkan != 1:
+        \\        ret -6
+        \\    if width != 64:
+        \\        ret -7
+        \\    if height != 48:
+        \\        ret -8
+        \\    if captured != 0:
+        \\        ret -9
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, window_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("e7 headless window parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("e7 headless window diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-engine-headless-window");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "headless_window_probe");
+    const result = probe_fn();
+    if (result == 0) {
+        std.debug.print("skipping e7 headless window test: window unavailable\n", .{});
         return error.SkipZigTest;
     }
     try std.testing.expectEqual(@as(i64, 1), result);
