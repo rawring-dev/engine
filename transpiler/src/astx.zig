@@ -113,8 +113,23 @@ pub fn scalarSlangNameOf(ty: *const ast.Type) ?[]const u8 {
 
 /// Names that are Slang resource/buffer types and therefore pass through as
 /// declared instead of being wrapped in a constant buffer.
+///
+/// The `Sampler1D`/`Sampler2D`/... family is Slang's legacy *combined*
+/// texture-sampler type: it lowers to a single `OpTypeSampledImage` variable,
+/// i.e. one Vulkan `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor,
+/// and its `.Sample(coords)` overload takes no separate sampler argument.
+/// That is distinct from `SamplerState`, which is a standalone sampler
+/// descriptor.  Slang supplies the default element type (`float4`) when no
+/// type argument is written.
 pub fn isResourceTypeName(name: []const u8) bool {
     const names = [_][]const u8{
+        "Sampler1D",
+        "Sampler1DArray",
+        "Sampler2D",
+        "Sampler2DArray",
+        "Sampler3D",
+        "SamplerCube",
+        "SamplerCubeArray",
         "Texture1D",
         "Texture1DArray",
         "Texture2D",

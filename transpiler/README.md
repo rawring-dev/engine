@@ -63,6 +63,7 @@ sh tools/validate-examples.sh
 | module (inline) | `mod math { ... }` | `namespace math { ... }` |
 | constants | `PI := 3.14159265` | `static const float PI = 3.14159265;` |
 | resources | `@binding(0, 0) scene: SceneUniform` | `[[vk::binding(0, 0)]] ConstantBuffer<SceneUniform> scene;` |
+| combined image samplers | `@binding(0, 0) tex: Sampler2D<[f32; 4]>` | `[[vk::binding(0, 0)]] Sampler2D<float4> tex;` (one `COMBINED_IMAGE_SAMPLER`) |
 | shader entries | `@vertex` / `@fragment` / `@compute(8, 8, 1)` | `[shader("...")]` / `[numthreads(...)]` |
 | system values | `@builtin(position)` field | `: SV_Position` |
 | varyings | `@location(0) uv: [f32; 2]` field | `[[vk::location(0)]] float2 uv;` |
@@ -141,12 +142,13 @@ results are rejected with a diagnostic.
 
 ```sh
 cd transpiler
-zig build test          # 23 end-to-end tests; no external tools required
+zig build test          # 24 end-to-end tests; no external tools required
 ```
 
 The golden tests exercise functions, structs, vectors/matrices, resources,
-entry points, traits/extensions, generics, modules, constants, enums, control
-flow, match, and the main diagnostics.  For real compiler validation, run
+combined image samplers, entry points, traits/extensions, generics, modules,
+constants, enums, control flow, match, and the main diagnostics.  For real
+compiler validation, run
 `tools/validate-examples.sh` (or `tools/check-slang.sh` with `SLANGC` pointing
 at a Slang compiler); it transpiles all examples and the canonical
 `engine/shaders/*.e7` and `engine/platform/shaders/*.e7` shaders, compiles

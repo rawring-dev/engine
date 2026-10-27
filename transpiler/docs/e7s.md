@@ -429,6 +429,8 @@ using the normal type rules:
 | --- | --- |
 | `Texture2D<[f32; 4]>` | `Texture2D<float4>` |
 | `Texture2D<f32>` | `Texture2D<float>` |
+| `Sampler2D<[f32; 4]>` | `Sampler2D<float4>` (combined image sampler) |
+| `Sampler2D` | `Sampler2D` (combined image sampler, `float4` element) |
 | `SamplerState` | `SamplerState` |
 | `StructuredBuffer<T>` | `StructuredBuffer<SlangT>` |
 | `RWStructuredBuffer<T>` | `RWStructuredBuffer<SlangT>` |
@@ -437,6 +439,58 @@ using the normal type rules:
 `RWStructuredBuffer` require one element type (a struct or scalar). The
 transpiler maps the type arguments as written and leaves element-type legality
 to slangc. These names are only meaningful in resource declarations (§7).
+
+#### 3.5.1 Combined image samplers
+
+`Sampler1D`, `Sampler1DArray`, `Sampler2D`, `Sampler2DArray`, `Sampler3D`,
+`SamplerCube` and `SamplerCubeArray` are Slang's legacy **combined**
+texture-sampler types: a single resource that combines an image and its
+sampler. e7s accepts them as resource types and passes them through; the
+optional type argument is the sampled element type (`Sampler2D<[f32; 4]>` is
+`Sampler2D<float4>`) and defaults to `float4` when omitted.
+
+A combined sampler lowers to one Slang resource, so slangc emits exactly one
+SPIR-V `OpTypeSampledImage` variable — i.e. one
+`VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` Vulkan descriptor at the declared
+`@binding(binding, set)`:
+
+```e7s
+@binding(0, 0)
+albedo: Sampler2D<[f32; 4]>
+
+@fragment
+fs_main <- (input: FragInput) -> [f32; 4]:
+    base := albedo.Sample(input.uv)
+    ret [base.x, base.y, base.z, base.w]
+```
+
+```slang
+[[vk::binding(0, 0)]] Sampler2D<float4> albedo;
+
+[shader("fragment")]
+float4 fs_main(FragInput input) : SV_Target {
+    var base = albedo.Sample(input.uv);
+    return float4(base.x, base.y, base.z, base.w);
+}
+```
+
+`.Sample(coords)` on a combined sampler takes no separate sampler argument.
+This is distinct from the separate-resource spelling
+`Texture2D<T>` + `SamplerState`, which needs **two** descriptors on two
+different bindings and is sampled as `texture.Sample(sampler, coords)`.
+
+Do not try to write the same `@binding` for a `Texture2D` and a
+`SamplerState`: e7s still diagnoses duplicate `set`+`binding` pairs, because
+those two declarations are two resources (`SAMPLED_IMAGE` + `SAMPLER`), not a
+combined descriptor. The combined descriptor is spelled with the single
+`Sampler*` resource type.
+
+Slang also has a `[[vk::combinedImageSampler]]` attribute for pairing a
+`Texture2D` with a `SamplerState` on one binding. The committed toolchain
+(Slang 2026.20, `.tooling/slang`) does not recognise that attribute
+(`warning[E31000]: unknown attribute 'vk_combinedImageSampler'`), so e7s uses
+the combined `Sampler*` types instead; they produce the equivalent SPIR-V
+`OpTypeSampledImage` variable directly.
 
 ### 3.6 Unsupported types and diagnostics
 
@@ -816,6 +870,9 @@ push: DrawPush
 
 @binding(1, 0)
 albedo: Texture2D<[f32; 4]>
+
+@binding(2, 0)
+combined: Sampler2D<[f32; 4]>
 ```
 
 ```slang
@@ -828,6 +885,8 @@ struct Frame {
 [[vk::push_constant]] ConstantBuffer<DrawPush> push;
 
 [[vk::binding(1, 0)]] Texture2D<float4> albedo;
+
+[[vk::binding(2, 0)]] Sampler2D<float4> combined;
 ```
 
 ```e7s
@@ -874,8 +933,11 @@ Lowering rules:
    the explicit spelling of that intent. It is rejected on explicit Slang
    resource types and together with `@push_constant`.
 4. Explicit Slang resource types pass through with their type arguments
-   mapped: `Texture2D<T>`, `SamplerState`, `StructuredBuffer<T>`,
-   `RWStructuredBuffer<T>`. Only `@binding` applies to these.
+   mapped: `Texture2D<T>`, `Sampler2D<T>` (the combined image sampler, §3.5.1),
+   `SamplerState`, `StructuredBuffer<T>`, `RWStructuredBuffer<T>`. Only
+   `@binding` applies to these. A combined `Sampler*` type is one descriptor;
+   `Texture2D` + `SamplerState` are two descriptors and therefore need two
+   different bindings.
 5. `@resource` is accepted on a resource declaration or on the resource's
    struct; it is erased.
 6. Duplicate `set`+`binding` pairs across resource declarations are diagnosed
@@ -1496,6 +1558,7 @@ All examples live in `transpiler/examples/`.
 | `compute.e7` | compute stage, `RWStructuredBuffer`, `[numthreads]` from `@compute`, dispatch builtin, `if`/`ret` | `compute`; `cs_update` (compute) |
 | `generics_traits.e7` | traits/interfaces, supertrait, `[mutating]`, `impl`/extension, `@inline`, generic struct/function/impl with `where` | `generics_traits` (library unit) |
 | `resources.e7` | `@uniform`, `@push_constant`, `@resource`, `Texture2D`/`SamplerState`/`StructuredBuffer`, `@flat`, `@binding` | `resources`; `vs_main`, `fs_main` |
+| `combined_sampler.e7` | combined image samplers (`Sampler2D`/`SamplerCube`, one `COMBINED_IMAGE_SAMPLER` descriptor each), default element type | `combined_sampler`; `fs_main` (fragment) |
 | `consts.e7` | top-level constants, inline `mod`→`namespace`, `enum class`, scalar/vector math, casts | `consts`; `fs_main` (fragment) |
 | `matrices.e7` | regular `[f32; R, C]` matrix fields, default `column_major` layout, `@row_major` override, matrix-vector `*` → `mul`, row/column indexing | `matrices`; `vs_main` (vertex) |
 | `modules/main.e7` | external `mod math`, `use math::*`, imported helpers, two stages in one root | `main`; `vs_main`, `fs_main` |
