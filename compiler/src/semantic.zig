@@ -1546,33 +1546,14 @@ test "rejects unknown Commands methods" {
     , "unknown `Commands` method");
 }
 
-test "checks compiler-known engine intrinsics" {
+test "checks compiler-known host intrinsics" {
     try expectClean(
-        \\create <- () -> u64 = e7_engine_window_create("engine7", 960, 540)
         \\now <- () -> i64 = e7_engine_time_now_ms()
-        \\pump <- (window: u64) -> i64 = e7_engine_window_pump(window)
-        \\alive <- (window: u64) -> i64 = e7_engine_window_should_close(window)
-        \\shutdown <- (window: u64) -> i64 = e7_engine_window_destroy(window)
-        \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
-        \\angle <- (scene: u64) -> i64 = e7_engine_scene_set_cube_angle(scene, 1000)
-        \\light <- (scene: u64) -> i64 = e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
-        \\begin <- (scene: u64) -> i64 = e7_engine_scene_begin_frame(scene)
-        \\mesh <- (scene: u64) -> i64 = e7_engine_scene_draw_mesh(scene)
-        \\end_frame <- (scene: u64) -> i64 = e7_engine_scene_end_frame(scene)
-        \\limit <- () -> i64 = e7_engine_should_close()
-        \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
-        \\mouse <- () -> i64 = e7_engine_mouse_dx()
-        \\mouse_y <- () -> i64 = e7_engine_mouse_dy()
+        \\shader <- (path: str) -> str = e7_engine_read_shader(path)
     );
     try expectDiagnostic(
         \\now <- () -> i64 = e7_engine_time_now_ms(1)
     , "expects 0 argument");
-    try expectDiagnostic(
-        \\create <- () -> u64 = e7_engine_window_create(1, 960, 540)
-    , "type mismatch");
-    try expectDiagnostic(
-        \\angle <- (scene: u64) -> i64 = e7_engine_scene_set_cube_angle(scene)
-    , "expects 2 argument");
 }
 
 test "checks query projection iteration patterns" {

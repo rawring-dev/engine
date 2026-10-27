@@ -1321,57 +1321,6 @@ test "compileProject loads nested module directories relative to their file" {
     try bytecode.verify(std.testing.allocator, &result.bytecode);
 }
 
-test "lowers compiler-known engine intrinsics to runtime calls" {
-    var result = try compile(
-        std.testing.allocator,
-        \\create <- () -> u64 = e7_engine_window_create("engine7", 960, 540)
-        \\now <- () -> i64 = e7_engine_time_now_ms()
-        \\pump <- (window: u64) -> i64 = e7_engine_window_pump(window)
-        \\close <- () -> i64 = e7_engine_should_close()
-        \\camera <- (scene: u64) -> i64 = e7_engine_scene_set_camera(scene, 0, 1500, 6000, 0, 0)
-        \\angle <- (scene: u64) -> i64 = e7_engine_scene_set_cube_angle(scene, 1000)
-        \\light <- (scene: u64) -> i64 = e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
-        \\begin <- (scene: u64) -> i64 = e7_engine_scene_begin_frame(scene)
-        \\mesh <- (scene: u64) -> i64 = e7_engine_scene_draw_mesh(scene)
-        \\end_frame <- (scene: u64) -> i64 = e7_engine_scene_end_frame(scene)
-        \\held <- (code: i64) -> i64 = e7_engine_key_down(code)
-        \\mouse <- () -> i64 = e7_engine_mouse_dx()
-        \\mouse_y <- () -> i64 = e7_engine_mouse_dy()
-    ,
-        .{},
-    );
-    defer result.deinit();
-    try std.testing.expect(result.analysis.ok());
-    try bytecode.verify(std.testing.allocator, &result.bytecode);
-
-    const expectations = [_]struct { function: []const u8, intrinsic: bytecode.RuntimeFunction }{
-        .{ .function = "create", .intrinsic = .engine_window_create },
-        .{ .function = "now", .intrinsic = .engine_time_now_ms },
-        .{ .function = "pump", .intrinsic = .engine_window_pump },
-        .{ .function = "close", .intrinsic = .engine_should_close },
-        .{ .function = "camera", .intrinsic = .engine_scene_set_camera },
-        .{ .function = "angle", .intrinsic = .engine_scene_set_cube_angle },
-        .{ .function = "light", .intrinsic = .engine_scene_set_light },
-        .{ .function = "begin", .intrinsic = .engine_scene_begin_frame },
-        .{ .function = "mesh", .intrinsic = .engine_scene_draw_mesh },
-        .{ .function = "end_frame", .intrinsic = .engine_scene_end_frame },
-        .{ .function = "held", .intrinsic = .engine_key_down },
-        .{ .function = "mouse", .intrinsic = .engine_mouse_dx },
-        .{ .function = "mouse_y", .intrinsic = .engine_mouse_dy },
-    };
-    for (expectations) |expectation| {
-        const function = result.functionNamed(expectation.function).?;
-        var found = false;
-        for (function.code) |op| switch (op) {
-            .runtime_call => |call| {
-                if (call.function == expectation.intrinsic) found = true;
-            },
-            else => {},
-        };
-        try std.testing.expect(found);
-    }
-}
-
 test "lowers float arithmetic, comparisons, casts, and math intrinsics" {
     var result = try compile(
         std.testing.allocator,

@@ -262,6 +262,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   proving module-call lowering and scene rendering work; the empty engine frame
   is therefore specific to the engine project lifecycle/resources, not module
   ABI. Suite: **130 pass, 10 skipped**; compiler 207.
+- **9k (done):** removed compiler-known window/input/scene engine intrinsics.
+  e7 now owns those calls directly (`e7_engine_window_*`, `e7_engine_scene_*`,
+  input) with correct e7 function ABIs; only `e7_engine_time_now_ms` and
+  `e7_engine_read_shader` remain host intrinsics. Obsolete semantic/pipeline
+  intrinsic tests were updated/removed. Suite: **130 pass, 10 skipped**;
+  compiler **206**. The engine frame is still empty.
 - Remaining: fix the engine-project empty frame, restore skipped tests, draw
   text textures, borrowed-window rendering, image port, and removing remaining
   runtime SDL/Vulkan wrappers.
