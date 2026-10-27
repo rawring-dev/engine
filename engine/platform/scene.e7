@@ -316,6 +316,7 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     e7_free_ptr(lit_frag_handle)
     e7_free_ptr(lit_pipeline_out)
     e7_free_ptr(lit_layout_out)
+    shape_geometry_create(scene)
     e7_free_ptr(ubo_layout_out)
     e7_free_ptr(ubo_pool_out)
     e7_free_ptr(ubo_set_out)
@@ -496,16 +497,246 @@ write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z
     e7_store_f32(slot + 264, e7_f32_div(e7_f32_from_i64(b_milli), 1000.0))
     e7_store_f32(slot + 268, 1.0)
 
-# Record one procedural draw.  The 3D pipelines only support triangle geometry
-# from the shared cube buffer, so `shape` (0 box, 1 sphere, 2 capsule, 3
-# plane) is an approximation consistently rendered as a box; the transform,
-# full XYZ Euler rotation, tint and texture id are honored.
+# ---------------------------------------------------------------------------
+# Procedural shape geometry (sphere / capsule / plane)
+#
+# Box draws keep the shared 8-vertex cube buffer.  Sphere, capsule and plane
+# meshes are generated once per scene on the CPU and uploaded into host-visible
+# mapped buffers; their draws use the existing 32-byte-stride lit pipeline
+# (position xyz at 0, neutral vertex colour at 12, 8 bytes padding).  The
+# meshes are unit-sized like the shared cube (half extent 0.5):
+#   * sphere radius 0.5 (16 stacks x 24 slices),
+#   * capsule radius 0.5, cap rings at y=+/-0.5 and poles at y=+/-1
+#     (24 slices, 8 cap stacks, closed cylinder band),
+#   * plane spanning [-0.5, 0.5] on XZ at y=0 (the Y scale is ignored).
+# Vertex totals: sphere 425, capsule 450, plane 4 -> 879 * 32 = 28128 bytes.
+# Index totals:  sphere 2304, capsule 2448, plane 6 -> 4758 * 2 = 9516 bytes.
+# Scene state: 1320/1328 vertex buffer/memory, 1336/1344 index buffer/memory,
+# 1360 + kind * 8 first index (u32) + index count.
+# ---------------------------------------------------------------------------
+
+shape_write_vertex <- (vertices: u64, index: i64, x: f32, y: f32, z: f32) -> nil:
+    offset := vertices + (index * 32) as u64
+    e7_store_f32(offset, x)
+    e7_store_f32(offset + 4, y)
+    e7_store_f32(offset + 8, z)
+    e7_store_f32(offset + 12, 1.0)
+    e7_store_f32(offset + 16, 1.0)
+    e7_store_f32(offset + 20, 1.0)
+    e7_store_f32(offset + 24, 0.0)
+    e7_store_f32(offset + 28, 0.0)
+
+shape_write_index <- (indices: u64, at: i64, vertex: i64) -> nil:
+    e7_store_u16(indices + (at * 2) as u64, vertex)
+
+# UV sphere, radius 0.5, neutral white vertex colour (the per-object tint and
+# texture come from the lit UBO/descriptors).  The float helper calls in the
+# loop bodies also put this function under the LLVM instcombine fixed-point
+# attribute that loop-heavy stack-machine IR needs on LLVM 23.
+shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
+    stacks := 16
+    slices := 24
+    radius: f32 := 0.5
+    row_stride := slices + 1
+    stack := 0
+    slice := 0
+    at := 0
+    while stack <= stacks:
+        theta := e7_f32_mul(e7_f32_div(e7_f32_from_i64(stack), e7_f32_from_i64(stacks)), 3.141592653589793)
+        sin_theta := e7_f32_sin(theta)
+        cos_theta := e7_f32_cos(theta)
+        slice = 0
+        while slice <= slices:
+            phi := e7_f32_mul(e7_f32_div(e7_f32_from_i64(slice), e7_f32_from_i64(slices)), 6.283185307179586)
+            x := e7_f32_mul(e7_f32_mul(sin_theta, e7_f32_cos(phi)), radius)
+            y := e7_f32_mul(cos_theta, radius)
+            z := e7_f32_mul(e7_f32_mul(sin_theta, e7_f32_sin(phi)), radius)
+            shape_write_vertex(vertices, stack * row_stride + slice, x, y, z)
+            slice = slice + 1
+        stack = stack + 1
+    stack = 0
+    while stack < stacks:
+        slice = 0
+        while slice < slices:
+            a := stack * row_stride + slice
+            b := a + 1
+            below := a + row_stride
+            below_right := below + 1
+            shape_write_index(indices, at, a)
+            shape_write_index(indices, at + 1, below)
+            shape_write_index(indices, at + 2, b)
+            shape_write_index(indices, at + 3, b)
+            shape_write_index(indices, at + 4, below)
+            shape_write_index(indices, at + 5, below_right)
+            at = at + 6
+            slice = slice + 1
+        stack = stack + 1
+
+# Capsule along Y: radius 0.5, hemispherical caps centred at y=+/-0.5 (rings at
+# y=+/-0.5, poles at y=+/-1) and a closed cylinder band between the two rings.
+shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
+    slices := 24
+    cap_stacks := 8
+    rows := cap_stacks + 1
+    row_stride := slices + 1
+    radius: f32 := 0.5
+    cap_center: f32 := 0.5
+    bottom_base := rows * row_stride
+    stack := 0
+    slice := 0
+    at := base_index
+    cap_base := base_vertex
+    cap := 0
+    while stack <= cap_stacks:
+        theta := e7_f32_mul(e7_f32_div(e7_f32_from_i64(stack), e7_f32_from_i64(cap_stacks)), 1.5707963267948966)
+        sin_theta := e7_f32_sin(theta)
+        cos_theta := e7_f32_cos(theta)
+        cap_y := e7_f32_mul(cos_theta, radius)
+        slice = 0
+        while slice <= slices:
+            phi := e7_f32_mul(e7_f32_div(e7_f32_from_i64(slice), e7_f32_from_i64(slices)), 6.283185307179586)
+            x := e7_f32_mul(e7_f32_mul(sin_theta, e7_f32_cos(phi)), radius)
+            z := e7_f32_mul(e7_f32_mul(sin_theta, e7_f32_sin(phi)), radius)
+            shape_write_vertex(vertices, base_vertex + stack * row_stride + slice, x, e7_f32_add(cap_center, cap_y), z)
+            shape_write_vertex(vertices, base_vertex + bottom_base + stack * row_stride + slice, x, e7_f32_sub(0.0 - cap_center, cap_y), z)
+            slice = slice + 1
+        stack = stack + 1
+    while cap < 2:
+        stack = 0
+        while stack < cap_stacks:
+            slice = 0
+            while slice < slices:
+                a := cap_base + stack * row_stride + slice
+                b := a + 1
+                below := a + row_stride
+                below_right := below + 1
+                shape_write_index(indices, at, a)
+                shape_write_index(indices, at + 1, below)
+                shape_write_index(indices, at + 2, b)
+                shape_write_index(indices, at + 3, b)
+                shape_write_index(indices, at + 4, below)
+                shape_write_index(indices, at + 5, below_right)
+                at = at + 6
+                slice = slice + 1
+            stack = stack + 1
+        cap_base = cap_base + bottom_base
+        cap = cap + 1
+    top_ring := base_vertex + (rows - 1) * row_stride
+    bottom_ring := base_vertex + bottom_base + (rows - 1) * row_stride
+    slice = 0
+    while slice < slices:
+        a := top_ring + slice
+        b := a + 1
+        below := bottom_ring + slice
+        below_right := below + 1
+        shape_write_index(indices, at, a)
+        shape_write_index(indices, at + 1, below)
+        shape_write_index(indices, at + 2, b)
+        shape_write_index(indices, at + 3, b)
+        shape_write_index(indices, at + 4, below)
+        shape_write_index(indices, at + 5, below_right)
+        at = at + 6
+        slice = slice + 1
+
+# Flat XZ plane spanning [-0.5, 0.5] with a +Y facing quad at y=0.
+shape_generate_plane <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
+    shape_write_vertex(vertices, base_vertex, 0.0 - 0.5, 0.0, 0.0 - 0.5)
+    shape_write_vertex(vertices, base_vertex + 1, 0.5, 0.0, 0.0 - 0.5)
+    shape_write_vertex(vertices, base_vertex + 2, 0.5, 0.0, 0.5)
+    shape_write_vertex(vertices, base_vertex + 3, 0.0 - 0.5, 0.0, 0.5)
+    shape_write_index(indices, base_index, base_vertex)
+    shape_write_index(indices, base_index + 1, base_vertex + 1)
+    shape_write_index(indices, base_index + 2, base_vertex + 2)
+    shape_write_index(indices, base_index + 3, base_vertex)
+    shape_write_index(indices, base_index + 4, base_vertex + 2)
+    shape_write_index(indices, base_index + 5, base_vertex + 3)
+
+# Allocate and fill the procedural shape meshes.  Returns 0 when the mapped
+# buffers cannot be created; draws then keep the former cube fallback.
+shape_geometry_create <- (scene: u64) -> i64:
+    device := e7_load_u64(scene + 32)
+    physical := e7_load_u64(scene + 24)
+    vertex_buffer_out := e7_alloc_bytes(8)
+    vertex_memory_out := e7_alloc_bytes(8)
+    vertex_mapped_out := e7_alloc_bytes(8)
+    index_buffer_out := e7_alloc_bytes(8)
+    index_memory_out := e7_alloc_bytes(8)
+    index_mapped_out := e7_alloc_bytes(8)
+    if vulkan_dynamic_buffer(device, physical, 28128, 128, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+        e7_free_ptr(vertex_buffer_out)
+        e7_free_ptr(vertex_memory_out)
+        e7_free_ptr(vertex_mapped_out)
+        e7_free_ptr(index_buffer_out)
+        e7_free_ptr(index_memory_out)
+        e7_free_ptr(index_mapped_out)
+        ret 0
+    if vulkan_dynamic_buffer(device, physical, 9516, 64, index_buffer_out, index_memory_out, index_mapped_out) == 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(vertex_buffer_out), e7_load_u64(vertex_memory_out))
+        e7_free_ptr(vertex_buffer_out)
+        e7_free_ptr(vertex_memory_out)
+        e7_free_ptr(vertex_mapped_out)
+        e7_free_ptr(index_buffer_out)
+        e7_free_ptr(index_memory_out)
+        e7_free_ptr(index_mapped_out)
+        ret 0
+    vertices := e7_load_u64(vertex_mapped_out) as u64
+    indices := e7_load_u64(index_mapped_out) as u64
+    shape_generate_sphere(vertices, indices)
+    shape_generate_capsule(vertices, indices, 425, 2304)
+    shape_generate_plane(vertices, indices, 875, 4752)
+    e7_store_u64(scene + 1320, e7_load_u64(vertex_buffer_out))
+    e7_store_u64(scene + 1328, e7_load_u64(vertex_memory_out))
+    e7_store_u64(scene + 1336, e7_load_u64(index_buffer_out))
+    e7_store_u64(scene + 1344, e7_load_u64(index_memory_out))
+    # Per-kind index ranges, looked up as scene + 1360 + kind * 8.
+    e7_store_u32(scene + 1368, 0)
+    e7_store_u32(scene + 1372, 2304)
+    e7_store_u32(scene + 1376, 2304)
+    e7_store_u32(scene + 1380, 2448)
+    e7_store_u32(scene + 1384, 4752)
+    e7_store_u32(scene + 1388, 6)
+    e7_free_ptr(vertex_buffer_out)
+    e7_free_ptr(vertex_memory_out)
+    e7_free_ptr(vertex_mapped_out)
+    e7_free_ptr(index_buffer_out)
+    e7_free_ptr(index_memory_out)
+    e7_free_ptr(index_mapped_out)
+    ret 1
+
+# Record one procedural draw.  Kind 0 (box) uses the shared cube buffer; kinds
+# 1..3 (sphere, capsule, plane) use the per-kind geometry generated at scene
+# creation.  The transform, full XYZ Euler rotation, tint and texture id are
+# honored for every kind; an unknown kind or unavailable procedural buffers
+# fall back to the cube.
 scene_draw_shape_rot <- (scene: u64, shape: i32, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
     if scene == 0:
         ret
     count := e7_load_u32(scene + 1300)
     if count >= 24:
         ret
+    kind := shape as i64
+    if kind >= 1 and kind <= 3:
+        shape_vertices := e7_load_u64(scene + 1320)
+        shape_indices := e7_load_u64(scene + 1336)
+        wide_pipeline := e7_load_u64(scene + 1304)
+        if shape_vertices != 0 and shape_indices != 0 and wide_pipeline != 0:
+            write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
+            append_draw(
+                scene,
+                wide_pipeline,
+                e7_load_u64(scene + 1312),
+                shape_vertices,
+                shape_indices,
+                e7_load_u32(scene + (1364 + kind * 8) as u64),
+                0,
+                e7_load_u32(scene + (1360 + kind * 8) as u64),
+                0,
+                e7_load_u64(scene + 128),
+                1,
+                count * 320,
+                texture_set_lit(scene, texture as i64),
+            )
+            ret
     write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
     pipeline := e7_load_u64(scene + 1256)
     layout := e7_load_u64(scene + 1264)
@@ -1118,6 +1349,10 @@ scene_destroy <- (scene: u64) -> nil:
     vulkan_uniform_resources_destroy(device, e7_load_u64(scene + 112), e7_load_u64(scene + 120), e7_load_u64(scene + 136), e7_load_u64(scene + 144))
     vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 176), e7_load_u64(scene + 184))
     vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 192), e7_load_u64(scene + 200))
+    if e7_load_u64(scene + 1320) != 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 1320), e7_load_u64(scene + 1328))
+    if e7_load_u64(scene + 1336) != 0:
+        vulkan_vertex_buffer_destroy(device, e7_load_u64(scene + 1336), e7_load_u64(scene + 1344))
     vulkan_render_targets_destroy(device, e7_load_u64(scene + 64), e7_load_u64(scene + 96), e7_load_u64(scene + 80), e7_load_u32(scene + 52))
     vulkan_swapchain_destroy(device, e7_load_u64(scene + 56))
     vulkan_device_destroy(device)
