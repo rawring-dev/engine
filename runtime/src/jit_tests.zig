@@ -1878,6 +1878,77 @@ test "e7 scene renders on a helper-created window after pumping" {
     try std.testing.expect(result > 0);
 }
 
+test "e7 scene_draw from a different function than begin/draw" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/vulkan.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(scene_source);
+    const root_source =
+        \\mod sdl
+        \\mod vulkan
+        \\mod scene
+        \\use sdl::*;
+        \\use scene::*;
+        \\draw_helper <- (scene: u64) -> i64:
+        \\    pixels_out := e7_alloc_bytes(8)
+        \\    size_out := e7_alloc_bytes(8)
+        \\    drew := scene_draw(scene, pixels_out, size_out)
+        \\    pixels := e7_load_u64(pixels_out)
+        \\    width := scene_width(scene)
+        \\    height := scene_height(scene)
+        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    e7_free_ptr(pixels)
+        \\    e7_free_ptr(pixels_out)
+        \\    e7_free_ptr(size_out)
+        \\    if drew == 0:
+        \\        ret -3
+        \\    ret center as i64
+        \\split_probe <- () -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret -1
+        \\    win := window_create("e7 split scene", 64, 48, 268435464)
+        \\    if win == 0:
+        \\        ret 0
+        \\    scene := scene_create(win, 64, 48)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        ret -2
+        \\    scene_set_camera(scene, 0, 0, 3000, 0, 0)
+        \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    scene_set_cube_angle(scene, 600)
+        \\    scene_begin_frame(scene)
+        \\    scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
+        \\    center := draw_helper(scene)
+        \\    scene_destroy(scene)
+        \\    ret center
+    ;
+    var compiled = compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        &.{
+            .{ .name = "sdl", .source = sdl_source },
+            .{ .name = "vulkan", .source = vk_source },
+            .{ .name = "scene", .source = scene_source },
+        },
+        .{},
+    ) catch |err| {
+        std.debug.print("split scene compile error: {s}\n", .{@errorName(err)});
+        return error.TestUnexpectedResult;
+    };
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-split-scene");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "split_probe");
+    const result = probe_fn();
+    if (result == 0) return;
+    try std.testing.expect(result > 0);
+}
+
 test "e7 engine window module creates, pumps, and destroys a window" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
     const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;

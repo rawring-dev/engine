@@ -292,7 +292,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   bypassing `engine_scene` and calling raw scene functions still yields an empty
   engine frame, so the remaining difference is in the engine system/render
   lifecycle, not the window or scene wrappers. Suite: **133 pass, 10 skipped**.
-- Remaining: engine render lifecycle (clear/readback zeros), restore skipped
+- **9p (done):** added regression for the engine's exact split pattern:
+  create/camera/begin/draw in one function, `scene_draw` in another function. It
+  renders correctly, so the remaining engine-only failure is inside the
+  project/system lifecycle rather than function-boundary behavior. Suite:
+  **134 pass, 10 skipped**; compiler 206.
+- Remaining: engine project lifecycle (clear/readback zeros), restore skipped
   tests, draw text textures, borrowed-window rendering, image port, and removing
   remaining runtime SDL/Vulkan wrappers.
 
