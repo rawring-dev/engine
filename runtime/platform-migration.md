@@ -182,8 +182,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   statically through the mesh pipeline helper; `scene_draw_textured` samples the
   uploaded 4x4 white texture and the captured center is exactly white. Runtime:
   **134/134**.
-- Remaining: UI quad pipeline/draw, engine draw parity, engine scene wiring,
-  image port, and deletion of remaining SDL/Vulkan wrappers.
+- **7m (done):** UI quad pipeline: position/UV/color vertex buffer, combined
+  texture descriptor, SrcAlpha/OneMinusSrcAlpha blending, indexed 6-vertex quad;
+  `scene_draw_ui` captures a white textured quad. Runtime: **134/134**.
+- Remaining: engine draw parity, engine scene wiring, image port, and deletion
+  of remaining SDL/Vulkan wrappers.
 
 ## Migration stages
 
