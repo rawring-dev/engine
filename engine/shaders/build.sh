@@ -7,9 +7,9 @@
 #   engine/shaders/ui.frag.e7   --(e7s)--> ui_frag.slang   --(slangc)--> ui.frag.spv
 #
 # The generated Slang and SPIR-V are produced in a temporary directory.  The
-# SPIR-V is copied into this directory and into runtime/shaders/ (the runtime
-# embeds it via `runtime/shaders/assets.zig`), so `zig build run-scene` and
-# `zig build test` never need a shader compiler.
+# SPIR-V is copied into this directory, where the e7 engine loads it from disk
+# through `e7_engine_read_shader`, so `zig build run-engine` and `zig build
+# test` never need a shader compiler.
 #
 # Toolchain resolution:
 #   e7s:    $E7S, the first script argument (used by `zig build shaders` to pass
@@ -26,7 +26,6 @@ set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo=$(CDPATH= cd -- "$root/../.." && pwd)
-runtime="$repo/runtime/shaders"
 
 # ---------------------------------------------------------------------------
 # Resolve the e7s transpiler
@@ -99,7 +98,7 @@ transpile ui.vert.e7 ui_vert.slang
 transpile ui.frag.e7 ui_frag.slang
 
 # ---------------------------------------------------------------------------
-# Slang -> SPIR-V, then sync the SPIR-V into engine/ and runtime/
+# Slang -> SPIR-V, then sync the SPIR-V into engine/shaders/
 # ---------------------------------------------------------------------------
 check_magic() {
     magic=$(od -An -tx1 -N4 "$1" | tr -d ' \n')
@@ -113,7 +112,6 @@ publish() {
     spv=$1
     check_magic "$tmpdir/$spv"
     cp "$tmpdir/$spv" "$root/$spv"
-    cp "$tmpdir/$spv" "$runtime/$spv"
     echo "slangc: $spv"
 }
 
@@ -122,8 +120,9 @@ if [ -n "$slangc_bin" ]; then
         source=$1
         stage=$2
         output=$3
-        # The runtime creates a Vulkan 1.1 device; target SPIR-V 1.3 to match
-        # the original glslang-generated assets (Vulkan 1.1's SPIR-V baseline).
+        # The e7 Vulkan platform module creates a Vulkan 1.1 device; target
+        # SPIR-V 1.3 to match the original glslang-generated assets
+        # (Vulkan 1.1's SPIR-V baseline).
         "$slangc_bin" -target spirv -profile spirv_1_3 \
             -entry main -stage "$stage" -o "$tmpdir/$output" "$tmpdir/$source"
     }
@@ -145,11 +144,6 @@ else
         check_magic "$root/cube.frag.spv"
         check_magic "$root/ui.vert.spv"
         check_magic "$root/ui.frag.spv"
-        # Keep the runtime's embedded copies in sync even without slangc.
-        cp "$root/cube.vert.spv" "$runtime/cube.vert.spv"
-        cp "$root/cube.frag.spv" "$runtime/cube.frag.spv"
-        cp "$root/ui.vert.spv" "$runtime/ui.vert.spv"
-        cp "$root/ui.frag.spv" "$runtime/ui.frag.spv"
     else
         echo "error: no slangc and no checked-in SPIR-V at $root" >&2
         exit 1

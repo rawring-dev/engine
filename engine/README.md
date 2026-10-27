@@ -126,13 +126,13 @@ engine/
   Material. Object count is dynamic (no fixed 64-object cap).  The player capsule is deliberately not renderable in the
   first-person demo.  Rotation comes from the physics step; there is no forced
   animation spin, so boxes tumble from gravity, contacts, and angular impulses.
-- Engine intrinsics are wrapped as e7 inherent methods: `window.create/pump/
+- Engine platform calls are wrapped as e7 inherent methods: `window.create/pump/
   should_close/destroy`, `gpu.create_scene/read_shader/set_camera/set_light/
   begin_frame/draw_renderable/draw_custom/end_frame/destroy_scene/
   upload_texture/upload_mesh`, `image.upload_texture/free`,
   `mesh.upload`, `input.key_down/mouse_dx/mouse_dy/text_input/cursor_x/y/
   mouse_down`, `time.now_ms/start`.
-  Call sites use methods; raw intrinsics only appear inside the wrappers.
+  Call sites use methods; raw calls only appear inside the wrappers.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:
   `e7_engine_scene_texture_create` for the image and
@@ -156,8 +156,8 @@ mouse; camera look and WASD movement only run while captured; clicking the 3D wo
 
 There are two e7s shader sets:
 
-- `engine/shaders/*.e7` — runtime scene shaders (also copied into
-  `runtime/shaders/` where `assets.zig` embeds the SPIR-V).
+- `engine/shaders/*.e7` — engine scene shaders, loaded from disk by the e7
+  engine through `e7_engine_read_shader`.
 - `engine/platform/shaders/*.e7` — JIT-engine platform shaders loaded by path
   from `engine/platform/scene.e7` (triangle and mesh pipelines).
 
@@ -170,19 +170,19 @@ interfaces and the build fallback behavior.
 
 ## Runtime boundary
 
-`runtime/src/engine.zig` now exposes only low-level SDL/Vulkan facilities:
-window lifecycle/event pumping, scene create/destroy/resize, per-frame scene
-state (`set_camera`/`set_cube_angle`/`set_light`/`begin_frame`/`draw_mesh`/
-`draw_box`/`draw_shape`/`draw_shape_tex`/`draw_custom`/`texture_create`/
-`texture_destroy`/`mesh_upload`/`end_frame`), time, raw key/mouse queries, a raw asset
-read, and the host frame limiter/capture. Engine policy — shader asset selection/loading, input
-mapping, camera look/movement, time updates, physics rotation, light animation, frame
+The runtime exposes no SDL/Vulkan API.  `runtime/src/host_engine.zig` keeps
+only the SDL/Vulkan-free host helpers `e7_engine_read_shader` and
+`e7_engine_time_now_ms`, and `runtime/src/host.zig` keeps the frame limiter and
+capture bookkeeping.  Windows, input, and the whole Vulkan scene pipeline live
+in `engine/platform/*.e7`, which binds SDL3 and Vulkan dynamically through the
+generic C FFI.  Engine policy — shader asset selection/loading, input mapping,
+camera look/movement, time updates, physics rotation, light animation, frame
 phases, ECS queries, plugins and Commands — lives in `main.e7`.
 
-In particular, `init_window` reads the compiled Slang SPIR-V through
-`e7_engine_read_shader` and passes the bytes to the low-level
-`e7_engine_scene_create`; the runtime no longer embeds or chooses shaders for
-the e7 engine.
+In particular, `init_window` reads the compiled SPIR-V through
+`e7_engine_read_shader` and passes the bytes to `engine_scene_create` in
+`engine/platform/engine_scene.e7`; the runtime neither embeds shaders nor owns
+the scene.
 
 ## Compiler boundary
 

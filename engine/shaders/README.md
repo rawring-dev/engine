@@ -1,8 +1,8 @@
 # engine/shaders
 
-Scene shaders for the engine7 native renderer, written in **e7s** (the e7
-shading subset).  They are transpiled to Khronos Slang with the repo's
-`transpiler/` package, then compiled to SPIR-V with `slangc`.
+Scene shaders for the e7 engine, written in **e7s** (the e7 shading subset).
+They are transpiled to Khronos Slang with the repo's `transpiler/` package,
+then compiled to SPIR-V with `slangc`.
 
 | Source | Generated Slang | Output | Stage |
 | --- | --- | --- | --- |
@@ -13,9 +13,9 @@ shading subset).  They are transpiled to Khronos Slang with the repo's
 
 The generated Slang intermediate is not checked in: `build.sh` produces
 it in a temporary directory so the e7s file is the single source of truth.
-The generated SPIR-V **is** checked in and copied to `runtime/shaders/`, where
-`assets.zig` embeds it, so builds and the scene demo work on machines without
-the e7s transpiler or `slangc`.
+The generated SPIR-V **is** checked in next to the e7s sources; the e7 engine
+loads it from disk through `e7_engine_read_shader`, so builds and the engine
+run work on machines without the e7s transpiler or `slangc`.
 
 ## Building
 
@@ -31,16 +31,16 @@ sh engine/shaders/build.sh
 `transpiler/zig-out/bin/e7s`, or `PATH`.  `slangc` is resolved from `$SLANGC`,
 `.tooling/slang/bin/slangc`, or `PATH`; without `slangc` the e7s sources are
 still transpiled (so errors surface) and the checked-in SPIR-V is kept.  The
-generated SPIR-V targets `spirv_1_3` to match the runtime's Vulkan 1.1 device.
+generated SPIR-V targets `spirv_1_3`, the SPIR-V baseline for the Vulkan 1.1
+device the e7 platform module creates.
 
-`runtime/shaders/build.sh` is a compatibility wrapper around this script;
-`cd runtime && zig build shaders` also works and builds the e7s CLI through the
-runtime package's dependency on `transpiler/`.
+The workspace `zig build shaders` step is the canonical rebuild entry point and
+also compiles `engine/platform/shaders/*.e7`.
 
 ## Uniform layout
 
-`SceneUniform` is 272 bytes, std140-compatible, and matches
-`renderer.Uniforms`:
+`SceneUniform` is 272 bytes, std140-compatible, and matches the
+`SceneUniform` struct declared by `cube.vert.e7`/`cube.frag.e7`:
 
 | Offset | Field | Meaning |
 | --- | --- | --- |

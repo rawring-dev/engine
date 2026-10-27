@@ -38,8 +38,7 @@ pub fn build(b: *std.Build) void {
     // Shader assets: the canonical sources are e7s files.  `zig build shaders`
     // transpiles them with the e7s CLI and compiles the generated Slang to
     // SPIR-V for both shader sets:
-    //   * engine/shaders/       runtime scene shaders (also copied into
-    //                           runtime/shaders for embedding);
+    //   * engine/shaders/       engine scene shaders (loaded from disk);
     //   * engine/platform/      JIT-engine platform shaders (loaded from disk).
     // Checked-in SPIR-V keeps builds working without a shader compiler.
     const e7s_exe = transpiler_dep.artifact("e7s");

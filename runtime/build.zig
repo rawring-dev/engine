@@ -41,19 +41,9 @@ pub fn build(b: *std.Build) void {
     runtime.linkSystemLibrary("png", .{});
     runtime.linkSystemLibrary("turbojpeg", .{});
 
-    // Shader assets: the canonical sources are e7s files in engine/shaders;
-    // `zig build shaders` transpiles them with the e7s CLI and refreshes the
-    // checked-in .spv files here and in engine/shaders.
-    const transpiler_dep = b.dependency("transpiler", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const shader_step = b.step("shaders", "Transpile engine/shaders/*.e7 and compile to SPIR-V");
-    const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("shaders/build.sh") });
-    shader_build.addArtifactArg(transpiler_dep.artifact("e7s"));
-    shader_build.has_side_effects = true;
-    shader_step.dependOn(&shader_build.step);
+    // Shader assets live in engine/shaders and engine/platform/shaders and are
+    // rebuilt by the workspace `zig build shaders` step; the runtime consumes
+    // none of them natively and ships no embedded SPIR-V.
 
     // `engine-run`: the executable host for the e7 engine project.  It loads
     // engine/main.e7, JITs it, and awaits its compiled main.  e7 platform code

@@ -6,7 +6,6 @@
     .dependencies = .{
         .scheduler = .{ .path = "../scheduler" },
         .compiler = .{ .path = "../compiler" },
-        .transpiler = .{ .path = "../transpiler" },
     },
     .paths = .{
         "build.zig",
