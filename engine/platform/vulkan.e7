@@ -1408,6 +1408,13 @@ vulkan_draw_triangle_capture <- (
     if wait_result != 0:
         ret -30
 
+    mapped_range := e7_alloc_bytes(40)
+    e7_store_u32(mapped_range, 6)
+    e7_store_u64(mapped_range + 16, memory)
+    e7_store_u64(mapped_range + 24, 0)
+    e7_store_u64(mapped_range + 32, -1)
+    e7_ffi_call3(bind_vk("vkInvalidateMappedMemoryRanges"), device, 1, mapped_range)
+    e7_free_ptr(mapped_range)
     pixels := e7_alloc_bytes(pixel_size)
     e7_memcpy(pixels, mapped, pixel_size)
     unmap := bind_vk("vkUnmapMemory")

@@ -281,9 +281,15 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   scene create/end/draw). This addresses C FFI/Vulkan thread affinity. The
   engine frame is still empty, so thread affinity was not the remaining sole
   cause. Suite: **133 pass, 10 skipped**; compiler 206.
-- Remaining: fix the full engine frame (same-thread, pumped, clean ABIs),
-  restore skipped tests, draw text textures, borrowed-window rendering, image
-  port, and removing remaining runtime SDL/Vulkan wrappers.
+- **9n (done):** readback now invalidates non-coherent mapped memory
+  (`vkInvalidateMappedMemoryRanges`) after the fence wait. Engine scene handles
+  were verified valid at draw time (pipeline/render pass/framebuffers non-zero,
+  4 swapchain images, 960x540). The engine frame remains empty, with successful
+  acquire/submit/wait but zero readback even for the clear color. Suite:
+  **133 pass, 10 skipped**; compiler 206.
+- Remaining: engine frame (render pass/readback content), restore skipped tests,
+  draw text textures, borrowed-window rendering, image port, and removing
+  remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 
