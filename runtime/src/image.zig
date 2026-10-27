@@ -259,13 +259,14 @@ pub export fn e7_image_free(handle: i64) callconv(.c) i32 {
     return 0;
 }
 
-pub fn symbols() [5]Symbol {
+pub fn symbols() [6]Symbol {
     return .{
         .{ .name = "e7_image_load", .address = @intFromPtr(&e7_image_load) },
         .{ .name = "e7_image_width", .address = @intFromPtr(&e7_image_width) },
         .{ .name = "e7_image_height", .address = @intFromPtr(&e7_image_height) },
         .{ .name = "e7_image_pixels", .address = @intFromPtr(&e7_image_pixels) },
         .{ .name = "e7_image_free", .address = @intFromPtr(&e7_image_free) },
+        .{ .name = "e7_image_from_argb", .address = @intFromPtr(&e7_image_from_argb) },
     };
 }
 
@@ -349,4 +350,34 @@ test "invalid image handles and missing files are rejected" {
     );
     try std.testing.expectEqual(@as(i64, 0), e7_image_load(missing));
     try std.testing.expectEqual(@as(i64, 0), e7_image_load(0));
+}
+
+/// Register a 32-bit ARGB surface (SDL_ttf output) as an RGBA image.  The
+/// conversion stays in the runtime so e7 code does not need a pixel loop.
+pub export fn e7_image_from_argb(ptr: i64, width: i64, height: i64, pitch: i64) callconv(.c) i64 {
+    if (ptr == 0 or width <= 0 or height <= 0 or pitch <= 0) return 0;
+    const w: usize = @intCast(width);
+    const h: usize = @intCast(height);
+    const stride: usize = @intCast(pitch);
+    if (stride < w * 4) return 0;
+    const byte_count = std.math.mul(usize, w, h) catch return 0;
+    const pixel_count = std.math.mul(usize, byte_count, 4) catch return 0;
+    const pixels = allocator().alloc(u8, pixel_count) catch return 0;
+    const src: [*]const u8 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    var row: usize = 0;
+    while (row < h) : (row += 1) {
+        var column: usize = 0;
+        while (column < w) : (column += 1) {
+            const s = row * stride + column * 4;
+            const d = (row * w + column) * 4;
+            pixels[d] = src[s + 2];
+            pixels[d + 1] = src[s + 1];
+            pixels[d + 2] = src[s];
+            pixels[d + 3] = src[s + 3];
+        }
+    }
+    return @intCast(registerRgba(@intCast(w), @intCast(h), pixels) orelse {
+        allocator().free(pixels);
+        return 0;
+    });
 }

@@ -379,3 +379,11 @@ pub fn call16(address: usize, a0: usize, a1: usize, a2: usize, a3: usize, a4: us
     const Fn = *const fn (usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize, usize) callconv(.c) usize;
     return @as(Fn, @ptrFromInt(address))(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15);
 }
+
+/// Call a C function whose second argument is a 32-bit float.  e7 passes floats
+/// as f64 bits; this converts before entering C.
+pub fn callF32_2(address: usize, a0: usize, value: f64) usize {
+    if (address == 0) return 0;
+    const Fn = *const fn (usize, f32) callconv(.c) usize;
+    return @as(Fn, @ptrFromInt(address))(a0, @floatCast(value));
+}

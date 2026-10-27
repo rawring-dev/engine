@@ -178,6 +178,11 @@ pub fn call7(address: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64,
     abi.clearError();
     return dl.call7(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2), @intCast(a3), @intCast(a4), @intCast(a5), @intCast(a6));
 }
+pub fn callF32_2(address: u64, a0: u64, value: u64) callconv(.c) u64 {
+    abi.clearError();
+    return dl.callF32_2(@intCast(address), @intCast(a0), @bitCast(value));
+}
+
 pub fn call8(address: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64, a7: u64) callconv(.c) u64 {
     abi.clearError();
     return dl.call8(@intCast(address), @intCast(a0), @intCast(a1), @intCast(a2), @intCast(a3), @intCast(a4), @intCast(a5), @intCast(a6), @intCast(a7));
@@ -225,6 +230,7 @@ const names = [_][]const u8{
     "e7_ffi_call5",
     "e7_ffi_call6",
     "e7_ffi_call7",
+    "e7_ffi_call_f32_2",
     "e7_ffi_call8",
     "e7_ffi_call9",
     "e7_ffi_call10",
@@ -247,6 +253,7 @@ pub fn symbols() [names.len]Symbol {
         .{ .name = "e7_ffi_call5", .address = @intFromPtr(&call5) },
         .{ .name = "e7_ffi_call6", .address = @intFromPtr(&call6) },
         .{ .name = "e7_ffi_call7", .address = @intFromPtr(&call7) },
+        .{ .name = "e7_ffi_call_f32_2", .address = @intFromPtr(&callF32_2) },
         .{ .name = "e7_ffi_call8", .address = @intFromPtr(&call8) },
         .{ .name = "e7_ffi_call9", .address = @intFromPtr(&call9) },
         .{ .name = "e7_ffi_call10", .address = @intFromPtr(&call10) },

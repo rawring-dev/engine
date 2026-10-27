@@ -147,7 +147,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `scene_draw_box` (position/scale/color), per-object model/tint UBO slots, and
   up to four indexed draw calls per frame with dynamic offsets. Scene test now
   records four colored cubes and captures the frame. Runtime: **136/136**.
-- Remaining: engine draw-shape/mesh/texture/UI parity, image/text, and deletion
+- **8a (done):** e7 text/font port over SDL_ttf 3:
+  `engine/platform/text.e7` loads fonts, measures UTF-8 text, rasterizes blended
+  text to a surface, and registers it as an RGBA image through
+  `e7_image_from_argb`. Added an f32 second-argument FFI trampoline for
+  `TTF_OpenFont`, switched to `TTF_GetStringSize`/`TTF_RenderText_Blended`, and
+  taught the IR translator to skip runtime declarations shadowed by e7
+  definitions. Runtime: **137/137**.
+- Remaining: engine draw-shape/mesh/texture/UI parity, image port, and deletion
   of the Zig layer.
 
 ## Migration stages

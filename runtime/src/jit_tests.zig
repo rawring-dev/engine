@@ -1557,3 +1557,59 @@ test "e7 scene module draws an indexed cube and captures it" {
     std.debug.print("e7 scene center pixel {x}\n", .{result});
     try std.testing.expect(result != 0 and result != 0xFF000000);
 }
+
+test "e7 text module loads a font, measures, and rasterizes text" {
+    const text_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/text.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(text_source);
+    const selftest =
+        \\text_selftest <- () -> i64:
+        \\    font := text_font_load("/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", 24)
+        \\    if font == 0:
+        \\        ret 0
+        \\    packed := text_measure(font, "Hello")
+        \\    width := packed / 4294967296
+        \\    image := text_render(font, "Hello", 255, 255, 255)
+        \\    image_width := e7_image_width(image)
+        \\    e7_image_free(image)
+        \\    text_font_free(font)
+        \\    if width <= 0:
+        \\        ret -2
+        \\    if image == 0:
+        \\        ret -3
+        \\    if image_width <= 0:
+        \\        ret -4
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ text_source, selftest });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("text parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("text diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-text");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "text_selftest");
+    const result = selftest_fn();
+    std.debug.print("e7 text selftest result {d}\n", .{result});
+    if (result == 0) {
+        std.debug.print("skipping e7 text test: font unavailable\n", .{});
+        return;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}

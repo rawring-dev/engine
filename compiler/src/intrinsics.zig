@@ -341,6 +341,7 @@ pub const functions = [_]Function{
     .{ .name = "e7_image_height", .params = &.{.u64_}, .result = .i64_ },
     .{ .name = "e7_image_pixels", .params = &.{.u64_}, .result = .str_ },
     .{ .name = "e7_image_free", .params = &.{.u64_}, .result = .i32_ },
+    .{ .name = "e7_image_from_argb", .params = &.{ .u64_, .i64_, .i64_, .i64_ }, .result = .u64_ },
 
     // Generic text/parsing helpers used by e7 libraries (engine/obj.e7).
     .{ .name = "e7_str_lines", .params = &.{.str_}, .result = .str_vec_ },
@@ -382,6 +383,7 @@ pub const functions = [_]Function{
     .{ .name = "e7_ffi_call5", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call6", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call7", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    .{ .name = "e7_ffi_call_f32_2", .params = &.{ .any_, .any_, .float_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call8", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call9", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call10", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },

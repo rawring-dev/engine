@@ -59,6 +59,14 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
     // `RuntimeFunction`).  Declarations mirror the real C ABI: i64 handles and
     // values, i32 command/registration statuses, void reset.
     for (std.enums.values(bytecode.RuntimeFunction)) |function| {
+        var defined = false;
+        for (module.functions) |user_function| {
+            if (std.mem.eql(u8, user_function.name, function.symbol())) {
+                defined = true;
+                break;
+            }
+        }
+        if (defined) continue;
         try translator.out.appendSlice(allocator, "declare ");
         try translator.out.appendSlice(allocator, switch (function.returnKind()) {
             .i64_ => "i64",
