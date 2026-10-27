@@ -4,6 +4,9 @@ Goal: the `runtime` package must not link or implement SDL3/Vulkan. The e7
 engine owns the platform intrinsics and reaches SDL/Vulkan through the generic
 C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 
+Status: the migration is complete.  The stage notes below are the historical
+journal; see [Migration complete](#migration-complete) for the final state.
+
 ## Completed foundation
 
 - `runtime/src/ffi/dl.zig`: `dlopen`/`LoadLibrary`, symbol lookup, call
@@ -409,3 +412,27 @@ Unfinished migration items:
 - borrowed-window rendering
 - image module port
 - remove runtime SDL/Vulkan/png/turbojpeg links and remaining Zig wrappers
+
+## Migration complete
+
+Final state (supersedes the round-79 notes above):
+
+- The runtime links and implements neither SDL3 nor Vulkan: there is no
+  `runtime/src/engine.zig`, `src/scene_demo.zig`, or
+  `src/ffi/{sdl,window,vulkan,renderer}.zig`, and no vendored Khronos headers.
+  `runtime/build.zig` has no SDL/Vulkan link directives or include paths.
+- Only the SDL/Vulkan-free host helpers remain in `runtime/src/host_engine.zig`
+  (`e7_engine_read_shader`, `e7_engine_time_now_ms`); `runtime/src/host.zig`
+  keeps the frame limiter and capture bookkeeping.
+- Windows, input, and the Vulkan scene pipeline are `engine/platform/*.e7`
+  modules bound dynamically through the generic C FFI.
+- The dead runtime shader-asset module and its `runtime/shaders/` SPIR-V copies
+  (`assets.zig`, `build.sh`, `run-scene` build graph) are gone.  Shader assets
+  live in `engine/shaders/` and `engine/platform/shaders/` and are loaded from
+  disk through `e7_engine_read_shader`; `zig build shaders` rebuilds them.
+- Dead compiler/bytecode legacy engine window/input/scene runtime-call variants
+  were removed from `compiler/src/bytecode.zig`; only `engine_time_now_ms`,
+  `engine_read_shader`, and the `host_*` frame/capture entries remain.
+- The runtime still links libpng/libjpeg-turbo for image decoding and the
+  net/FFI backends (curl, OpenSSL, ngtcp2, libdatachannel); these are unrelated
+  to SDL/Vulkan.

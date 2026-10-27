@@ -3972,16 +3972,6 @@ const Checker = struct {
                 .length = null,
                 .columns = null,
             } }),
-            .f32_vec_ => self.store.make(.{ .array = .{
-                .element = try self.store.floatVar(),
-                .length = null,
-                .columns = null,
-            } }),
-            .i32_vec_ => self.store.make(.{ .array = .{
-                .element = try self.store.make(.{ .int = .i32 }),
-                .length = null,
-                .columns = null,
-            } }),
             // Only `e7_vec_push` uses `.any_`; it is resolved from its first
             // argument before reaching the generic result mapping.
             .any_ => self.store.make(.unknown),
@@ -3989,7 +3979,7 @@ const Checker = struct {
         };
     }
 
-    /// Compiler-known host intrinsics (`e7_engine_*`).  They are only resolved
+    /// Compiler-known external intrinsics (`e7_*`).  They are only resolved
     /// when no user binding/function shadows the name.
     fn checkIntrinsicCall(self: *Checker, call: ast.Call) Error!?*types.Type {
         if (call.callee.* != .path or call.callee.path.segments.len != 1) return null;

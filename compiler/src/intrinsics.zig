@@ -3,8 +3,8 @@
 //! There is no extern-declaration syntax in the surface language.  A call such
 //! as `e7_engine_time_now_ms()` resolves here, is type-checked against this
 //! table, and lowers to a bytecode `runtime_call` to the matching `e7_*`
-//! symbol.  Units that cross the ABI boundary are integer scaled (see
-//! per-function comments) so e7 does not need float arithmetic.
+//! symbol.  Values that cross the ABI boundary are integer-encoded where
+//! needed so e7 does not need float arithmetic.
 //!
 //! The only remaining engine host helpers are SDL/Vulkan-free; they live in
 //! `runtime/src/host_engine.zig` and are registered with the JIT through
@@ -27,10 +27,6 @@ pub const ValueType = enum {
     str_,
     /// Runtime vector of string values (`[str]` aggregate handle).
     str_vec_,
-    /// e7 `[f32]` vector (aggregate handle); mesh upload vertex data.
-    f32_vec_,
-    /// e7 `[i32]` vector (aggregate handle); mesh upload indices.
-    i32_vec_,
     /// Placeholder for generic intrinsics whose type is derived from another
     /// argument (`e7_vec_push`).
     any_,
@@ -41,28 +37,7 @@ pub const Function = struct {
     name: []const u8,
     params: []const ValueType,
     result: ValueType,
-    /// Human-readable units for the integer-scaled ABI.
-    units: []const u8 = "",
 };
-
-/// `title` is an e7 string value.
-pub const window_create_units = "width/height in pixels";
-/// Scene camera: x/y/z are world units x1000; yaw/pitch are degrees x1000.
-pub const scene_camera_units = "eye xyz in milli-units, yaw/pitch in milli-degrees";
-/// Scene draw: delta in milliseconds; cube angle in milli-radians; light xyz
-/// in milli-units.
-pub const scene_draw_units = "delta_ms, cube angle milli-radians, light xyz milli-units";
-/// Per-object box draw: position/scale in milli-units, Y rotation in
-/// milli-radians.
-pub const scene_box_units = "position/scale milli-units, angle milli-radians";
-/// Per-object shape draw: kind (0 box, 1 sphere, 2 capsule, 3 plane),
-/// position/scale milli-units, Y rotation milli-radians, RGB tint milli.
-pub const scene_shape_units = "kind, position/scale milli-units, angle milli-radians, rgb tint milli";
-/// Material/textured draw: as scene_shape_units plus a texture id.
-pub const scene_textured_units = "kind, position/scale milli-units, angle milli-radians, rgb tint milli, texture id";
-/// Custom mesh draw: mesh id, position/scale milli-units, angle milli-radians,
-/// rgb tint milli, texture id.
-pub const scene_custom_units = "mesh id, position/scale milli-units, angle milli-radians, rgb tint milli, texture id";
 
 pub const functions = [_]Function{
     .{

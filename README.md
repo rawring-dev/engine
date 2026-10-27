@@ -447,7 +447,7 @@ sample UI/ECS surface:
   parameters.
 - [`engine/shaders/`](engine/shaders) — e7s shader sources and checked-in
   SPIR-V for the cube/point-light pipeline; `shaders/build.sh` runs the e7s
-  transpiler and `slangc` to regenerate the runtime assets.
+  transpiler and `slangc` to regenerate the checked-in SPIR-V.
 - [`engine/platform/shaders/`](engine/platform/shaders) — e7s triangle/mesh
   shaders for the JIT engine's Vulkan platform layer, built by the same
   `zig build shaders` step from `engine/platform/shaders/*.e7`.
@@ -499,7 +499,7 @@ text fields with mouse focus/typing/Backspace/Enter. Text rasterizes through
 SDL3_ttf into image handles, uploads via `Gpu.upload_texture`, and is cached in
 `UIState`; screen-space drawing uses `Gpu.draw_ui_quad` over the 3D scene.
 
-Engine intrinsics are wrapped in e7 inherent methods (`window.pump()`,
+Engine platform calls are wrapped in e7 inherent methods (`window.pump()`,
 `gpu.begin_frame()`, `gpu.draw_renderable(...)`, `image.upload_texture(gpu)`,
 `mesh.upload(gpu)`); raw `e7_engine_*`/`e7_image_*` calls live only inside those
 wrapper implementations.
