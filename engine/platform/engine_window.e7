@@ -11,6 +11,15 @@ e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
         ret 0
     flags := 268435464
     created := window_create(title, width, height, flags)
+    if created != 0:
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
+        window_pump(created)
     ret created
 
 e7_engine_window_pump <- (handle: u64) -> i64:

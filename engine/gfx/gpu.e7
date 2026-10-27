@@ -34,6 +34,10 @@ impl Gpu:
 
     pub create_scene <- (gpu: &mut Gpu, window: &Window, vert: str, frag: str) -> nil:
         gpu.scene = e7_engine_scene_create(window.handle, vert, frag)
+        window_pump(window.handle)
+        window_pump(window.handle)
+        window_pump(window.handle)
+        window_pump(window.handle)
         gpu.width = window.width
         gpu.height = window.height
         ret

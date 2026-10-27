@@ -268,9 +268,16 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `e7_engine_read_shader` remain host intrinsics. Obsolete semantic/pipeline
   intrinsic tests were updated/removed. Suite: **130 pass, 10 skipped**;
   compiler **206**. The engine frame is still empty.
-- Remaining: fix the engine-project empty frame, restore skipped tests, draw
-  text textures, borrowed-window rendering, image port, and removing remaining
-  runtime SDL/Vulkan wrappers.
+- **9l (done):** found that a window created in a nested e7 helper must be
+  pumped before Vulkan scene creation; without it the scene renders empty.
+  `e7_engine_window_create` now pumps the new window, `gpu.create_scene` pumps
+  around scene creation, and regression tests cover helper-returned window
+  validity, helper-local scene rendering, and helper-window scene rendering
+  after pumping. Suite: **133 pass, 10 skipped**; compiler 206. The full engine
+  frame is still empty for a further reason.
+- Remaining: fix the full engine frame (survives window pumping), restore
+  skipped tests, draw text textures, borrowed-window rendering, image port, and
+  removing remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 

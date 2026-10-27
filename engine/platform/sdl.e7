@@ -148,3 +148,8 @@ set_relative_mouse <- (state: u64, enabled: i64) -> nil:
 
 mouse_captured <- (state: u64) -> i64:
     ret e7_load_u32(state + 60)
+
+window_flags <- (state: u64) -> i64:
+    win := e7_load_u64(state)
+    flags := bind_sdl("SDL_GetWindowFlags")
+    ret e7_ffi_call1(flags, win) as i64
