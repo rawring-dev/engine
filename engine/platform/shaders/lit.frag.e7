@@ -1,0 +1,60 @@
+# Lit fragment stage: point-light/ambient formula over the per-frame 320-byte
+# Scene block (set 0, binding 0) and the per-object combined albedo sampler
+# (set 1, binding 1).
+#
+# This reproduces the original GLSL-derived `lit.frag.spv` exactly:
+#   n           = (0, 0, 1)
+#   to_light    = light_pos.xyz - world_pos
+#   diffuse     = max(dot(n, normalize(to_light)), 0)
+#   attenuation = 1 / (1 + 0.15*dist + 0.02*dist*dist)
+#   light       = light_color.xyz * (light_color.w * attenuation)
+#   ambient     = params.xyz * params.w
+#   albedo      = sample(tex, uv).rgb * vcolor
+#   lit         = albedo * tint.xyz * (ambient + light * diffuse)
+#   out         = (lit, 1)
+#
+# The `Scene` block layout matches `lit.vert.e7` so both stages of the lit
+# pipeline read the same 320-byte descriptor.  `Sampler2D<[f32; 4]>` is the
+# e7s combined image-sampler resource (one
+# `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor at set 1, binding 1).
+
+Scene <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+    camera_pos: [f32; 4]
+    light_pos: [f32; 4]
+    light_color: [f32; 4]
+    params: [f32; 4]
+    tint: [f32; 4]
+
+@binding(0, 0)
+scene: Scene
+
+@binding(1, 1)
+albedo: Sampler2D<[f32; 4]>
+
+In <- struct
+    @location(0) world_pos: [f32; 3]
+    @location(1) vcolor: [f32; 3]
+    @location(2) uv: [f32; 2]
+
+@fragment
+main <- (input: In) -> [f32; 4]:
+    n := [0.0, 0.0, 1.0] as [f32; 3]
+    to_light := scene.light_pos.xyz - input.world_pos
+    distance_to_light := length(to_light)
+    diffuse := max(dot(n, normalize(to_light)), 0.0)
+
+    # Inverse-square-ish falloff with a linear term, as in the original shader.
+    attenuation := 1.0 / (1.0 + 0.15 * distance_to_light + 0.02 * distance_to_light * distance_to_light)
+    # light_color.w carries the light intensity.
+    light := scene.light_color.xyz * (scene.light_color.w * attenuation)
+    # params.rgb * params.w is the ambient colour.
+    ambient := scene.params.xyz * scene.params.w
+
+    sample := albedo.Sample(input.uv)
+    sampled_rgb := [sample.x, sample.y, sample.z] as [f32; 3]
+    base := sampled_rgb * input.vcolor
+    lit := base * scene.tint.xyz * (ambient + light * diffuse)
+    ret [lit.x, lit.y, lit.z, 1.0]

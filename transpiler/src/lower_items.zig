@@ -553,7 +553,7 @@ pub fn emitResource(s: *Session, module: *const ast.Module, item: *const ast.Ite
 
     if (!is_explicit_resource and !is_user_struct and !wrap_constant) {
         return s.fail(
-            "resource `{s}` must name a user struct or a Slang resource type (Texture2D<f32>, SamplerState, StructuredBuffer<T>, ...)",
+            "resource `{s}` must name a user struct or a Slang resource type (Texture2D<f32>, Sampler2D<f32>, SamplerState, StructuredBuffer<T>, ...)",
             .{decl.name},
         );
     }

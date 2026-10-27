@@ -1,0 +1,33 @@
+# Combined image samplers (e7s).
+#
+# `Sampler2D<[f32; 4]>` is e7s's *combined* image-sampler resource type.  It
+# lowers to Slang's legacy combined texture-sampler (here `Sampler2D<float4>`),
+# which slangc emits as a single `OpTypeSampledImage` variable and therefore
+# one `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor.  Its
+# `.Sample(coords)` overload takes no separate sampler argument.
+#
+# This is different from `Texture2D<T>` + `SamplerState`, which stay two
+# separate resources (`VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE` and
+# `VK_DESCRIPTOR_TYPE_SAMPLER`) used as `texture.Sample(sampler, coords)`.
+#
+# The `Sampler*` family follows the texture shape: Sampler1D, Sampler1DArray,
+# Sampler2D, Sampler2DArray, Sampler3D, SamplerCube and SamplerCubeArray.
+# Omitting the type argument uses Slang's default `float4` element type.
+
+@binding(0, 0)
+albedo: Sampler2D<[f32; 4]>
+
+@binding(2, 1)
+environment: SamplerCube
+
+FragInput <- struct
+    @builtin(position) frag_coord: [f32; 4]
+    @location(0) uv: [f32; 2]
+    @location(1) direction: [f32; 3]
+
+@fragment
+fs_main <- (input: FragInput) -> [f32; 4]:
+    base := albedo.Sample(input.uv)
+    reflection := environment.Sample(input.direction)
+    combined := base * reflection
+    ret [combined.x, combined.y, combined.z, 1.0]

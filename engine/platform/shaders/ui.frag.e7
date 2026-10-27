@@ -1,0 +1,22 @@
+# Screen-space UI fragment stage: sample the combined image-sampler bound at
+# set 0, binding 0 and modulate it by the per-vertex RGBA colour.  The result
+# is written to location 0 for the UI pipeline's SrcAlpha/OneMinusSrcAlpha
+# blending.
+#
+# `Sampler2D<[f32; 4]>` is e7s's combined image-sampler resource: one
+# `OpTypeSampledImage` variable / `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`
+# descriptor whose `.Sample(uv)` takes no separate sampler argument.  This
+# matches `vulkan_texture_descriptor_static` in `engine/platform/vulkan.e7`.
+
+@binding(0, 0)
+tex: Sampler2D<[f32; 4]>
+
+In <- struct
+    @location(0) uv: [f32; 2]
+    @location(1) color: [f32; 4]
+
+@fragment
+main <- (input: In) -> [f32; 4]:
+    sample := tex.Sample(input.uv)
+    tinted := sample * input.color
+    ret [tinted.x, tinted.y, tinted.z, tinted.w]

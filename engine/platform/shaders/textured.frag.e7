@@ -1,0 +1,21 @@
+# Textured fullscreen-triangle fragment stage: sample the combined
+# image-sampler bound at set 0, binding 0 and write it straight to location 0.
+#
+# `Sampler2D<[f32; 4]>` is e7s's combined image-sampler resource: it lowers to
+# Slang's legacy combined texture-sampler type `Sampler2D<float4>`, which is a
+# single `OpTypeSampledImage` variable and therefore one
+# `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor.  Its `.Sample(uv)`
+# overload takes no separate sampler argument.
+#
+# This matches the descriptor layout created by
+# `vulkan_texture_descriptor_one` in `engine/platform/vulkan.e7`.
+
+@binding(0, 0)
+tex: Sampler2D<[f32; 4]>
+
+In <- struct
+    @location(0) uv: [f32; 2]
+
+@fragment
+main <- (input: In) -> [f32; 4]:
+    ret tex.Sample(input.uv)

@@ -447,6 +447,47 @@ Attribute placement is before the declaration: `[[vk::binding(0, 0)]] T name;`.
 lowering is exactly what `uniform` would mean (a plain `uniform Scene scene;`
 with `[[vk::binding]]` also parses, but is not needed).
 
+### 6.1.1 Combined image samplers (PASS; one descriptor, verified)
+
+Slang's legacy `Sampler1D`/`Sampler2D`/`Sampler3D`/... types are **combined**
+texture-samplers. Declaring one resource produces a single
+`OpTypeSampledImage` variable, which is exactly one Vulkan
+`VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` descriptor:
+
+```slang
+[[vk::binding(0, 0)]] Sampler2D<float4> tex;   // one combined descriptor
+[shader("fragment")]
+float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
+    return tex.Sample(uv);                      // no separate sampler argument
+}
+```
+
+Verified with slangc 2026.20 (`-target spirv -profile spirv_1_3`):
+
+* SPIR-V declares `OpTypeImage` + `OpTypeSampledImage` plus one
+  `OpVariable … UniformConstant` carrying `Binding 0` / `DescriptorSet 0`;
+  there is no separate `OpTypeSampler` variable;
+* `Sampler2D` without a type argument defaults to `float4`
+  (`Sampler2D<float4>`);
+* `Sampler1D`, `Sampler1DArray`, `Sampler2D`, `Sampler2DArray`, `Sampler3D`,
+  `SamplerCube` and `SamplerCubeArray` all compile with the matching
+  `Sample(coords)` arity and produce a combined descriptor;
+* `spirv-val` accepts the output (also inside the engine's textured/UI/lit
+  fragment stages once converted to e7s).
+
+Slang's `[[vk::combinedImageSampler]]` attribute — the alternative spelling
+for pairing a `Texture2D` with a `SamplerState` on one binding — is **not**
+recognised by this toolchain:
+
+```
+warning[E31000]: unknown attribute
+ | [[vk::combinedImageSampler]]
+ |   ^^^^^^^^^^^^^^^^^^^^ unknown attribute 'vk_combinedImageSampler'
+```
+
+So the combined `Sampler*` types are the supported construct; e7s passes them
+through as resource types and emits no extra attribute.
+
 ### 6.2 Do **not** emit a bare struct global even though it parses
 
 `[[vk::binding(0,0)]] Scene scene;` (without `ConstantBuffer<>`) compiles and
