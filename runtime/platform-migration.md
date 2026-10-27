@@ -381,3 +381,31 @@ Not yet done:
 - image module port
 - removal of the remaining runtime SDL/Vulkan/png/turbojpeg links and the
   runtime `engine/window/renderer/vulkan/image` wrapper modules
+
+## Final verified state (round 79)
+
+Verified working:
+
+- generic C FFI, e7 SDL window/input, e7 Vulkan renderer, text/font, host
+  frame limit/capture
+- engine runs on e7 window/scene modules with inline main-thread execution
+- runtime engine window/input/scene JIT symbols removed
+- isolated engine call shapes all render: cross-module draw, method receiver,
+  inline async task, split begin/draw, 960x540 engine window wrapper
+- suite: 137 runtime pass / 10 migration skips / 0 fail, 206 compiler pass
+
+Remaining blocker:
+
+- the full engine project captures an all-zero frame, including clear color.
+  Window/scene/depth/pipeline/render-pass/framebuffer handles are non-zero,
+  acquire/submit/wait succeed, and the same calls render correctly outside the
+  project. Readback pixels are zero inside `scene_draw`, so the project-only
+  lifecycle changes render-pass execution or the image being copied.
+
+Unfinished migration items:
+
+- restore the ten skipped engine-subset/legacy tests
+- draw text-raster textures through the UI quad
+- borrowed-window rendering
+- image module port
+- remove runtime SDL/Vulkan/png/turbojpeg links and remaining Zig wrappers
