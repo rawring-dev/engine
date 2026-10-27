@@ -1020,7 +1020,7 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
 
     const selftest =
         \\window_selftest <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 sdl platform", 64, 48, 8)
         \\    if win == 0:
@@ -1097,7 +1097,7 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
 
     const selftest =
         \\surface_selftest <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 vulkan", 64, 48, 268435464)
         \\    if win == 0:
@@ -1188,7 +1188,7 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
 
     const selftest =
         \\device_selftest <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 vulkan device", 64, 48, 268435464)
         \\    if win == 0:
@@ -1498,7 +1498,7 @@ test "e7 input module maps actions and mouse state through SDL" {
 
     const selftest =
         \\input_selftest <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 input", 64, 48, 8)
         \\    if win == 0:
@@ -1664,7 +1664,7 @@ test "e7 text image uploads through the UI texture path" {
     defer std.testing.allocator.free(text_source);
     const probe =
         \\text_ui_probe <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 text ui", 64, 48, 268435464)
         \\    if win == 0:
@@ -1745,7 +1745,7 @@ test "e7 scene module draws an indexed cube and captures it" {
 
     const selftest =
         \\scene_selftest <- () -> i64:
-        \\    if video_init("dummy") != 0:
+        \\    if video_init("dummy") == 0:
         \\        ret -1
         \\    win := window_create("e7 scene", 64, 48, 268435464)
         \\    if win == 0:

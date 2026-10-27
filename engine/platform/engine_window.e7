@@ -5,7 +5,10 @@
 e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
     initialized := video_init("dummy")
     if initialized == 0:
-        initialized = video_init("offscreen")
+        video_quit()
+        initialized = video_init("dummy")
+    if initialized == 0:
+        ret 0
     flags := 268435464
     created := window_create(title, width, height, flags)
     ret created

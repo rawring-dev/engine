@@ -243,9 +243,18 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   empty frame in its direct JIT test too, so the issue is inside the engine_scene
   module path rather than the async engine-task context. Temporary probes were
   reverted; suite remains green (128 pass, 10 skipped; compiler 207).
-- Remaining: fix engine_scene empty capture, restore skipped tests, draw text
-  textures, borrowed-window rendering, image port, and removing remaining
-  runtime SDL/Vulkan wrappers.
+- **9h (done):** fixed the e7 SDL initialization contract: `SDL_InitSubSystem`
+  returns true on success, but the e7 wrapper treated true as failure and
+  reported success as failure (or vice versa), so several probes/window paths
+  were effectively skipped. `video_init` now initializes with `SDL_Init`
+  fallback and returns non-zero on success; test probes were aligned.
+  `engine-run` also initializes SDL video on the host main thread before the e7
+  task runs. e7 platform tests now execute for real; suite: **128 pass,
+  10 skipped**; compiler 207. Engine project still captures an empty frame,
+  which is now reproducible with genuinely initialized SDL.
+- Remaining: fix engine_scene empty capture with working SDL init, restore
+  skipped tests, draw text textures, borrowed-window rendering, image port, and
+  removing remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
 

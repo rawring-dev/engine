@@ -30,6 +30,9 @@ video_init <- (driver: str) -> i64:
     init := bind_sdl("SDL_InitSubSystem")
     rc := e7_ffi_call1(init, 32)
     if rc == 0:
+        init_all := bind_sdl("SDL_Init")
+        rc = e7_ffi_call1(init_all, 32)
+    if rc != 0:
         ret 1
     ret 0
 
@@ -123,6 +126,9 @@ video_start <- () -> i64:
     init := bind_sdl("SDL_InitSubSystem")
     rc := e7_ffi_call1(init, 32)
     if rc == 0:
+        init_all := bind_sdl("SDL_Init")
+        rc = e7_ffi_call1(init_all, 32)
+    if rc != 0:
         ret 1
     ret 0
 

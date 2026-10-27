@@ -16,6 +16,7 @@ const orc = @import("orc.zig");
 const task = @import("task.zig");
 const ecs = @import("ecs.zig");
 const host = @import("host.zig");
+const sdl = @import("ffi/sdl.zig");
 
 const default_project = "engine/main.e7";
 
@@ -72,6 +73,15 @@ pub fn main(init: std.process.Init) !void {
     host.setHeadless(options.headless);
     host.setMaxFrames(options.frames);
     host.setCaptureEnabled(options.capture_path != null);
+    // SDL video must be initialized on the process main thread; the e7 engine
+    // runs its systems in a runtime task, so initialize here first.
+    if (options.headless) {
+        _ = sdl.c.SDL_SetHint("SDL_VIDEODRIVER", "dummy");
+    }
+    if (!sdl.c.SDL_Init(sdl.c.SDL_INIT_VIDEO)) {
+        std.debug.print("run-engine: SDL video initialization failed: {s}\n", .{std.mem.span(sdl.c.SDL_GetError())});
+        return error.EngineUnavailable;
+    }
 
     var compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
         if (err == error.SemanticFailed) {
