@@ -20,7 +20,6 @@ const task = @import("task.zig");
 const lease = @import("lease.zig");
 const aggregate = @import("aggregate.zig");
 const ecs = @import("ecs.zig");
-const engine = @import("engine.zig");
 const float = @import("float.zig");
 const json = @import("json.zig");
 const image = @import("image.zig");
@@ -136,8 +135,6 @@ pub const Jit = struct {
         try self.defineSymbols(&aggregate_symbols);
         const ecs_symbols = ecs.symbols();
         try self.defineSymbols(&ecs_symbols);
-        const engine_symbols = engine.symbols();
-        try self.defineSymbols(&engine_symbols);
         const float_symbols = float.symbols();
         try self.defineSymbols(&float_symbols);
         const json_symbols = json.symbols();
@@ -148,6 +145,11 @@ pub const Jit = struct {
         try self.defineSymbols(&ffi_symbols);
         const host_symbols = host.symbols();
         try self.defineSymbols(&host_symbols);
+        const shader_symbols = [_]@import("ffi/abi.zig").Symbol{
+            .{ .name = "e7_engine_read_shader", .address = @intFromPtr(&@import("engine.zig").e7_engine_read_shader) },
+            .{ .name = "e7_engine_time_now_ms", .address = @intFromPtr(&@import("engine.zig").e7_engine_time_now_ms) },
+        };
+        try self.defineSymbols(&shader_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidBytecode => return error.InvalidBytecode,

@@ -15,7 +15,7 @@ const compiler = @import("compiler");
 const orc = @import("orc.zig");
 const task = @import("task.zig");
 const ecs = @import("ecs.zig");
-const engine = @import("engine.zig");
+const host = @import("host.zig");
 
 const default_project = "engine/main.e7";
 
@@ -68,11 +68,10 @@ pub fn main(init: std.process.Init) !void {
     // both layouts unless `--project` was given explicitly.
     const project_path = try resolveProjectPath(init.io, options);
 
-    engine.reset();
-    engine.setHeadless(options.headless);
-    engine.setMaxFrames(options.frames);
-    engine.setCaptureEnabled(options.capture_path != null);
-    defer engine.shutdown();
+    host.reset();
+    host.setHeadless(options.headless);
+    host.setMaxFrames(options.frames);
+    host.setCaptureEnabled(options.capture_path != null);
 
     var compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
         if (err == error.SemanticFailed) {
@@ -145,36 +144,27 @@ pub fn main(init: std.process.Init) !void {
     if (handle == 0) return error.MainTaskFailed;
     _ = task.e7_task_await(handle);
 
-    if (options.verbose) {
-        const stats = engine.renderStats();
-        std.debug.print("run-engine: scene_draws={d} scene_boxes={d} textures={d} meshes={d} failed={d} frames={d}\n", .{ stats.scene_draws, stats.scene_boxes, stats.scene_textures, stats.scene_meshes, stats.scene_failed_draws, engine.frames() });
-    }
-    if (engine.lastFailure()) |message| {
-        std.debug.print("run-engine: engine stopped: {s}\n", .{message});
-        if (options.capture_path != null) return error.EngineUnavailable;
-        return;
-    }
 
     if (options.capture_path) |path| {
-        var capture = engine.takeCapture() orelse {
+        var capture = host.takeCapture() orelse {
             std.debug.print("run-engine: no frame captured (window/scene creation failed?)\n", .{});
             return error.NoCapture;
         };
         defer capture.deinit();
-        try engine.writePpm(init.io, path, capture);
+        try host.writePpm(init.io, path, capture);
         std.debug.print(
             "run-engine: wrote {s} ({d}x{d}, {d} frames{s})\n",
             .{
                 path,
                 capture.width,
                 capture.height,
-                engine.frames(),
-                if (engine.captureHasContent(capture)) "" else ", empty frame",
+                host.frames(),
+                if (host.captureHasContent(capture)) "" else ", empty frame",
             },
         );
-        if (!engine.captureHasContent(capture)) return error.CaptureEmpty;
+        if (!host.captureHasContent(capture)) return error.CaptureEmpty;
     } else if (options.verbose) {
-        std.debug.print("run-engine: main completed after {d} frames\n", .{engine.frames()});
+        std.debug.print("run-engine: main completed after {d} frames\n", .{host.frames()});
     }
 }
 

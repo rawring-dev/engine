@@ -1,7 +1,10 @@
 use core::events::*;
+use core::window::*;
+use platform::engine_window::*;
 
 @resource
 pub Input <- struct
+    window: u64
     move_forward: bool
     move_backward: bool
     move_left: bool
@@ -28,43 +31,44 @@ pub Input <- struct
 # detection, clamps) stays in `gather_input`.
 impl Input:
     pub key_down <- (input: &Input, code: i64) -> bool:
-        ret e7_engine_key_down(code) != 0
+        ret e7_engine_key_down(input.window, code) != 0
 
     pub mouse_dx <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_dx())
+        ret e7_f32_from_i64(e7_engine_mouse_dx(input.window))
 
     pub mouse_dy <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_dy())
+        ret e7_f32_from_i64(e7_engine_mouse_dy(input.window))
 
     pub mouse_x <- (input: &Input) -> i64:
-        ret e7_engine_mouse_x()
+        ret e7_engine_mouse_x(input.window)
 
     pub mouse_y <- (input: &Input) -> i64:
-        ret e7_engine_mouse_y()
+        ret e7_engine_mouse_y(input.window)
 
     pub cursor_x <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_x())
+        ret e7_f32_from_i64(e7_engine_mouse_x(input.window))
 
     pub cursor_y <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_y())
+        ret e7_f32_from_i64(e7_engine_mouse_y(input.window))
 
     pub mouse_down <- (input: &Input, button: i64) -> bool:
-        ret e7_engine_mouse_down(button) != 0
+        ret e7_engine_mouse_down(input.window, button) != 0
 
     pub text_input <- (input: &Input) -> str:
-        ret e7_engine_text_input()
+        ret e7_engine_text_input(input.window)
 
     pub capture_mouse <- (input: &Input) -> nil:
-        e7_engine_capture_mouse(1)
+        e7_engine_capture_mouse(input.window, 1)
         ret
 
     pub mouse_captured <- (input: &Input) -> bool:
-        ret e7_engine_mouse_captured() != 0
+        ret e7_engine_mouse_captured(input.window) != 0
 
 
 pub InputPlugin <- plugin
     input_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(Input {
+            window: 0,
             move_forward: false,
             move_backward: false,
             move_left: false,
@@ -87,7 +91,8 @@ pub InputPlugin <- plugin
         })
 
 @trigger(FrameInit)
-pub gather_input <- sys (input: res &mut Input):
+pub gather_input <- sys (input: res &mut Input, window: res &Window):
+    input.window = window.handle
     # Logical key codes: 0 W, 1 S, 2 A, 3 D, 4 E (up/interact), 5 Q (down),
     # 6 Shift, 7-10 arrow look, 11 Space (jump).  Jump/interact are
     # edge-triggered so holding a key does not repeat the action every frame.

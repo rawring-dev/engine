@@ -1192,8 +1192,14 @@ test "compiles the engine main/ui project from disk" {
     }
     if (root_path.len == 0) return error.SkipZigTest;
 
-    var result = try compileProject(std.testing.allocator, root_path, .{});
+    var result = compileProject(std.testing.allocator, root_path, .{}) catch |err| {
+        std.debug.print("engine project compile error: {s}\n", .{@errorName(err)});
+        return err;
+    };
     defer result.deinit();
+    if (!result.analysis.ok()) {
+        for (result.analysis.diagnostics) |d| std.debug.print("engine project diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+    }
     try std.testing.expect(result.analysis.ok());
     try bytecode.verify(std.testing.allocator, &result.bytecode);
 
@@ -1260,8 +1266,14 @@ test "compileProject loads sibling modules and prefixes their items" {
     const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.e7", std.testing.allocator);
     defer std.testing.allocator.free(root_path);
 
-    var result = try compileProject(std.testing.allocator, root_path, .{});
+    var result = compileProject(std.testing.allocator, root_path, .{}) catch |err| {
+        std.debug.print("engine project compile error: {s}\n", .{@errorName(err)});
+        return err;
+    };
     defer result.deinit();
+    if (!result.analysis.ok()) {
+        for (result.analysis.diagnostics) |d| std.debug.print("engine project diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+    }
     try std.testing.expect(result.analysis.ok());
     try bytecode.verify(std.testing.allocator, &result.bytecode);
 
@@ -1296,8 +1308,14 @@ test "compileProject loads nested module directories relative to their file" {
     });
     const root_path = try tmp.dir.realPathFileAlloc(std.testing.io, "main.e7", std.testing.allocator);
     defer std.testing.allocator.free(root_path);
-    var result = try compileProject(std.testing.allocator, root_path, .{});
+    var result = compileProject(std.testing.allocator, root_path, .{}) catch |err| {
+        std.debug.print("engine project compile error: {s}\n", .{@errorName(err)});
+        return err;
+    };
     defer result.deinit();
+    if (!result.analysis.ok()) {
+        for (result.analysis.diagnostics) |d| std.debug.print("engine project diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+    }
     try std.testing.expect(result.analysis.ok());
     try std.testing.expect(result.functionNamed("nested::child::value") != null);
     try bytecode.verify(std.testing.allocator, &result.bytecode);
@@ -1555,9 +1573,20 @@ test "compiles the engine OBJ and asset libraries from sources" {
     const window_source = readRepoText("engine/core/window.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(window_source);
     const events_source = readRepoText("engine/core/events.e7") orelse return error.SkipZigTest;
+    const sdl_source = readRepoText("engine/platform/sdl.e7") orelse return error.SkipZigTest;
+    const vulkan_source = readRepoText("engine/platform/vulkan.e7") orelse return error.SkipZigTest;
+    const scene_source = readRepoText("engine/platform/scene.e7") orelse return error.SkipZigTest;
+    const engine_window_source = readRepoText("engine/platform/engine_window.e7") orelse return error.SkipZigTest;
+    const engine_scene_source = readRepoText("engine/platform/engine_scene.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(sdl_source);
+    defer std.testing.allocator.free(vulkan_source);
+    defer std.testing.allocator.free(scene_source);
+    defer std.testing.allocator.free(engine_window_source);
+    defer std.testing.allocator.free(engine_scene_source);
     defer std.testing.allocator.free(events_source);
 
     const root_source =
+        \\mod platform
         \\mod core
         \\mod gfx
         \\mod assets
@@ -1567,7 +1596,7 @@ test "compiles the engine OBJ and asset libraries from sources" {
         \\    disown commands
         \\    0
     ;
-    var result = try compileProjectFromSources(
+    var result = compileProjectFromSources(
         std.testing.allocator,
         root_source,
         &.{
@@ -1579,9 +1608,18 @@ test "compiles the engine OBJ and asset libraries from sources" {
             .{ .name = "gpu", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
             .{ .name = "assets", .source = assets_source },
+            .{ .name = "platform", .source = "mod sdl\nmod vulkan\nmod scene\nmod engine_window\nmod engine_scene\n" },
+            .{ .name = "sdl", .source = sdl_source },
+            .{ .name = "vulkan", .source = vulkan_source },
+            .{ .name = "scene", .source = scene_source },
+            .{ .name = "engine_window", .source = engine_window_source },
+            .{ .name = "engine_scene", .source = engine_scene_source },
         },
         .{},
-    );
+    ) catch |err| {
+        std.debug.print("assets project compile error: {s}\n", .{@errorName(err)});
+        return err;
+    };
     defer result.deinit();
     if (!result.analysis.ok()) {
         for (result.analysis.diagnostics) |diagnostic| {

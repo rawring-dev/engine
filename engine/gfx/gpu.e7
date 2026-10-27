@@ -1,6 +1,7 @@
 # GPU resources, materials, and shader/pipeline descriptions.
 
 use core::window::*;
+use platform::engine_scene::*;
 
 # Per-object material: a GPU texture id (0 = built-in white texture) and an
 # RGB tint.  The scene renderer samples `texture` with the mesh UVs and

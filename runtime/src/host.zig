@@ -128,6 +128,36 @@ pub export fn e7_host_capture(pixels: i64, width: i64, height: i64) callconv(.c)
     return storeCapture(pixels, width, height);
 }
 
+pub fn writePpm(io: std.Io, path: []const u8, capture: Capture) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var header_buffer: [64]u8 = undefined;
+    const header = try std.fmt.bufPrint(&header_buffer, "P6\n{d} {d}\n255\n", .{ capture.width, capture.height });
+    try file.writeStreamingAll(io, header);
+    var rgb: [3]u8 = undefined;
+    var index: usize = 0;
+    while (index + 3 < capture.pixels.len) : (index += 4) {
+        rgb = .{ capture.pixels[index], capture.pixels[index + 1], capture.pixels[index + 2] };
+        try file.writeStreamingAll(io, &rgb);
+    }
+}
+
+pub fn captureHasContent(capture: Capture) bool {
+    if (capture.pixels.len < 8) return false;
+    const r = capture.pixels[0];
+    const g = capture.pixels[1];
+    const b = capture.pixels[2];
+    var differing: usize = 0;
+    var index: usize = 0;
+    while (index + 3 < capture.pixels.len) : (index += 4) {
+        if (capture.pixels[index] != r or capture.pixels[index + 1] != g or capture.pixels[index + 2] != b) {
+            differing += 1;
+            if (differing >= 64) return true;
+        }
+    }
+    return false;
+}
+
 pub fn symbols() [4]Symbol {
     return .{
         .{ .name = "e7_host_headless", .address = @intFromPtr(&e7_host_headless) },

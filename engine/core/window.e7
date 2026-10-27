@@ -1,4 +1,5 @@
 use core::events::*;
+use platform::engine_window::*;
 
 @resource
 pub Window <- struct
@@ -12,7 +13,7 @@ pub Window <- struct
 # call sites use `window.pump()` / `window.should_close()` etc.
 impl Window:
     pub create <- (window: &mut Window, title: str) -> nil:
-        window.handle = e7_engine_window_create(title, window.width, window.height)
+        window.handle = e7_engine_window_create(title, window.width as i64, window.height as i64)
         window.quit_requested = false
         ret
 
@@ -22,7 +23,7 @@ impl Window:
 
     # Window close OR the host frame limiter (`--frames`) requests shutdown.
     pub should_close <- (window: &Window) -> bool:
-        ret e7_engine_window_should_close(window.handle) != 0 or e7_engine_should_close() != 0
+        ret e7_engine_window_should_close(window.handle) != 0 or e7_host_should_close() != 0
 
     pub destroy <- (window: &mut Window) -> nil:
         e7_engine_window_destroy(window.handle)
