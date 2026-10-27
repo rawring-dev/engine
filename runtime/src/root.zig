@@ -14,16 +14,12 @@ pub const task = @import("task.zig");
 pub const lease = @import("lease.zig");
 pub const aggregate = @import("aggregate.zig");
 pub const ecs = @import("ecs.zig");
-pub const engine = @import("engine.zig");
 const host = @import("host.zig");
 pub const float = @import("float.zig");
 pub const json = @import("json.zig");
 pub const image = @import("image.zig");
 pub const intrinsics = @import("intrinsics.zig");
 
-pub const window = @import("ffi/window.zig");
-pub const vulkan = @import("ffi/vulkan.zig");
-pub const renderer = @import("ffi/renderer.zig");
 pub const filesystem = @import("ffi/fs.zig");
 pub const net = @import("ffi/net.zig");
 pub const http = @import("ffi/http.zig");
@@ -63,7 +59,6 @@ test {
     _ = orc;
     _ = bytecode_ir;
     _ = ecs;
-    _ = engine;
     _ = float;
     _ = json;
     _ = image;
@@ -1716,111 +1711,6 @@ test "JIT executes broadphase aggregation and narrowphase helpers" {
     try std.testing.expectEqual(@as(i64, 11111), main());
 }
 
-test "JIT demo advances broadphase, jump, and pickup state" {
-    if (true) return error.SkipZigTest;
-    const candidates = [_][]const u8{
-        "engine/main.e7",
-        "../engine/main.e7",
-        "../../engine/main.e7",
-    };
-    var root_path: []const u8 = "";
-    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    for (candidates) |candidate| {
-        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
-        probe.close(std.testing.io);
-        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
-        defer std.testing.allocator.free(absolute);
-        if (absolute.len > path_buffer.len) continue;
-        @memcpy(path_buffer[0..absolute.len], absolute);
-        root_path = path_buffer[0..absolute.len];
-        break;
-    }
-    if (root_path.len == 0) return error.SkipZigTest;
-
-    var compiled = try compiler.pipeline.compileProject(std.testing.allocator, root_path, .{});
-    defer compiled.deinit();
-    try std.testing.expect(compiled.analysis.ok());
-    ecs.e7_ecs_reset();
-    defer ecs.e7_ecs_reset();
-    engine.reset();
-    defer engine.shutdown();
-    engine.setHeadless(true);
-    engine.setMaxFrames(30);
-    engine.injectKeyForTest(@intFromEnum(engine.Key.jump), true);
-    engine.injectKeyForTest(@intFromEnum(engine.Key.up), true); // E = pickup
-    defer engine.injectKeyForTest(@intFromEnum(engine.Key.jump), false);
-    defer engine.injectKeyForTest(@intFromEnum(engine.Key.up), false);
-
-    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
-    defer std.testing.allocator.free(bytes);
-    var jit = try orc.Jit.init(std.testing.allocator);
-    defer jit.deinit();
-    try jit.addBytecodeBytes(bytes, "physics-demo");
-    const Main = *const fn () callconv(.c) i64;
-    const main_ctor = try jit.get(Main, "main");
-    const handle = main_ctor();
-    try std.testing.expect(handle != 0);
-    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
-
-    var transform_id: i64 = -1;
-    var body_id_id: i64 = -1;
-    for (compiled.analysis.components) |component| {
-        if (std.mem.endsWith(u8, component.name, "Transform")) transform_id = component.id;
-        if (std.mem.endsWith(u8, component.name, "BodyId")) body_id_id = component.id;
-    }
-    try std.testing.expect(transform_id >= 0);
-    try std.testing.expect(body_id_id >= 0);
-    var player_transform: i64 = 0;
-    var ball_transform: i64 = 0;
-    var plane_transform: i64 = 0;
-    var entity: i64 = 0;
-    const entity_count = ecs.e7_ecs_entity_count();
-    while (entity < entity_count) : (entity += 1) {
-        const id_ptr = ecs.e7_ecs_component_get(entity, body_id_id);
-        if (id_ptr == 0) continue;
-        const body_id = aggregate.e7_load_i64(id_ptr);
-        if (body_id == 2) player_transform = ecs.e7_ecs_component_get(entity, transform_id);
-        if (body_id == 3) ball_transform = ecs.e7_ecs_component_get(entity, transform_id);
-        if (body_id == 1) plane_transform = ecs.e7_ecs_component_get(entity, transform_id);
-    }
-    try std.testing.expect(player_transform != 0);
-    try std.testing.expect(ball_transform != 0);
-    try std.testing.expect(plane_transform != 0);
-
-    const FloatReader = struct {
-        fn y(transform_ptr: i64) f64 {
-            const translation = aggregate.e7_load_i64(transform_ptr);
-            return @bitCast(aggregate.e7_vec_get(translation, 1));
-        }
-    };
-    // The capsule rests on the plane with its centre at y = 1.0 (radius +
-    // half-height); higher demo gravity must not let it sink through.
-    try std.testing.expect(FloatReader.y(player_transform) >= 0.99);
-    try std.testing.expect(FloatReader.y(player_transform) <= 1.1);
-    // The plane is static.
-    try std.testing.expectEqual(@as(f64, 0.0), FloatReader.y(plane_transform));
-    // The ball was within reach and is held in front of/above the player.
-    try std.testing.expect(FloatReader.y(ball_transform) > 2.0);
-
-    var spatial_id: i64 = -1;
-    var pickup_id: i64 = -1;
-    for (compiled.analysis.resources) |resource| {
-        if (std.mem.endsWith(u8, resource.name, "SpatialMap")) spatial_id = resource.id;
-        if (std.mem.endsWith(u8, resource.name, "PickupState")) pickup_id = resource.id;
-    }
-    try std.testing.expect(spatial_id >= 0);
-    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(spatial_id));
-    const spatial_ptr = ecs.e7_ecs_resource(spatial_id);
-    try std.testing.expect(spatial_ptr != 0);
-    // Fields: cell_size, cells, ids, bounds, count.
-    try std.testing.expectEqual(@as(i64, 6), aggregate.e7_load_i64(spatial_ptr + 32));
-
-    try std.testing.expect(pickup_id >= 0);
-    const pickup_ptr = ecs.e7_ecs_resource(pickup_id);
-    try std.testing.expect(pickup_ptr != 0);
-    try std.testing.expectEqual(@as(i64, 3), aggregate.e7_load_i64(pickup_ptr));
-}
-
 test "JIT removes, re-adds, and despawns dynamic ECS markers" {
     ecs.e7_ecs_reset();
     defer ecs.e7_ecs_reset();
@@ -2525,101 +2415,6 @@ fn e7Abs(comptime T: type, value: T) T {
     return if (value < 0) -value else value;
 }
 
-test "JIT demo box stack stays upright and settles" {
-    if (true) return error.SkipZigTest;
-    const candidates = [_][]const u8{ "engine/main.e7", "../engine/main.e7", "../../engine/main.e7" };
-    var root_path: []const u8 = "";
-    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    for (candidates) |candidate| {
-        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
-        probe.close(std.testing.io);
-        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
-        defer std.testing.allocator.free(absolute);
-        if (absolute.len > path_buffer.len) continue;
-        @memcpy(path_buffer[0..absolute.len], absolute);
-        root_path = path_buffer[0..absolute.len];
-        break;
-    }
-    if (root_path.len == 0) return error.SkipZigTest;
-
-    var compiled = try compiler.pipeline.compileProject(std.testing.allocator, root_path, .{});
-    defer compiled.deinit();
-    try std.testing.expect(compiled.analysis.ok());
-    ecs.e7_ecs_reset();
-    defer ecs.e7_ecs_reset();
-    engine.reset();
-    defer engine.shutdown();
-    engine.setHeadless(true);
-    engine.setMaxFrames(240);
-
-    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
-    defer std.testing.allocator.free(bytes);
-    var jit = try orc.Jit.init(std.testing.allocator);
-    defer jit.deinit();
-    try jit.addBytecodeBytes(bytes, "stack-settle");
-    const Main = *const fn () callconv(.c) i64;
-    const main_ctor = try jit.get(Main, "main");
-    const handle = main_ctor();
-    try std.testing.expect(handle != 0);
-    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
-
-    var transform_id: i64 = -1;
-    var body_id_id: i64 = -1;
-    var rigid_id: i64 = -1;
-    for (compiled.analysis.components) |component| {
-        if (std.mem.endsWith(u8, component.name, "Transform")) transform_id = component.id;
-        if (std.mem.endsWith(u8, component.name, "BodyId")) body_id_id = component.id;
-        if (std.mem.endsWith(u8, component.name, "RigidBody")) rigid_id = component.id;
-    }
-    try std.testing.expect(transform_id >= 0 and body_id_id >= 0 and rigid_id >= 0);
-    var max_speed: f64 = 0;
-    var max_angular: f64 = 0;
-    var min_y: f64 = 1000;
-    var max_y: f64 = -1000;
-    var y4: f64 = 0;
-    var y5: f64 = 0;
-    var y6: f64 = 0;
-    var entity: i64 = 0;
-    var found: i64 = 0;
-    while (entity < ecs.e7_ecs_entity_count()) : (entity += 1) {
-        const id_ptr = ecs.e7_ecs_component_get(entity, body_id_id);
-        if (id_ptr == 0) continue;
-        const body_id = aggregate.e7_load_i64(id_ptr);
-        if (body_id < 4 or body_id > 6) continue;
-        found += 1;
-        const transform_ptr = ecs.e7_ecs_component_get(entity, transform_id);
-        const body_ptr = ecs.e7_ecs_component_get(entity, rigid_id);
-        try std.testing.expect(transform_ptr != 0 and body_ptr != 0);
-        const vel = aggregate.e7_load_i64(body_ptr);
-        const ang = aggregate.e7_load_i64(body_ptr + 8);
-        const speed = @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 0)))) +
-            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 1)))) +
-            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(vel, 2))));
-        const angular = @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 0)))) +
-            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 1)))) +
-            @abs(@as(f64, @bitCast(aggregate.e7_vec_get(ang, 2))));
-        const translation = aggregate.e7_load_i64(transform_ptr);
-        const y = @as(f64, @bitCast(aggregate.e7_vec_get(translation, 1)));
-        if (speed > max_speed) max_speed = speed;
-        if (angular > max_angular) max_angular = angular;
-        if (y < min_y) min_y = y;
-        if (y > max_y) max_y = y;
-        if (body_id == 4) y4 = y;
-        if (body_id == 5) y5 = y;
-        if (body_id == 6) y6 = y;
-    }
-    try std.testing.expectEqual(@as(i64, 3), found);
-    // The undisturbed starting stack must remain upright: y ~= 0.5/1.5/2.5
-    // with near-zero residual velocities after 240 fixed steps.
-    try std.testing.expect(@abs(y4 - 0.5) < 0.08);
-    try std.testing.expect(@abs(y5 - 1.5) < 0.12);
-    try std.testing.expect(@abs(y6 - 2.5) < 0.15);
-    try std.testing.expect(max_speed < 0.1);
-    try std.testing.expect(max_angular < 0.1);
-    try std.testing.expect(min_y > 0.4);
-    try std.testing.expect(max_y > 2.4);
-}
-
 test "JIT rotates body inverse inertia by quaternion" {
     const broad_source = readRepoTextForTest("engine/physics/broadphase.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(broad_source);
@@ -3038,147 +2833,4 @@ test "JIT calls inherent impl methods with receiver-first lowering" {
     // n: 1 -> bump 2 -> bump_by(4) 6; value() 6 + plus(1) 7 (by-value
     // aggregate receivers alias the object pointer) = 13.
     try std.testing.expectEqual(@as(i32, 13), run());
-}
-
-test "JIT UI button click and text field typing" {
-    if (true) return error.SkipZigTest;
-    const events_source = readRepoTextForTest("engine/core/events.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(events_source);
-    const ecs_source = readRepoTextForTest("engine/core/ecs.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ecs_source);
-    const gfx_source = readRepoTextForTest("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(gfx_source);
-    const window_source = readRepoTextForTest("engine/core/window.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(window_source);
-    const input_source = readRepoTextForTest("engine/core/input.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(input_source);
-    const ui_source = readRepoTextForTest("engine/ui/main.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(ui_source);
-    const text_source = readRepoTextForTest("engine/platform/text.e7") orelse return error.SkipZigTest;
-    defer std.testing.allocator.free(text_source);
-    const ui_clean = try std.mem.replaceOwned(u8, std.testing.allocator, ui_source, "use platform::text::*;\n", "");
-    defer std.testing.allocator.free(ui_clean);
-    const ui_combined = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ text_source, ui_clean });
-    defer std.testing.allocator.free(ui_combined);
-
-    const root_source =
-        \\mod events
-        \\mod ecs
-        \\mod gfx
-        \\mod window
-        \\mod input
-        \\mod ui
-        \\use ecs::*;
-        \\use events::*;
-        \\use gfx::*;
-        \\use window::*;
-        \\use input::*;
-        \\use ui::*;
-        \\@resource
-        \\pub Probe <- struct
-        \\    action: i64
-        \\    text_len: i64
-        \\    revision: i64
-        \\    focused: i64
-        \\pub Capture <- trigger
-        \\pub UIScene <- plugin
-        \\    ui_scene_plugin_init <- sys (commands: &mut Commands):
-        \\        commands.insert_resource(Probe { action: 0, text_len: 0, revision: 0, focused: 0 })
-        \\        commands.add_row(Components, {
-        \\            UIRect { x: 100.0, y: 100.0, w: 200.0, h: 40.0 },
-        \\            UIPanel { colour: [0.2, 0.3, 0.4, 1.0] },
-        \\            UILabel { text: "", size: 14, colour: [1.0, 1.0, 1.0, 1.0] },
-        \\            UIButton { label: "Go", action: 7 },
-        \\            UITextField { text: "", max_len: 0, focused: false, revision: 0, rendered_revision: 0, texture: 0, texture_w: 0, texture_h: 0 },
-        \\        })
-        \\        commands.add_row(Components, {
-        \\            UIRect { x: 100.0, y: 100.0, w: 200.0, h: 40.0 },
-        \\            UIPanel { colour: [0.1, 0.12, 0.16, 1.0] },
-        \\            UILabel { text: "", size: 14, colour: [1.0, 1.0, 1.0, 1.0] },
-        \\            UIButton { label: "", action: 0 },
-        \\            UITextField { text: "", max_len: 16, focused: false, revision: 0, rendered_revision: -1, texture: 0, texture_w: 0, texture_h: 0 },
-        \\        })
-        \\@trigger(UIButtonPressed)
-        \\pub ui_action_probe <- sys (ui: res &UIState, probe: res &mut Probe):
-        \\    probe.action = ui.action
-        \\@trigger(Capture)
-        \\pub capture <- sys (probe: res &mut Probe, state: res &UIState, fields: select &UITextField from Components):
-        \\    if probe.action == 0:
-        \\        probe.action = state.action
-        \\    for field in fields:
-        \\        probe.text_len = field.text.len() as i64
-        \\        probe.revision = field.revision
-        \\        probe.focused = 0
-        \\        if field.focused:
-        \\            probe.focused = 1
-        \\main <- async () -> i32:
-        \\    commands := await query &mut Commands
-        \\    commands.add_plugin(gfx::GfxPlugin)
-        \\    commands.add_plugin(input::InputPlugin)
-        \\    commands.add_plugin(ui::Ui)
-        \\    commands.add_plugin(UIScene)
-        \\    disown commands
-        \\    await Init()
-        \\    await PreUpdate()
-        \\    state := await query &mut UIState
-        \\    if state.clicked_action != 0:
-        \\        state.action = state.clicked_action
-        \\        state.clicked_action = 0
-        \\        await UIButtonPressed()
-        \\    await Capture()
-        \\    await DeInit()
-        \\    ret 0
-    ;
-    var compiled = try compiler.pipeline.compileProjectFromSources(
-        std.testing.allocator,
-        root_source,
-        &.{
-            .{ .name = "events", .source = events_source },
-            .{ .name = "ecs", .source = ecs_source },
-            .{ .name = "gfx", .source = gfx_source },
-            .{ .name = "window", .source = window_source },
-            .{ .name = "input", .source = input_source },
-            .{ .name = "ui", .source = ui_combined },
-        },
-        .{},
-    );
-    defer compiled.deinit();
-    if (!compiled.analysis.ok()) {
-        for (compiled.analysis.diagnostics) |diagnostic| {
-            std.debug.print("ui scene diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
-        }
-    }
-    try std.testing.expect(compiled.analysis.ok());
-
-    ecs.e7_ecs_reset();
-    defer ecs.e7_ecs_reset();
-    engine.reset();
-    defer engine.shutdown();
-    engine.setHeadless(true);
-    engine.injectMousePositionForTest(110, 110);
-    engine.injectMouseButtonForTest(0, true);
-    engine.injectTextForTest("hi");
-    defer engine.injectMouseButtonForTest(0, false);
-    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
-    defer std.testing.allocator.free(bytes);
-    var jit = try orc.Jit.init(std.testing.allocator);
-    defer jit.deinit();
-    try jit.addBytecodeBytes(bytes, "ui-input");
-    const Main = *const fn () callconv(.c) i64;
-    const main_ctor = try jit.get(Main, "main");
-    const handle = main_ctor();
-    try std.testing.expect(handle != 0);
-    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
-
-    var probe_id: i64 = -1;
-    for (compiled.analysis.resources) |resource| {
-        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
-    }
-    try std.testing.expect(probe_id >= 0);
-    const probe_ptr = ecs.e7_ecs_resource(probe_id);
-    try std.testing.expect(probe_ptr != 0);
-    try std.testing.expectEqual(@as(i64, 7), aggregate.e7_load_i64(probe_ptr));
-    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(probe_ptr + 8));
-    try std.testing.expect(aggregate.e7_load_i64(probe_ptr + 16) > 0);
-    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_load_i64(probe_ptr + 24));
 }

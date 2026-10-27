@@ -25,6 +25,7 @@ const json = @import("json.zig");
 const image = @import("image.zig");
 const cbridge = @import("ffi/cbridge.zig");
 const host = @import("host.zig");
+const host_engine = @import("host_engine.zig");
 
 const c = @cImport({
     @cInclude("llvm-c/Core.h");
@@ -145,11 +146,8 @@ pub const Jit = struct {
         try self.defineSymbols(&ffi_symbols);
         const host_symbols = host.symbols();
         try self.defineSymbols(&host_symbols);
-        const shader_symbols = [_]@import("ffi/abi.zig").Symbol{
-            .{ .name = "e7_engine_read_shader", .address = @intFromPtr(&@import("engine.zig").e7_engine_read_shader) },
-            .{ .name = "e7_engine_time_now_ms", .address = @intFromPtr(&@import("engine.zig").e7_engine_time_now_ms) },
-        };
-        try self.defineSymbols(&shader_symbols);
+        const engine_symbols = host_engine.symbols();
+        try self.defineSymbols(&engine_symbols);
         const raw_ir = bytecode_ir.translate(self.allocator, module) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidBytecode => return error.InvalidBytecode,

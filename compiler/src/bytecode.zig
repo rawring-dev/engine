@@ -60,7 +60,11 @@ pub const RuntimeFunction = enum(u8) {
     ecs_commands_remove_component,
     ecs_commands_add_component,
     ecs_commands_despawn,
-    // Engine/window/scene intrinsics (host-provided, see runtime/src/engine.zig).
+    // Legacy engine/window/scene runtime-call names.  e7 platform modules now
+    // provide these symbols themselves through the generic C FFI; the names
+    // stay here for bytecode compatibility.  Only `engine_time_now_ms` and
+    // `engine_read_shader` are still supplied by the runtime
+    // (see runtime/src/host_engine.zig).
     engine_window_create,
     engine_native_window,
     engine_window_pump,

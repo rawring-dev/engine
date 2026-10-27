@@ -1,13 +1,15 @@
 //! Compiler-known external intrinsics callable from e7 by name.
 //!
 //! There is no extern-declaration syntax in the surface language.  A call such
-//! as `e7_engine_window_create("engine7", 960, 540)` resolves here, is
-//! type-checked against this table, and lowers to a bytecode `runtime_call` to
-//! the matching `e7_*` symbol.  Units that cross the ABI boundary are integer
-//! scaled (see per-function comments) so e7 does not need float arithmetic.
+//! as `e7_engine_time_now_ms()` resolves here, is type-checked against this
+//! table, and lowers to a bytecode `runtime_call` to the matching `e7_*`
+//! symbol.  Units that cross the ABI boundary are integer scaled (see
+//! per-function comments) so e7 does not need float arithmetic.
 //!
-//! Runtime symbols live in `runtime/src/engine.zig` (window/scene helpers) and
-//! are registered with the JIT through `engine.symbols()`.
+//! The only remaining engine host helpers are SDL/Vulkan-free; they live in
+//! `runtime/src/host_engine.zig` and are registered with the JIT through
+//! `host_engine.symbols()`.  SDL/Vulkan are bound by e7 platform code through
+//! the generic C FFI.
 
 const std = @import("std");
 

@@ -15,9 +15,7 @@ const quic = @import("ffi/quic.zig");
 const io_mod = @import("ffi/io.zig");
 const dl = @import("ffi/dl.zig");
 const cbridge = @import("ffi/cbridge.zig");
-const shader_assets = @import("shader_assets");
 const host_mod = @import("host.zig");
-const engine = @import("engine.zig");
 const builtin = @import("builtin");
 
 fn mathLibraryPath() ?[]const u8 {
@@ -215,67 +213,6 @@ test "JITed IR performs an HTTP GET" {
     thread.join();
 }
 
-test "JITed IR creates and destroys an SDL window" {
-    var jit = try makeJit();
-    defer jit.deinit();
-
-    const ir =
-        \\declare i64 @e7_window_create(ptr, i64, i32, i32, i64, ptr, i64)
-        \\declare i32 @e7_window_size(i64, ptr, ptr)
-        \\declare i32 @e7_window_destroy(i64)
-        \\define i32 @jit_window(ptr %title, i64 %len) {
-        \\entry:
-        \\  %w = call i64 @e7_window_create(ptr %title, i64 %len, i32 64, i32 48, i64 2, ptr null, i64 0)
-        \\  %bad = icmp eq i64 %w, 0
-        \\  br i1 %bad, label %fail, label %have
-        \\have:
-        \\  %ww = alloca i32
-        \\  %hh = alloca i32
-        \\  %sz = call i32 @e7_window_size(i64 %w, ptr %ww, ptr %hh)
-        \\  %d = call i32 @e7_window_destroy(i64 %w)
-        \\  %width = load i32, ptr %ww
-        \\  ret i32 %width
-        \\fail:
-        \\  ret i32 -1
-        \\}
-    ;
-    try jit.addIr(ir, "jit-window");
-    const WindowFn = *const fn ([*]const u8, i64) callconv(.c) i32;
-    const jit_window = try jit.get(WindowFn, "jit_window");
-
-    const title = "engine7 jit window";
-    const width = jit_window(title.ptr, title.len);
-    if (width < 0) {
-        std.debug.print("skipping JIT window test (no video driver)\n", .{});
-        return;
-    }
-    try std.testing.expect(width > 0);
-}
-
-test "JITed IR probes Vulkan" {
-    var jit = try makeJit();
-    defer jit.deinit();
-
-    const ir =
-        \\declare i32 @e7_vk_probe(ptr, ptr, i64, ptr, ptr)
-        \\define i32 @jit_vk() {
-        \\entry:
-        \\  %count = alloca i32
-        \\  %name = alloca [64 x i8]
-        \\  %namelen = alloca i64
-        \\  %api = alloca i32
-        \\  %r = call i32 @e7_vk_probe(ptr %count, ptr %name, i64 64, ptr %namelen, ptr %api)
-        \\  %c = load i32, ptr %count
-        \\  ret i32 %c
-        \\}
-    ;
-    try jit.addIr(ir, "jit-vulkan");
-    const VkFn = *const fn () callconv(.c) i32;
-    const jit_vk = try jit.get(VkFn, "jit_vk");
-    const devices = jit_vk();
-    try std.testing.expect(devices >= 0);
-}
-
 test "JITed IR performs a QUIC request/response" {
     var jit = try makeJit();
     defer jit.deinit();
@@ -454,83 +391,6 @@ test "JITed IR writes to STDERR through the STDIO intrinsics" {
 
     const message = "jit stdio: write ok\n";
     try std.testing.expectEqual(@as(i32, 0), jit_stdio(message.ptr, message.len));
-}
-
-test "JITed IR drives the scene renderer ABI" {
-    var jit = try makeJit();
-    defer jit.deinit();
-
-    // i64 float arguments: 0.0=0, 8.0=1090519040, 0.5=1056964608,
-    // 2.0=1073741824, 3.0=1077936128 (IEEE-754 binary32 bit patterns).
-    const ir = intrinsics.declarations ++
-        \\define i32 @jit_scene(i64 %window, ptr %vert, i64 %vlen, ptr %frag, i64 %flen) {
-        \\entry:
-        \\  %scene = call i64 @e7_scene_create(i64 %window, ptr %vert, i64 %vlen, ptr %frag, i64 %flen)
-        \\  %bad = icmp eq i64 %scene, 0
-        \\  br i1 %bad, label %fail, label %ok
-        \\ok:
-        \\  %camera = call i32 @e7_scene_set_camera(i64 %scene, i64 0, i64 0, i64 1090519040, i64 0, i64 0)
-        \\  %resize = call i32 @e7_scene_resize(i64 %scene, i32 128, i32 96)
-        \\  %draw = call i32 @e7_scene_draw(i64 %scene, i64 0, i64 1056964608, i64 1073741824, i64 1077936128, i64 1073741824)
-        \\  %pixels = alloca ptr
-        \\  %len = alloca i64
-        \\  %width = alloca i32
-        \\  %height = alloca i32
-        \\  %capture = call i32 @e7_scene_capture(i64 %scene, ptr %pixels, ptr %len, ptr %width, ptr %height)
-        \\  %pixel_ptr = load ptr, ptr %pixels
-        \\  call void @e7_free(ptr %pixel_ptr)
-        \\  %n = load i64, ptr %len
-        \\  %w = load i32, ptr %width
-        \\  %destroy = call i32 @e7_scene_destroy(i64 %scene)
-        \\  %has_pixels = icmp ugt i64 %n, 0
-        \\  %draw_ok = icmp eq i32 %draw, 0
-        \\  %capture_ok = icmp eq i32 %capture, 0
-        \\  %resize_ok = icmp eq i32 %resize, 0
-        \\  %destroy_ok = icmp eq i32 %destroy, 0
-        \\  %c1 = and i1 %has_pixels, %draw_ok
-        \\  %c2 = and i1 %c1, %capture_ok
-        \\  %c3 = and i1 %c2, %resize_ok
-        \\  %all_ok = and i1 %c3, %destroy_ok
-        \\  br i1 %all_ok, label %good, label %fail
-        \\good:
-        \\  ret i32 %w
-        \\fail:
-        \\  ret i32 -1
-        \\}
-    ;
-    try jit.addIr(ir, "jit-scene");
-    const SceneFn = *const fn (u64, [*]const u8, i64, [*]const u8, i64) callconv(.c) i32;
-    const jit_scene = try jit.get(SceneFn, "jit_scene");
-
-    const title = "engine7 jit scene";
-    const window_handle = intrinsics.e7_window_create(
-        title.ptr,
-        title.len,
-        96,
-        72,
-        intrinsics.WindowFlags.hidden | intrinsics.WindowFlags.vulkan,
-        null,
-        0,
-    );
-    if (window_handle == 0) {
-        std.debug.print("skipping JIT scene test (no display): {s}\n", .{abi.lastError()});
-        return;
-    }
-    defer _ = intrinsics.e7_window_destroy(window_handle);
-
-    const width = jit_scene(
-        window_handle,
-        shader_assets.cube_vert_spv.ptr,
-        @intCast(shader_assets.cube_vert_spv.len),
-        shader_assets.cube_frag_spv.ptr,
-        @intCast(shader_assets.cube_frag_spv.len),
-    );
-    if (width < 0) {
-        std.debug.print("skipping JIT scene test (no Vulkan): {s}\n", .{abi.lastError()});
-        return;
-    }
-    // e7_scene_resize resized the hidden window to 128x96 before the capture.
-    try std.testing.expectEqual(@as(i32, 128), width);
 }
 
 const ecs = @import("ecs.zig");

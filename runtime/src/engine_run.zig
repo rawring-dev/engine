@@ -6,9 +6,11 @@
 //! The host loads `engine/main.e7` (plus sibling `ui.e7`) through
 //! `compiler.pipeline.compileProject`, registers ECS world metadata from the
 //! analysis, JITs the bytecode with the runtime/ECS/engine symbol manifests, and
-//! awaits the compiled async `main`.  The e7 side creates the window/scene with
-//! the compiler-known `e7_engine_*` intrinsics; `--frames` drives the
-//! deterministic frame limiter and `--capture` writes the captured PPM frame.
+//! awaits the compiled async `main`.  The e7 platform modules create the
+//! window/scene through the generic C FFI; the runtime only supplies the
+//! SDL/Vulkan-free `e7_engine_read_shader` and `e7_engine_time_now_ms` host
+//! helpers.  `--frames` drives the deterministic frame limiter and `--capture`
+//! writes the captured PPM frame.
 
 const std = @import("std");
 const compiler = @import("compiler");
@@ -16,7 +18,6 @@ const orc = @import("orc.zig");
 const task = @import("task.zig");
 const ecs = @import("ecs.zig");
 const host = @import("host.zig");
-const sdl = @import("ffi/sdl.zig");
 
 const default_project = "engine/main.e7";
 
@@ -73,15 +74,8 @@ pub fn main(init: std.process.Init) !void {
     host.setHeadless(options.headless);
     host.setMaxFrames(options.frames);
     host.setCaptureEnabled(options.capture_path != null);
-    // SDL video must be initialized on the process main thread; the e7 engine
-    // runs its systems in a runtime task, so initialize here first.
-    if (options.headless) {
-        _ = sdl.c.SDL_SetHint("SDL_VIDEODRIVER", "dummy");
-    }
-    if (!sdl.c.SDL_Init(sdl.c.SDL_INIT_VIDEO)) {
-        std.debug.print("run-engine: SDL video initialization failed: {s}\n", .{std.mem.span(sdl.c.SDL_GetError())});
-        return error.EngineUnavailable;
-    }
+    // SDL/Vulkan setup lives in the e7 platform modules, which bind both
+    // libraries dynamically through the generic C FFI.
 
     var compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
         if (err == error.SemanticFailed) {
@@ -156,7 +150,6 @@ pub fn main(init: std.process.Init) !void {
     const handle = main_ctor();
     if (handle == 0) return error.MainTaskFailed;
     _ = task.e7_task_await(handle);
-
 
     if (options.capture_path) |path| {
         var capture = host.takeCapture() orelse {
