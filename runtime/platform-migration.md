@@ -193,8 +193,14 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   + combined albedo texture, point-light attenuation/diffuse, drawn through the
   two-set pipeline. `scene_draw_lit` captures a lit textured cube frame.
   Runtime: **134/134**.
-- Remaining: engine draw parity/wiring, image port, and deletion of remaining
-  SDL/Vulkan wrappers.
+- **9a (done):** SDL/Vulkan-free host module: headless flag, deterministic
+  frame limit, frame counter, and RGBA capture. e7 intrinsics
+  (`e7_host_headless`, `e7_host_should_close`, `e7_host_note_frame`,
+  `e7_host_capture`) are JIT-tested end-to-end; this is the capture/frame-control
+  foundation for removing the runtime renderer from `engine-run`. Runtime:
+  **135/135**.
+- Remaining: wire e7 engine/scene/window to the host module and remove runtime
+  renderer/window wrappers; image port.
 
 ## Migration stages
 

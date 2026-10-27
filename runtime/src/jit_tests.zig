@@ -16,6 +16,7 @@ const io_mod = @import("ffi/io.zig");
 const dl = @import("ffi/dl.zig");
 const cbridge = @import("ffi/cbridge.zig");
 const shader_assets = @import("shader_assets");
+const host_mod = @import("host.zig");
 const builtin = @import("builtin");
 
 fn mathLibraryPath() ?[]const u8 {
@@ -789,6 +790,61 @@ test "JITed IR resolves and reads a C data symbol" {
     const symbol = "stdout";
     const value = jit_data(library_path.ptr, @intCast(library_path.len), symbol.ptr, symbol.len);
     try std.testing.expect(value != 0);
+}
+
+test "e7 host frame limit and capture intrinsics" {
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
+    host_mod.setMaxFrames(1);
+    host_mod.setCaptureEnabled(true);
+
+    const source =
+        \\host_probe <- () -> i64:
+        \\    if e7_host_headless() == 0:
+        \\        ret -1
+        \\    pixels := e7_alloc_bytes(64)
+        \\    e7_store_u32(pixels + 0, 4294967295)
+        \\    e7_store_u32(pixels + 4, 4294967295)
+        \\    e7_store_u32(pixels + 8, 4294967295)
+        \\    e7_store_u32(pixels + 12, 4294967295)
+        \\    e7_store_u32(pixels + 16, 4294967295)
+        \\    e7_store_u32(pixels + 20, 4294967295)
+        \\    e7_store_u32(pixels + 24, 4294967295)
+        \\    e7_store_u32(pixels + 28, 4294967295)
+        \\    e7_store_u32(pixels + 32, 4294967295)
+        \\    e7_store_u32(pixels + 36, 4294967295)
+        \\    e7_store_u32(pixels + 40, 4294967295)
+        \\    e7_store_u32(pixels + 44, 4294967295)
+        \\    e7_store_u32(pixels + 48, 4294967295)
+        \\    e7_store_u32(pixels + 52, 4294967295)
+        \\    e7_store_u32(pixels + 56, 4294967295)
+        \\    e7_store_u32(pixels + 60, 4294967295)
+        \\    captured := e7_host_capture(pixels as u64, 4, 4)
+        \\    e7_free_ptr(pixels)
+        \\    if captured != 0:
+        \\        ret -2
+        \\    e7_host_note_frame()
+        \\    if e7_host_should_close() == 0:
+        \\        ret -3
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-host-probe");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe = try jit.get(Probe, "host_probe");
+    try std.testing.expectEqual(@as(i64, 0), probe());
+    try std.testing.expect(host_mod.shouldClose());
+    var capture = host_mod.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 4), capture.width);
+    try std.testing.expectEqual(@as(u32, 4), capture.height);
+    try std.testing.expectEqual(@as(u8, 255), capture.pixels[0]);
+    try std.testing.expectEqual(@as(u8, 255), capture.pixels[3]);
 }
 
 test "e7 source binds and calls libc strlen through the generic C FFI" {

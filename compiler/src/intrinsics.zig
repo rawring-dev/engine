@@ -286,6 +286,12 @@ pub const functions = [_]Function{
         .params = &.{},
         .result = .str_,
     },
+    // Host frame control/capture for the e7 engine.
+    .{ .name = "e7_host_headless", .params = &.{}, .result = .i64_ },
+    .{ .name = "e7_host_should_close", .params = &.{}, .result = .i64_ },
+    .{ .name = "e7_host_note_frame", .params = &.{}, .result = .unit },
+    .{ .name = "e7_host_capture", .params = &.{ .any_, .i64_, .i64_ }, .result = .i64_ },
+
     // Float helpers: values are f64 bit patterns stored in i64 slots.
     .{ .name = "e7_f32_add", .params = &.{ .float_, .float_ }, .result = .float_ },
     .{ .name = "e7_f32_sub", .params = &.{ .float_, .float_ }, .result = .float_ },
