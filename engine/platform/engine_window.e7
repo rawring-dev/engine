@@ -1,0 +1,79 @@
+# Engine window layer implemented entirely in e7 through SDL3 and the generic
+# C FFI.  The window state is the raw 256-byte e7 SDL state; engine resources
+# hold that handle and pass it explicitly to these functions.
+
+ew_window_create <- (title: str, width: i64, height: i64) -> u64:
+    if video_init("dummy") == 0:
+        ret 0
+    flags := 268435464
+    ret window_create(title, width, height, flags)
+
+ew_window_pump <- (handle: u64) -> i64:
+    e7_store_u32(handle + 8, 0)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    window_pump(handle)
+    ret window_should_close(handle)
+
+ew_window_should_close <- (handle: u64) -> i64:
+    ret window_should_close(handle)
+
+ew_window_destroy <- (handle: u64) -> nil:
+    if handle == 0:
+        ret
+    window_destroy(handle)
+    video_quit()
+
+ew_key_down <- (handle: u64, code: i64) -> i64:
+    scancode := 0
+    if code == 0:
+        scancode = 26
+    elif code == 1:
+        scancode = 22
+    elif code == 2:
+        scancode = 4
+    elif code == 3:
+        scancode = 7
+    elif code == 4:
+        scancode = 8
+    elif code == 5:
+        scancode = 20
+    elif code == 6:
+        scancode = 225
+    elif code == 7:
+        scancode = 80
+    elif code == 8:
+        scancode = 79
+    elif code == 9:
+        scancode = 82
+    elif code == 10:
+        scancode = 81
+    elif code == 11:
+        scancode = 44
+    else:
+        ret 0
+    ret key_down(handle, scancode)
+
+ew_mouse_dx <- (handle: u64) -> i64:
+    ret mouse_dx(handle)
+
+ew_mouse_dy <- (handle: u64) -> i64:
+    ret mouse_dy(handle)
+
+ew_mouse_x <- (handle: u64) -> i64:
+    ret mouse_x(handle)
+
+ew_mouse_y <- (handle: u64) -> i64:
+    ret mouse_y(handle)
+
+ew_mouse_down <- (handle: u64, button: i64) -> i64:
+    buttons := mouse_buttons(handle)
+    ret (buttons / (1 * (button * 0 + 1))) as i64
+
+ew_mouse_captured <- (handle: u64) -> i64:
+    ret 0

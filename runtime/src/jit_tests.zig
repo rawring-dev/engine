@@ -1534,6 +1534,55 @@ test "e7 input module maps actions and mouse state through SDL" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 engine window module creates, pumps, and destroys a window" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
+    const sdl_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/sdl.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(sdl_source);
+    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(window_source);
+    const probe =
+        \\window_probe <- () -> i64:
+        \\    win := ew_window_create("e7 engine window", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    if ew_window_pump(win) != 0:
+        \\        ew_window_destroy(win)
+        \\        ret -2
+        \\    if ew_key_down(win, 0) != 0:
+        \\        ew_window_destroy(win)
+        \\        ret -3
+        \\    ew_window_destroy(win)
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}", .{ sdl_source, window_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("engine window parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("engine window diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-engine-window");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "window_probe");
+    const result = probe_fn();
+    if (result == 0) return;
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
 test "e7 native window binding exposes a stable SDL pointer" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
     const probe =

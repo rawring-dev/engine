@@ -216,8 +216,15 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   JIT-verified on a real font. Drawing the text texture is still isolated (the
   upload succeeds but a captured text-texture frame currently crashes
   lavapipe). Runtime: **137/137**.
-- Remaining: draw text textures, render on borrowed windows, wire engine to e7
-  scene/host, image port, and remove runtime renderer/window wrappers.
+- **9d (done):** e7 engine window module (`engine/platform/engine_window.e7`):
+  explicit-handle SDL create/pump/should-close/destroy plus key/mouse queries,
+  implemented through the generic C FFI. JIT-verified create/pump/query/destroy.
+  Functions currently use `ew_*` names to avoid colliding with the still-live
+  runtime engine symbol manifest; they will take the `e7_engine_*` names when
+  that manifest is removed. Runtime: **138/138**.
+- Remaining: e7 engine scene module, engine wiring/host capture, draw text
+  textures, borrowed-window rendering, image port, and removing runtime
+  renderer/window wrappers.
 
 ## Migration stages
 
