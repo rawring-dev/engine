@@ -189,8 +189,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   set0 dynamic UBO + set1 combined texture; draw binds both sets, renders and
   captures a two-set cube frame. This matches the engine shader descriptor
   layout closely. Runtime: **134/134**.
-- Remaining: engine-lit shader, engine draw parity/wiring, image port, and
-  deletion of remaining SDL/Vulkan wrappers.
+- **7o (done):** engine-style lit shader: SceneUniform UBO (camera/light/tint)
+  + combined albedo texture, point-light attenuation/diffuse, drawn through the
+  two-set pipeline. `scene_draw_lit` captures a lit textured cube frame.
+  Runtime: **134/134**.
+- Remaining: engine draw parity/wiring, image port, and deletion of remaining
+  SDL/Vulkan wrappers.
 
 ## Migration stages
 
