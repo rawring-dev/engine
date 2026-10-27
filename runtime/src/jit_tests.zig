@@ -1816,23 +1816,20 @@ test "e7 scene renders on a helper-created window after pumping" {
     defer std.testing.allocator.free(vk_source);
     const scene_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/scene.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
     defer std.testing.allocator.free(scene_source);
+    const window_source = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "engine/platform/engine_window.e7", std.testing.allocator, .limited(1024 * 1024)) catch return;
+    defer std.testing.allocator.free(window_source);
     const root_source =
         \\mod sdl
         \\mod vulkan
         \\mod scene
-        \\use sdl::*;
+        \\mod engine_window
         \\use scene::*;
-        \\create_helper_window <- () -> u64:
-        \\    if video_init("dummy") == 0:
-        \\        ret 0
-        \\    ret window_create("e7 helper window scene", 64, 48, 268435464)
+        \\use engine_window::*;
         \\helper_window_probe <- () -> i64:
-        \\    win := create_helper_window()
+        \\    win := e7_engine_window_create("e7 helper window scene", 960, 540)
         \\    if win == 0:
         \\        ret 0
-        \\    window_pump(win)
-        \\    window_pump(win)
-        \\    scene := scene_create(win, 64, 48)
+        \\    scene := scene_create(win, 960, 540)
         \\    if scene == 0:
         \\        window_destroy(win)
         \\        ret -2
@@ -1863,6 +1860,7 @@ test "e7 scene renders on a helper-created window after pumping" {
             .{ .name = "sdl", .source = sdl_source },
             .{ .name = "vulkan", .source = vk_source },
             .{ .name = "scene", .source = scene_source },
+            .{ .name = "engine_window", .source = window_source },
         },
         .{},
     ) catch |err| {

@@ -287,8 +287,13 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   4 swapchain images, 960x540). The engine frame remains empty, with successful
   acquire/submit/wait but zero readback even for the clear color. Suite:
   **133 pass, 10 skipped**; compiler 206.
-- Remaining: engine frame (render pass/readback content), restore skipped tests,
-  draw text textures, borrowed-window rendering, image port, and removing
+- **9o (done):** regression test now covers the real e7 engine window wrapper
+  plus a raw 960x540 scene (photo capture content) — it renders correctly. GPU
+  bypassing `engine_scene` and calling raw scene functions still yields an empty
+  engine frame, so the remaining difference is in the engine system/render
+  lifecycle, not the window or scene wrappers. Suite: **133 pass, 10 skipped**.
+- Remaining: engine render lifecycle (clear/readback zeros), restore skipped
+  tests, draw text textures, borrowed-window rendering, image port, and removing
   remaining runtime SDL/Vulkan wrappers.
 
 ## Migration stages
