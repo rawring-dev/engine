@@ -171,6 +171,9 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   binding 1) for the uploaded texture; the scene creates/updates/destroys it
   without validation errors. The two-binding sampler path was the earlier crash
   source and is not used. Runtime: **134/134**.
+- **7j (done):** object capacity extended to sixteen dynamic UBO slots and
+  sixteen indexed draws per frame; scene state/object/texture regions no longer
+  overlap. Scene test records sixteen cubes. Runtime: **134/134**.
 - Remaining: textured pipeline/UI draw, engine draw parity, engine scene
   wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
 
