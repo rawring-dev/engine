@@ -163,8 +163,12 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
 - **7g (done):** object draw API extended to eight per-object UBO slots and
   eight indexed draw calls per frame; the scene test records eight colored cubes
   and captures the frame. Runtime: **134/134**.
-- Remaining: engine draw-shape/mesh/texture/UI parity, engine scene wiring,
-  image port, and deletion of the remaining SDL/Vulkan Zig wrappers.
+- **7h (done):** e7 texture resources: sampled `R8G8B8A8_UNORM` image,
+  image view, linear sampler, staging-buffer upload with barriers/copy/submit,
+  and clean teardown. The scene creates/uploads a 4x4 texture at startup.
+  Runtime: **134/134**.
+- Remaining: texture descriptor set pipeline + UI pipeline, engine draw parity,
+  engine scene wiring, image port, and deletion of remaining SDL/Vulkan wrappers.
 
 ## Migration stages
 
