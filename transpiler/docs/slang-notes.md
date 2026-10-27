@@ -638,6 +638,28 @@ Matrix values remain logically row-major (literals fill rows first;
 `m[i][j]` is row/column), and `mul(m, v)` is row·column = mathematical
 `M * v`. Changing the storage modifier does not change those value semantics.
 
+### 8.2 `SV_VertexID` / `SV_InstanceID` pull in `DrawParameters`
+
+Slang rebases `SV_VertexID` to `gl_VertexIndex - gl_BaseVertex` (HLSL's
+zero-based ID semantics), so a vertex shader that uses it declares the SPIR-V
+`DrawParameters` capability, even when the source only needs the Vulkan
+`VertexIndex` builtin:
+
+```slang
+struct In { uint index : SV_VertexID; };
+[shader("vertex")]
+float4 main(In input) : SV_Position { ... }
+```
+
+Compiled with `-profile spirv_1_3`, the SPIR-V contains
+`OpCapability DrawParameters`, `BuiltIn VertexIndex`, `BuiltIn BaseVertex`, and
+an `OpISub`; `spirv-val --target-env vulkan1.1` accepts it (Vulkan 1.1's
+`shaderDrawParameters` feature), but the device must enable that feature for
+strict validation (`engine/platform/vulkan.e7` enables it). With `-profile spirv_1_0` the same shader is rejected
+without the `SPV_KHR_shader_draw_parameters` extension. Prefer SPIR-V 1.3 for
+Vulkan 1.1 targets, or avoid `SV_VertexID` when the host cannot enable the
+feature. `engine/platform/shaders/triangle.vert.e7` documents this case.
+
 ## 9. Type mapping (verified spellings)
 
 | e7s | Slang |

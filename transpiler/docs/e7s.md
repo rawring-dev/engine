@@ -1099,6 +1099,12 @@ direction.
 | `instance_index` | `SV_InstanceID` | vertex input | `u32` |
 | `primitive_id` | `SV_PrimitiveID` | fragment input | `u32` |
 | `front_facing` | `SV_IsFrontFace` | fragment input | `bool` |
+
+> Slang rebases `SV_VertexID`/`SV_InstanceID` with `BaseVertex`/`BaseInstance`,
+> so vertex shaders using `vertex_index` or `instance_index` emit the SPIR-V
+> `DrawParameters` capability and require the Vulkan 1.1
+> `shaderDrawParameters` feature.  This is a Slang lowering detail, not an
+> e7s-level error; `engine/platform/shaders/triangle.vert.e7` is an example.
 | `sample_index` | `SV_SampleIndex` | fragment input | `u32` |
 | `depth` | `SV_Depth` | fragment output | `f32` |
 | `frag_coord` | `SV_Position` | fragment input | `[f32; 4]` |

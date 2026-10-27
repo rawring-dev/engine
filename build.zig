@@ -35,17 +35,26 @@ pub fn build(b: *std.Build) void {
     addTests(b, test_step, "runtime", runtime);
     addTests(b, test_step, "transpiler", transpiler);
 
-    // Scene shader assets: the canonical sources are e7s files in
-    // engine/shaders/*.e7.  `zig build shaders` transpiles them with the e7s
-    // CLI, compiles the generated Slang to SPIR-V, and publishes the result
-    // into engine/shaders and runtime/shaders (the runtime embeds it).
+    // Shader assets: the canonical sources are e7s files.  `zig build shaders`
+    // transpiles them with the e7s CLI and compiles the generated Slang to
+    // SPIR-V for both shader sets:
+    //   * engine/shaders/       runtime scene shaders (also copied into
+    //                           runtime/shaders for embedding);
+    //   * engine/platform/      JIT-engine platform shaders (loaded from disk).
     // Checked-in SPIR-V keeps builds working without a shader compiler.
     const e7s_exe = transpiler_dep.artifact("e7s");
-    const shaders_step = b.step("shaders", "Transpile engine/shaders/*.e7 and compile to SPIR-V");
-    const shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("engine/shaders/build.sh") });
-    shader_build.addArtifactArg(e7s_exe);
-    shader_build.has_side_effects = true;
-    shaders_step.dependOn(&shader_build.step);
+    const shaders_step = b.step("shaders", "Transpile all engine e7s shaders and compile to SPIR-V");
+    const scene_shader_build = b.addSystemCommand(&.{ "sh", b.pathFromRoot("engine/shaders/build.sh") });
+    scene_shader_build.addArtifactArg(e7s_exe);
+    scene_shader_build.has_side_effects = true;
+    shaders_step.dependOn(&scene_shader_build.step);
+    const platform_shader_build = b.addSystemCommand(&.{
+        "sh",
+        b.pathFromRoot("engine/platform/shaders/build.sh"),
+    });
+    platform_shader_build.addArtifactArg(e7s_exe);
+    platform_shader_build.has_side_effects = true;
+    shaders_step.dependOn(&platform_shader_build.step);
 
     // Native Vulkan scene demo (`zig build run-scene [-- --frames N]`).  The
     // demo executable is defined by runtime/build.zig.

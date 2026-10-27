@@ -155,7 +155,6 @@ pub const Jit = struct {
             error.InvalidBytecode => return error.InvalidBytecode,
         };
         defer self.allocator.free(raw_ir);
-
         var optimized = compiler.iterative.optimize(self.allocator, raw_ir, .{
             .max_iterations = 8,
         }) catch |err| switch (err) {

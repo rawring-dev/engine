@@ -8,3 +8,6 @@ zig-out/
 
 # Local software Vulkan ICD used to verify the e7 platform layer
 .local-vulkan/
+
+# Team worktrees
+.team/

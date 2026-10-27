@@ -1,0 +1,19 @@
+# Triangle vertex stage: hardcoded clip-space triangle selected by the vertex
+# index builtin, matching the original GLSL shader.
+
+In <- struct
+    @builtin(vertex_index) index: u32
+
+Out <- struct
+    @builtin(position) position: [f32; 4]
+
+@vertex
+main <- (input: In) -> Out:
+    position: [f32; 2]
+    if input.index == 0:
+        position = [0.0, -0.6] as [f32; 2]
+    elif input.index == 1:
+        position = [0.6, 0.6] as [f32; 2]
+    else:
+        position = [-0.6, 0.6] as [f32; 2]
+    ret Out{position: [position.x, position.y, 0.0, 1.0] as [f32; 4]}

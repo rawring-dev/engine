@@ -31,7 +31,15 @@ engine/
 ├── ui/
 │   └── main.e7          font/text rendering, panels, labels, buttons, text fields,
 │                        UIState, UIButtonPressed trigger
-└── shaders/             e7s shader sources + generated SPIR-V
+├── platform/            e7 Vulkan/SDL platform layer + its shader assets
+│   ├── main.e7          platform prelude
+│   ├── input.e7         SDL input bindings
+│   ├── scene.e7         Vulkan scene/pipeline/uniform setup
+│   ├── sdl.e7           SDL bindings
+│   ├── text.e7          SDL_ttf bindings
+│   ├── vulkan.e7        Vulkan bindings and pipeline helpers
+│   └── shaders/         e7s platform shader sources + generated SPIR-V
+└── shaders/             e7s runtime-scene shader sources + generated SPIR-V
 ```
 
 ## Developer-facing model
@@ -146,9 +154,19 @@ mouse; camera look and WASD movement only run while captured; clicking the 3D wo
 
 ## Shaders
 
-`engine/shaders/*.e7` are e7s shader sources. `zig build shaders` transpiles
-them to Slang with the workspace `e7s` tool and compiles to SPIR-V with
-`slangc` (a checked-in SPIR-V fallback keeps builds working without it).
+There are two e7s shader sets:
+
+- `engine/shaders/*.e7` — runtime scene shaders (also copied into
+  `runtime/shaders/` where `assets.zig` embeds the SPIR-V).
+- `engine/platform/shaders/*.e7` — JIT-engine platform shaders loaded by path
+  from `engine/platform/scene.e7` (triangle and mesh pipelines).
+
+`zig build shaders` transpiles both sets to Slang with the workspace `e7s`
+tool and compiles them to SPIR-V with `slangc`.  Checked-in SPIR-V keeps
+builds and the engine runnable without a shader toolchain.  See
+[`engine/shaders/README.md`](shaders/README.md) and
+[`engine/platform/shaders/README.md`](platform/shaders/README.md) for
+interfaces and the build fallback behavior.
 
 ## Runtime boundary
 

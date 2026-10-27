@@ -457,6 +457,9 @@ sample UI/ECS surface:
 - [`engine/shaders/`](engine/shaders) — e7s shader sources and checked-in
   SPIR-V for the cube/point-light pipeline; `shaders/build.sh` runs the e7s
   transpiler and `slangc` to regenerate the runtime assets.
+- [`engine/platform/shaders/`](engine/platform/shaders) — e7s triangle/mesh
+  shaders for the JIT engine's Vulkan platform layer, built by the same
+  `zig build shaders` step from `engine/platform/shaders/*.e7`.
 
 The e7 engine project runs directly through the JIT host:
 
@@ -464,7 +467,7 @@ The e7 engine project runs directly through the JIT host:
 zig build run-engine                     # interactive: WASD, Q/E, Shift, mouse look
 zig build run-engine -- --frames 120
 zig build run-engine -- --headless --capture /tmp/engine.ppm
-zig build shaders                        # e7s -> Slang -> SPIR-V
+zig build shaders                        # both e7s shader sets -> SPIR-V
 zig build run-scene                      # native renderer demo/fallback
 ```
 

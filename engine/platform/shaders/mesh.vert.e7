@@ -1,0 +1,25 @@
+# Mesh vertex stage with per-frame camera matrices in a 192-byte uniform block.
+
+Scene <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+
+@binding(0, 0)
+scene: Scene
+
+In <- struct
+    @location(0) position: [f32; 3]
+    @location(1) color: [f32; 3]
+
+Out <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) vcolor: [f32; 3]
+
+@vertex
+main <- (input: In) -> Out:
+    position := [input.position.x, input.position.y, input.position.z, 1.0] as [f32; 4]
+    world := scene.model * position
+    view := scene.view * world
+    clip := scene.proj * view
+    ret Out{position: clip, vcolor: input.color}

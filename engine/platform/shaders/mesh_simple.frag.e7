@@ -1,0 +1,8 @@
+# Mesh fragment stage without uniforms: vertex colour passthrough.
+
+In <- struct
+    @location(0) vcolor: [f32; 3]
+
+@fragment
+main <- (input: In) -> [f32; 4]:
+    ret [input.vcolor.x, input.vcolor.y, input.vcolor.z, 1.0]

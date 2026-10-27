@@ -149,7 +149,8 @@ entry points, traits/extensions, generics, modules, constants, enums, control
 flow, match, and the main diagnostics.  For real compiler validation, run
 `tools/validate-examples.sh` (or `tools/check-slang.sh` with `SLANGC` pointing
 at a Slang compiler); it transpiles all examples and the canonical
-`engine/shaders/*.e7` scene shaders, compiles every entry to SPIR-V, and fails
+`engine/shaders/*.e7` and `engine/platform/shaders/*.e7` shaders, compiles
+every entry to SPIR-V, and fails
 on any diagnostic.  This is done during development with Slang 2026.20 (see
 `docs/slang-notes.md` for the verified syntax matrix).
 
