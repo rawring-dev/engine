@@ -1090,6 +1090,32 @@ vulkan_graphics_pipeline_destroy <- (device: i64, pipeline: i64, layout: i64) ->
     destroy_layout := bind_vk("vkDestroyPipelineLayout")
     e7_ffi_call3(destroy_layout, device, layout, 0)
 
+record_indexed_draw <- (command: i64, index_buffer: i64, index_count: i64, descriptor_set: i64, pipeline_layout: i64, dynamic_offset: i64, extra_objects: i64, descriptor_sets: u64, bind_descriptor: u64) -> nil:
+    bind_index := bind_vk("vkCmdBindIndexBuffer")
+    e7_ffi_call4(bind_index, command, index_buffer, 0, 0)
+    draw_indexed := bind_vk("vkCmdDrawIndexed")
+    e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+    if extra_objects > 0:
+        if descriptor_set != 0:
+            offsets2 := e7_alloc_bytes(4)
+            e7_store_u32(offsets2, dynamic_offset + 320)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets2)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets2)
+    if extra_objects > 1:
+        if descriptor_set != 0:
+            offsets3 := e7_alloc_bytes(4)
+            e7_store_u32(offsets3, dynamic_offset + 640)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets3)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets3)
+    ret
+
+record_plain_draw <- (command: i64) -> nil:
+    draw := bind_vk("vkCmdDraw")
+    e7_ffi_call5(draw, command, 3, 1, 0, 0)
+    ret
+
 vulkan_draw_triangle_capture <- (
     device: i64,
     queue: i64,
@@ -1109,6 +1135,7 @@ vulkan_draw_triangle_capture <- (
     pipeline_layout: i64,
     dynamic_offset: i64,
     has_depth: i64,
+    extra_objects: i64,
     out_pixels: u64,
     out_size: u64,
 ) -> i64:
@@ -1226,21 +1253,17 @@ vulkan_draw_triangle_capture <- (
         bind_vertex := bind_vk("vkCmdBindVertexBuffers")
         e7_ffi_call5(bind_vertex, command, 0, 1, vertex_buffers, vertex_offsets)
     descriptor_sets := e7_alloc_bytes(8)
+    bind_descriptor := bind_vk("vkCmdBindDescriptorSets")
     if descriptor_set != 0:
         e7_store_u64(descriptor_sets, descriptor_set)
         dynamic_offsets := e7_alloc_bytes(4)
         e7_store_u32(dynamic_offsets, dynamic_offset)
-        bind_descriptor := bind_vk("vkCmdBindDescriptorSets")
         e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, dynamic_offsets)
         e7_free_ptr(dynamic_offsets)
     if index_buffer != 0:
-        bind_index := bind_vk("vkCmdBindIndexBuffer")
-        e7_ffi_call4(bind_index, command, index_buffer, 0, 0)
-        draw_indexed := bind_vk("vkCmdDrawIndexed")
-        e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+        record_indexed_draw(command, index_buffer, index_count, descriptor_set, pipeline_layout, dynamic_offset, extra_objects, descriptor_sets, bind_descriptor)
     else:
-        draw := bind_vk("vkCmdDraw")
-        e7_ffi_call5(draw, command, 3, 1, 0, 0)
+        record_plain_draw(command)
     end_render_pass := bind_vk("vkCmdEndRenderPass")
     e7_ffi_call1(end_render_pass, command)
     transition_image(command, image, 1000001002, 6, 0, 2048, 8192, 4096)

@@ -1234,7 +1234,7 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                    if vertex_ok != 0:
         \\                        mesh_pixels_out := e7_alloc_bytes(8)
         \\                        mesh_size_out := e7_alloc_bytes(8)
-        \\                        mesh_drew := vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, e7_load_u64(mesh_pipeline_out), framebuffers_handle, image_count, width, height, e7_load_u64(vertex_buffer_out), 0, 0, 0, 0, 0, 0, mesh_pixels_out, mesh_size_out)
+        \\                        mesh_drew := vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, e7_load_u64(mesh_pipeline_out), framebuffers_handle, image_count, width, height, e7_load_u64(vertex_buffer_out), 0, 0, 0, 0, 0, 0, 0, mesh_pixels_out, mesh_size_out)
         \\                        mesh_pixels := e7_load_u64(mesh_pixels_out)
         \\                        mesh_offset := ((height / 2) * width + width / 2) * 4
         \\                        mesh_center := e7_load_u32((mesh_pixels as u64) + (mesh_offset as u64))
@@ -1299,7 +1299,7 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                if pipeline_ok != 0:
         \\                    draw_pixels_out := e7_alloc_bytes(8)
         \\                    draw_size_out := e7_alloc_bytes(8)
-        \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, 0, 0, 0, 0, 0, 0, 0, draw_pixels_out, draw_size_out)
+        \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, 0, 0, 0, 0, 0, 0, 0, 0, draw_pixels_out, draw_size_out)
         \\                    draw_pixels := e7_load_u64(draw_pixels_out)
         \\                    center_offset := ((height / 2) * width + width / 2) * 4
         \\                    center := e7_load_u32((draw_pixels as u64) + (center_offset as u64))
@@ -1536,6 +1536,7 @@ test "e7 scene module draws an indexed cube and captures it" {
     defer analysis.deinit();
     if (!analysis.ok()) {
         for (analysis.diagnostics) |d| std.debug.print("scene diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = ".e7-scene-fail.e7", .data = source }) catch {};
         return error.TestUnexpectedResult;
     }
     var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});

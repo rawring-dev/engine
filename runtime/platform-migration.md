@@ -139,8 +139,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   dynamic offsets; buffer/descriptor slot count is configurable and the draw
   path binds a dynamic offset. This is the foundation for per-object model/tint
   slots. Runtime: **136/136**.
-- Remaining: multi-object slot filling/draw API, full engine renderer/scene API,
-  image/text, and deletion of the Zig layer.
+- **7e (done):** the frame recorder can bind dynamic uniform slots and issue
+  multiple indexed draws before submit; the scene fills a second object slot
+  (translated/red-tinted cube) and records two objects in one captured frame.
+  Runtime: **136/136**.
+- Remaining: engine draw API parity, image/text, and deletion of the Zig layer.
 
 ## Migration stages
 
