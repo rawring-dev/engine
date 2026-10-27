@@ -558,6 +558,15 @@ pub export fn e7_engine_window_create(title: i64, width: i64, height: i64) callc
     return @intCast(handle);
 }
 
+/// Native `SDL_Window*` for a window handle.  The e7 platform scene needs this
+/// to create its own Vulkan surface while the runtime still owns the window.
+pub export fn e7_engine_native_window(handle: i64) callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const window = window_mod.registry.get(@intCast(handle)) orelse return 0;
+    return @intCast(@intFromPtr(window.handle));
+}
+
 /// Drain pending SDL events for the window; returns 1 when it should close
 /// (window close request, or a host `requestQuit`).
 pub export fn e7_engine_window_pump(handle: i64) callconv(.c) i64 {
@@ -1114,9 +1123,10 @@ pub export fn e7_engine_should_close() callconv(.c) i64 {
     return 0;
 }
 
-pub fn symbols() [35]Symbol {
+pub fn symbols() [36]Symbol {
     return .{
         .{ .name = "e7_engine_window_create", .address = @intFromPtr(&e7_engine_window_create) },
+        .{ .name = "e7_engine_native_window", .address = @intFromPtr(&e7_engine_native_window) },
         .{ .name = "e7_engine_capture_mouse", .address = @intFromPtr(&e7_engine_capture_mouse) },
         .{ .name = "e7_engine_window_pump", .address = @intFromPtr(&e7_engine_window_pump) },
         .{ .name = "e7_engine_window_should_close", .address = @intFromPtr(&e7_engine_window_should_close) },

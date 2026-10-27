@@ -199,6 +199,10 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `e7_host_capture`) are JIT-tested end-to-end; this is the capture/frame-control
   foundation for removing the runtime renderer from `engine-run`. Runtime:
   **135/135**.
+- **9b (done):** native-window bridge: `e7_engine_native_window(handle)` exposes
+  the runtime SDL window pointer to e7, so the e7 Vulkan scene can create its
+  own surface while the runtime still owns event/window plumbing. Verified
+  stable across repeated queries. Runtime: **136/136**.
 - Remaining: wire e7 engine/scene/window to the host module and remove runtime
   renderer/window wrappers; image port.
 

@@ -70,6 +70,11 @@ pub const functions = [_]Function{
         .units = window_create_units,
     },
     .{
+        .name = "e7_engine_native_window",
+        .params = &.{.u64_},
+        .result = .u64_,
+    },
+    .{
         .name = "e7_engine_window_pump",
         .params = &.{.u64_},
         .result = .i64_,

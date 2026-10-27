@@ -62,6 +62,7 @@ pub const RuntimeFunction = enum(u8) {
     ecs_commands_despawn,
     // Engine/window/scene intrinsics (host-provided, see runtime/src/engine.zig).
     engine_window_create,
+    engine_native_window,
     engine_window_pump,
     engine_window_should_close,
     engine_window_destroy,
@@ -204,6 +205,7 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_add_component => "e7_ecs_commands_add_component",
             .ecs_commands_despawn => "e7_ecs_commands_despawn",
             .engine_window_create => "e7_engine_window_create",
+            .engine_native_window => "e7_engine_native_window",
             .engine_window_pump => "e7_engine_window_pump",
             .engine_window_should_close => "e7_engine_window_should_close",
             .engine_window_destroy => "e7_engine_window_destroy",
@@ -352,6 +354,7 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_insert_resource, .ecs_commands_row_add => 3,
             .ecs_query_begin => 4,
             .engine_window_create, .engine_scene_resize => 3,
+            .engine_native_window,
             .engine_window_pump,
             .engine_window_should_close,
             .engine_window_destroy,

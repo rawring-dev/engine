@@ -17,6 +17,7 @@ const dl = @import("ffi/dl.zig");
 const cbridge = @import("ffi/cbridge.zig");
 const shader_assets = @import("shader_assets");
 const host_mod = @import("host.zig");
+const engine = @import("engine.zig");
 const builtin = @import("builtin");
 
 fn mathLibraryPath() ?[]const u8 {
@@ -1530,6 +1531,40 @@ test "e7 input module maps actions and mouse state through SDL" {
     const selftest_fn = try jit.get(Selftest, "input_selftest");
     const result = selftest_fn();
     if (result == -1) return;
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "e7 native window binding exposes a stable SDL pointer" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return;
+    const probe =
+        \\native_window_probe <- () -> i64:
+        \\    win := e7_engine_window_create("e7 native probe", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    first := e7_engine_native_window(win)
+        \\    second := e7_engine_native_window(win)
+        \\    e7_engine_window_destroy(win)
+        \\    if first == 0:
+        \\        ret -2
+        \\    if first != second:
+        \\        ret -3
+        \\    ret 1
+    ;
+    engine.reset();
+    defer engine.shutdown();
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, probe, .{});
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |d| std.debug.print("native window diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-native-window");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "native_window_probe");
+    const result = probe_fn();
+    if (result == 0) return;
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
