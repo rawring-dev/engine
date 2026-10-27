@@ -6,7 +6,7 @@
 # The scene owns everything except the SDL window.
 
 scene_create <- (window_state: u64, requested_width: i64, requested_height: i64) -> u64:
-    scene := e7_alloc_bytes(512)
+    scene := e7_alloc_bytes(1024)
     e7_store_u64(scene, window_state)
     e7_store_u32(scene + 232, 0)
 
@@ -141,7 +141,7 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ubo_memory_out := e7_alloc_bytes(8)
     ubo_mapped_out := e7_alloc_bytes(8)
     ubo_size_out := e7_alloc_bytes(8)
-    if vulkan_uniform_resources(device, physical, 2, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
+    if vulkan_uniform_resources(device, physical, 8, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
         ret 0
     ubo_layout := e7_load_u64(ubo_layout_out)
     ubo_mapped := e7_load_u64(ubo_mapped_out)
@@ -234,7 +234,7 @@ scene_begin_frame <- (scene: u64) -> nil:
 
 scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, angle_milli: i64) -> nil:
     count := e7_load_u32(scene + 232)
-    if count >= 4:
+    if count >= 8:
         ret
     base := scene + 256 + ((count * 40) as u64)
     e7_store_u32(base, x_milli)
@@ -293,6 +293,14 @@ scene_draw <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
                 prepare_object_slot(ubo as u64, scene, 2 as i64)
             if count > 3:
                 prepare_object_slot(ubo as u64, scene, 3 as i64)
+            if count > 4:
+                prepare_object_slot(ubo as u64, scene, 4 as i64)
+            if count > 5:
+                prepare_object_slot(ubo as u64, scene, 5 as i64)
+            if count > 6:
+                prepare_object_slot(ubo as u64, scene, 6 as i64)
+            if count > 7:
+                prepare_object_slot(ubo as u64, scene, 7 as i64)
             extra = count - 1
     ret vulkan_draw_triangle_capture(
         e7_load_u64(scene + 32),

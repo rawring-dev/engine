@@ -160,8 +160,11 @@ C FFI, using only `e7_dl_*` / `e7_cffi_bind` / `e7_ffi_call*` and raw memory.
   `runtime/src/text.zig`, its symbol manifest, SDL3_ttf link directives, and the
   old text-dependent runtime tests. `zig build run-engine -- --frames 1
   --headless` passes. Runtime: **134/134**.
-- Remaining: engine draw-shape/mesh/texture/UI parity, image port, and deletion
-  of the remaining SDL/Vulkan Zig wrappers.
+- **7g (done):** object draw API extended to eight per-object UBO slots and
+  eight indexed draw calls per frame; the scene test records eight colored cubes
+  and captures the frame. Runtime: **134/134**.
+- Remaining: engine draw-shape/mesh/texture/UI parity, engine scene wiring,
+  image port, and deletion of the remaining SDL/Vulkan Zig wrappers.
 
 ## Migration stages
 

@@ -1116,6 +1116,34 @@ record_indexed_draw <- (command: i64, index_buffer: i64, index_count: i64, descr
             e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets4)
             e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
             e7_free_ptr(offsets4)
+    if extra_objects > 3:
+        if descriptor_set != 0:
+            offsets5 := e7_alloc_bytes(4)
+            e7_store_u32(offsets5, dynamic_offset + 1280)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets5)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets5)
+    if extra_objects > 4:
+        if descriptor_set != 0:
+            offsets6 := e7_alloc_bytes(4)
+            e7_store_u32(offsets6, dynamic_offset + 1600)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets6)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets6)
+    if extra_objects > 5:
+        if descriptor_set != 0:
+            offsets7 := e7_alloc_bytes(4)
+            e7_store_u32(offsets7, dynamic_offset + 1920)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets7)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets7)
+    if extra_objects > 6:
+        if descriptor_set != 0:
+            offsets8 := e7_alloc_bytes(4)
+            e7_store_u32(offsets8, dynamic_offset + 2240)
+            e7_ffi_call8(bind_descriptor, command, 0, pipeline_layout, 0, 1, descriptor_sets, 1, offsets8)
+            e7_ffi_call6(draw_indexed, command, index_count, 1, 0, 0, 0)
+            e7_free_ptr(offsets8)
     ret
 
 record_plain_draw <- (command: i64) -> nil:
