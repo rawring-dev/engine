@@ -3429,3 +3429,346 @@ test "e7 text module loads a font, measures, and rasterizes text" {
     }
     try std.testing.expectEqual(@as(i64, 1), result);
 }
+
+// ---------------------------------------------------------------------------
+// Engine physics regression: wake sleeping bodies when their support is removed
+// ---------------------------------------------------------------------------
+
+/// Checked-in engine modules needed to compile the physics step end to end
+/// (core pulls in the e7 platform window/input layer).
+const JitPhysicsRepoModule = struct {
+    name: []const u8,
+    path: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+};
+
+const jit_physics_module_specs = [_]JitPhysicsRepoModule{
+    .{ .name = "platform", .path = "engine/platform/main.e7" },
+    .{ .name = "text", .path = "engine/platform/text.e7" },
+    .{ .name = "sdl", .path = "engine/platform/sdl.e7" },
+    .{ .name = "vulkan", .path = "engine/platform/vulkan.e7" },
+    .{ .name = "scene", .path = "engine/platform/scene.e7" },
+    .{ .name = "engine_window", .path = "engine/platform/engine_window.e7" },
+    .{ .name = "engine_scene", .path = "engine/platform/engine_scene.e7" },
+    .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\nmod window\n" },
+    .{ .name = "events", .path = "engine/core/events.e7" },
+    .{ .name = "ecs", .path = "engine/core/ecs.e7" },
+    .{ .name = "time", .path = "engine/core/time.e7" },
+    .{ .name = "input", .path = "engine/core/input.e7" },
+    .{ .name = "camera", .path = "engine/core/camera.e7" },
+    .{ .name = "window", .path = "engine/core/window.e7" },
+    .{ .name = "physics", .path = "engine/physics/main.e7" },
+    .{ .name = "broadphase", .path = "engine/physics/broadphase.e7" },
+    .{ .name = "narrowphase", .path = "engine/physics/narrowphase.e7" },
+};
+
+const JitLoadedPhysicsModules = struct {
+    sources: []compiler.pipeline.SourceFile,
+    owned: [][]u8,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *JitLoadedPhysicsModules) void {
+        for (self.owned) |buffer| self.allocator.free(buffer);
+        self.allocator.free(self.owned);
+        self.allocator.free(self.sources);
+    }
+};
+
+fn loadJitPhysicsModules(allocator: std.mem.Allocator) !JitLoadedPhysicsModules {
+    const sources = try allocator.alloc(compiler.pipeline.SourceFile, jit_physics_module_specs.len);
+    errdefer allocator.free(sources);
+    const owned = try allocator.alloc([]u8, jit_physics_module_specs.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |buffer| allocator.free(buffer);
+        allocator.free(owned);
+    }
+    for (jit_physics_module_specs, 0..) |spec, index| {
+        const data: []u8 = if (spec.source) |literal| blk: {
+            break :blk try allocator.dupe(u8, literal);
+        } else blk: {
+            const path = spec.path orelse return error.TestUnexpectedResult;
+            break :blk try readRepoSource(allocator, path);
+        };
+        owned[index] = data;
+        sources[index] = .{ .name = spec.name, .source = data };
+        initialized = index + 1;
+    }
+    return .{ .sources = sources, .owned = owned, .allocator = allocator };
+}
+
+test "physics sleeping stack wakes when its support is removed" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+
+    // Two pre-settled two-box stacks are seeded already asleep (sleep_state
+    // [timer, 1.0]) with a 1 cm rest overlap so the support query sees contact.
+    // Stack A despawns its lower box; stack B moves its lower box away.  Both
+    // top boxes must wake in the next Update and then fall to the ground.
+    const root_source =
+        \\mod platform
+        \\mod core
+        \\mod physics
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
+        \\use physics::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    top_a_sleep_before: i64
+        \\    top_a_y_before: i64
+        \\    bottom_a_sleep_before: i64
+        \\    top_b_sleep_before: i64
+        \\    top_a_sleep_after: i64
+        \\    top_b_sleep_after: i64
+        \\    top_a_y_after: i64
+        \\    top_b_y_after: i64
+        \\    support_a_rows_after: i64
+        \\    support_b_rows_after: i64
+        \\pub SnapshotBefore <- trigger
+        \\pub RemoveSupport <- trigger
+        \\pub SnapshotAfter <- trigger
+        \\pub SnapshotFell <- trigger
+        \\pub SleepStackScene <- plugin
+        \\    sleep_stack_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe {
+        \\            top_a_sleep_before: -1,
+        \\            top_a_y_before: 0,
+        \\            bottom_a_sleep_before: -1,
+        \\            top_b_sleep_before: -1,
+        \\            top_a_sleep_after: -1,
+        \\            top_b_sleep_after: -1,
+        \\            top_a_y_after: 0,
+        \\            top_b_y_after: 0,
+        \\            support_a_rows_after: 0,
+        \\            support_b_rows_after: 0,
+        \\        })
+        \\        commands.insert_resource(Input {
+        \\            window: 0,
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        sleepers := map[i64, [f32]] {}
+        \\        sleepers[10] = [1.0, 1.0]
+        \\        sleepers[11] = [1.0, 1.0]
+        \\        sleepers[12] = [1.0, 1.0]
+        \\        sleepers[13] = [1.0, 1.0]
+        \\        commands.insert_resource(PhysicsWorld {
+        \\            gravity_y: -30.0,
+        \\            max_step: 0.05,
+        \\            grounded: false,
+        \\            jump_latched: false,
+        \\            player_x: 0.0,
+        \\            player_y: 0.0,
+        \\            player_z: 0.0,
+        \\            camera_yaw: 0.0,
+        \\            camera_pitch: 0.0,
+        \\            move_speed: 4.0,
+        \\            quaternions: map[i64, [f32]] {},
+        \\            plane_normal: [0.0, 1.0, 0.0],
+        \\            plane_offset: 0.0,
+        \\            friction: 0.9,
+        \\            friction_static: 1.15,
+        \\            pending_impulses: map[i64, [f32]] {},
+        \\            sleep_state: sleepers,
+        \\        })
+        \\        index := 0
+        \\        while index < 4:
+        \\            body_id := 10 + index
+        \\            x := 0.0
+        \\            y := 0.5
+        \\            if index == 1:
+        \\                y = 1.49
+        \\            if index == 2:
+        \\                x = 5.0
+        \\            if index == 3:
+        \\                x = 5.0
+        \\                y = 1.49
+        \\            transform := Transform { translation: [x, y, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\            id := BodyId { id: body_id }
+        \\            bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\            body := RigidBody {
+        \\                velocity: [0.0, 0.0, 0.0],
+        \\                angular_velocity: [0.0, 0.0, 0.0],
+        \\                orientation: [0.0, 0.0, 0.0],
+        \\                inv_mass: 1.0,
+        \\                gravity_scale: 1.0,
+        \\                rotation_locked: false,
+        \\                is_static: false,
+        \\            }
+        \\            collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\            flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: body_id, held_by: 0 }
+        \\            commands.add_row(Components, { transform, id, bounds, body, collider, flags })
+        \\            index = index + 1
+        \\@trigger(SnapshotBefore)
+        \\pub snapshot_before <- sys (
+        \\    world: res &PhysicsWorld,
+        \\    rows: select &Transform, &BodyId from Components,
+        \\    probe: res &mut Probe,
+        \\):
+        \\    for (transform, id) in rows:
+        \\        sleeping := 0
+        \\        entry := world.sleep_state[id.id]
+        \\        if entry.len() >= 2:
+        \\            if entry[1] > 0.5:
+        \\                sleeping = 1
+        \\        if id.id == 10:
+        \\            probe.bottom_a_sleep_before = sleeping
+        \\        if id.id == 11:
+        \\            probe.top_a_sleep_before = sleeping
+        \\            probe.top_a_y_before = e7_f32_to_milli(transform.translation[1])
+        \\        if id.id == 13:
+        \\            probe.top_b_sleep_before = sleeping
+        \\@trigger(RemoveSupport)
+        \\pub remove_support <- sys (
+        \\    rows: select &mut Transform, &BodyId from Components,
+        \\    commands: &mut Commands,
+        \\):
+        \\    for (transform, id) in rows:
+        \\        if id.id == 10:
+        \\            commands.despawn(rows.entity())
+        \\        if id.id == 12:
+        \\            transform.translation[0] = 20.0
+        \\@trigger(SnapshotAfter)
+        \\pub snapshot_after <- sys (
+        \\    world: res &PhysicsWorld,
+        \\    rows: select &Transform, &BodyId from Components,
+        \\    probe: res &mut Probe,
+        \\):
+        \\    for (transform, id) in rows:
+        \\        sleeping := 0
+        \\        entry := world.sleep_state[id.id]
+        \\        if entry.len() >= 2:
+        \\            if entry[1] > 0.5:
+        \\                sleeping = 1
+        \\        if id.id == 10:
+        \\            probe.support_a_rows_after = probe.support_a_rows_after + 1
+        \\        if id.id == 11:
+        \\            probe.top_a_sleep_after = sleeping
+        \\        if id.id == 12:
+        \\            probe.support_b_rows_after = probe.support_b_rows_after + 1
+        \\        if id.id == 13:
+        \\            probe.top_b_sleep_after = sleeping
+        \\@trigger(SnapshotFell)
+        \\pub snapshot_fell <- sys (
+        \\    rows: select &Transform, &BodyId from Components,
+        \\    probe: res &mut Probe,
+        \\):
+        \\    for (transform, id) in rows:
+        \\        if id.id == 11:
+        \\            probe.top_a_y_after = e7_f32_to_milli(transform.translation[1])
+        \\        if id.id == 13:
+        \\            probe.top_b_y_after = e7_f32_to_milli(transform.translation[1])
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(SleepStackScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await SnapshotBefore()
+        \\    await RemoveSupport()
+        \\    await Update()
+        \\    await SnapshotAfter()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await SnapshotFell()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        modules.sources,
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("sleep support diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-sleep-support");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const top_a_sleep_before = aggregate.e7_load_i64(probe_ptr);
+    const top_a_y_before = aggregate.e7_load_i64(probe_ptr + 8);
+    const bottom_a_sleep_before = aggregate.e7_load_i64(probe_ptr + 16);
+    const top_b_sleep_before = aggregate.e7_load_i64(probe_ptr + 24);
+    const top_a_sleep_after = aggregate.e7_load_i64(probe_ptr + 32);
+    const top_b_sleep_after = aggregate.e7_load_i64(probe_ptr + 40);
+    const top_a_y_after = aggregate.e7_load_i64(probe_ptr + 48);
+    const top_b_y_after = aggregate.e7_load_i64(probe_ptr + 56);
+    const support_a_rows_after = aggregate.e7_load_i64(probe_ptr + 64);
+    const support_b_rows_after = aggregate.e7_load_i64(probe_ptr + 72);
+    // Both seeded stacks start asleep; the support pass must not wake them.
+    try std.testing.expectEqual(@as(i64, 1), bottom_a_sleep_before);
+    try std.testing.expectEqual(@as(i64, 1), top_a_sleep_before);
+    try std.testing.expectEqual(@as(i64, 1), top_b_sleep_before);
+    try std.testing.expectEqual(@as(i64, 1490), top_a_y_before);
+    // Despawned support is gone; moved support still exists.
+    try std.testing.expectEqual(@as(i64, 0), support_a_rows_after);
+    try std.testing.expectEqual(@as(i64, 1), support_b_rows_after);
+    // Wake-on-support-loss: one Update after removing/moving the support both
+    // upper bodies are awake instead of frozen.
+    try std.testing.expectEqual(@as(i64, 0), top_a_sleep_after);
+    try std.testing.expectEqual(@as(i64, 0), top_b_sleep_after);
+    // The woken bodies then fall: y drops from 1.49 to roughly the box rest
+    // height (0.5) and stays above the ground plane.
+    try std.testing.expect(top_a_y_after < 1200);
+    try std.testing.expect(top_b_y_after < 1200);
+    try std.testing.expect(top_a_y_after > 0);
+    try std.testing.expect(top_b_y_after > 0);
+}

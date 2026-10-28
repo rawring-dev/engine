@@ -226,6 +226,183 @@ find_bound_index_local <- (ids: [i64], id: i64) -> i64:
     ret -1
 
 # ---------------------------------------------------------------------------
+# Sleep support helpers
+# ---------------------------------------------------------------------------
+
+# Distance from a body centre to the support direction along -normal, i.e. the
+# shape's half-extent projected onto `normal`.  Boxes use the rotated extents,
+# capsules use radius + half_height * |axis.n|, spheres use the radius.
+shape_extent_along <- (
+    shape: i64,
+    half: Vec3,
+    radius: f32,
+    half_height: f32,
+    orientation: Quat,
+    normal: Vec3,
+) -> f32:
+    length := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    if length < 0.000001:
+        ret 0.0
+    nx := normal.x / length
+    ny := normal.y / length
+    nz := normal.z / length
+    if shape == 0:
+        ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+        ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+        az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+        ex := e7_f32_abs(nx * ax.x + ny * ax.y + nz * ax.z) * half.x
+        ey := e7_f32_abs(nx * ay.x + ny * ay.y + nz * ay.z) * half.y
+        ez := e7_f32_abs(nx * az.x + ny * az.y + nz * az.z) * half.z
+        ret ex + ey + ez
+    if shape == 2:
+        axis := quat_rotate(
+            Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w },
+            Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+        )
+        ret radius + half_height * e7_f32_abs(nx * axis.x + ny * axis.y + nz * axis.z)
+    ret radius
+
+# Contact manifold for two bodies, used by the main collision pass and by the
+# sleep-support check (which reads the stored per-body state).  The returned
+# normal points from body B toward body A.  Aggregate arguments are rebuilt as
+# literals at each call because e7 aggregates move when passed by value.
+pair_manifold <- (
+    a_shape: i64,
+    a_center: Vec3,
+    a_half: Vec3,
+    a_radius: f32,
+    a_half_height: f32,
+    a_q: Quat,
+    b_shape: i64,
+    b_center: Vec3,
+    b_half: Vec3,
+    b_radius: f32,
+    b_half_height: f32,
+    b_q: Quat,
+) -> Manifold:
+    contact := Manifold {
+        hit: false,
+        normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0,
+        contact: Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+    }
+    if a_shape == 2:
+        if b_shape == 1:
+            contact = sphere_capsule_manifold(
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                a_half_height,
+                Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+            )
+            contact = Manifold {
+                hit: contact.hit,
+                normal: Vec3 { x: 0.0 - contact.normal.x, y: 0.0 - contact.normal.y, z: 0.0 - contact.normal.z },
+                penetration: contact.penetration,
+                contact: Vec3 { x: contact.contact.x, y: contact.contact.y, z: contact.contact.z },
+            }
+        elif b_shape == 0:
+            contact = capsule_obb_manifold(
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                a_half_height,
+                Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+                Obb {
+                    center: Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                    half_extents: Vec3 { x: b_half.x, y: b_half.y, z: b_half.z },
+                    orientation: Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+                },
+            )
+        else:
+            contact = capsule_capsule_manifold(
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                a_half_height,
+                Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+                b_half_height,
+                Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+            )
+    elif a_shape == 1:
+        if b_shape == 2:
+            contact = sphere_capsule_manifold(
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+                b_half_height,
+                Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+            )
+        elif b_shape == 0:
+            contact = sphere_obb_manifold(
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                Obb {
+                    center: Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                    half_extents: Vec3 { x: b_half.x, y: b_half.y, z: b_half.z },
+                    orientation: Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+                },
+            )
+        else:
+            contact = sphere_sphere_manifold(
+                Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                a_radius,
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+            )
+    elif a_shape == 0:
+        if b_shape == 0:
+            contact = obb_obb_manifold(
+                Obb {
+                    center: Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                    half_extents: Vec3 { x: a_half.x, y: a_half.y, z: a_half.z },
+                    orientation: Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+                },
+                Obb {
+                    center: Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                    half_extents: Vec3 { x: b_half.x, y: b_half.y, z: b_half.z },
+                    orientation: Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+                },
+            )
+        elif b_shape == 1:
+            push := sphere_obb_manifold(
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+                Obb {
+                    center: Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                    half_extents: Vec3 { x: a_half.x, y: a_half.y, z: a_half.z },
+                    orientation: Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+                },
+            )
+            contact = Manifold {
+                hit: push.hit,
+                normal: Vec3 { x: 0.0 - push.normal.x, y: 0.0 - push.normal.y, z: 0.0 - push.normal.z },
+                penetration: push.penetration,
+                contact: Vec3 { x: push.contact.x, y: push.contact.y, z: push.contact.z },
+            }
+        else:
+            push := capsule_obb_manifold(
+                Vec3 { x: b_center.x, y: b_center.y, z: b_center.z },
+                b_radius,
+                b_half_height,
+                Quat { x: b_q.x, y: b_q.y, z: b_q.z, w: b_q.w },
+                Obb {
+                    center: Vec3 { x: a_center.x, y: a_center.y, z: a_center.z },
+                    half_extents: Vec3 { x: a_half.x, y: a_half.y, z: a_half.z },
+                    orientation: Quat { x: a_q.x, y: a_q.y, z: a_q.z, w: a_q.w },
+                },
+            )
+            contact = Manifold {
+                hit: push.hit,
+                normal: Vec3 { x: 0.0 - push.normal.x, y: 0.0 - push.normal.y, z: 0.0 - push.normal.z },
+                penetration: push.penetration,
+                contact: Vec3 { x: push.contact.x, y: push.contact.y, z: push.contact.z },
+            }
+    ret contact
+
+# ---------------------------------------------------------------------------
 # The fixed-step system
 # ---------------------------------------------------------------------------
 
@@ -592,98 +769,20 @@ pub physics_step <- sys (
                 half_extents: Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
                 orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
             }
-            contact := Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center_x, y: center_y, z: center_z } }
-            if flags.shape == 2:
-                if other_shape == 1:
-                    contact = sphere_capsule_manifold(
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        flags.half_height,
-                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                    )
-                    contact = Manifold {
-                        hit: contact.hit,
-                        normal: Vec3 { x: 0.0 - contact.normal.x, y: 0.0 - contact.normal.y, z: 0.0 - contact.normal.z },
-                        penetration: contact.penetration,
-                        contact: Vec3 { x: contact.contact.x, y: contact.contact.y, z: contact.contact.z },
-                    }
-                elif other_shape == 0:
-                    contact = capsule_obb_manifold(
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        flags.half_height,
-                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
-                    )
-                else:
-                    contact = capsule_capsule_manifold(
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        flags.half_height,
-                        Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                        stored_half_height[other_index as usize],
-                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-                    )
-            elif flags.shape == 1:
-                if other_shape == 2:
-                    contact = sphere_capsule_manifold(
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                        stored_half_height[other_index as usize],
-                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-                    )
-                elif other_shape == 0:
-                    contact = sphere_obb_manifold(
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
-                    )
-                else:
-                    contact = sphere_sphere_manifold(
-                        Vec3 { x: center_x, y: center_y, z: center_z },
-                        flags.radius,
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                    )
-            elif flags.shape == 0:
-                if other_shape == 0:
-                    contact = obb_obb_manifold(
-                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
-                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
-                    )
-                elif other_shape == 1:
-                    sphere_push := sphere_obb_manifold(
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
-                    )
-                    contact = Manifold {
-                        hit: sphere_push.hit,
-                        normal: Vec3 { x: 0.0 - sphere_push.normal.x, y: 0.0 - sphere_push.normal.y, z: 0.0 - sphere_push.normal.z },
-                        penetration: sphere_push.penetration,
-                        contact: Vec3 { x: sphere_push.contact.x, y: sphere_push.contact.y, z: sphere_push.contact.z },
-                    }
-                else:
-                    capsule_push := capsule_obb_manifold(
-                        Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                        stored_radius[other_index as usize],
-                        stored_half_height[other_index as usize],
-                        Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
-                    )
-                    contact = Manifold {
-                        hit: capsule_push.hit,
-                        normal: Vec3 { x: 0.0 - capsule_push.normal.x, y: 0.0 - capsule_push.normal.y, z: 0.0 - capsule_push.normal.z },
-                        penetration: capsule_push.penetration,
-                        contact: Vec3 { x: capsule_push.contact.x, y: capsule_push.contact.y, z: capsule_push.contact.z },
-                    }
-
+            contact := pair_manifold(
+                flags.shape,
+                Vec3 { x: center_x, y: center_y, z: center_z },
+                Vec3 { x: half_x, y: half_y, z: half_z },
+                flags.radius,
+                flags.half_height,
+                Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+                other_shape,
+                Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
+                Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
+                stored_radius[other_index as usize],
+                stored_half_height[other_index as usize],
+                Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
+            )
             if contact.hit and contact.penetration > 0.0:
                 if contact.normal.y > 0.5:
                     supported = true
@@ -917,6 +1016,127 @@ pub physics_step <- sys (
             world.player_x = transform.translation[0]
             world.player_y = transform.translation[1]
             world.player_z = transform.translation[2]
+
+    # ------------------------------------- wake sleeping bodies without support
+    # Sleeping bodies skip integration and body-body contact generation, so a
+    # body whose support was removed (despawned supporting box, support moved
+    # away by a pickup, body pushed off an edge) would stay frozen in mid-air.
+    # Re-check every sleeping body against this step's final body state and
+    # clear its sleep timer when nothing supports it.  Only sleeping bodies are
+    # tested, so stable stacks keep sleeping; cheap vertical early-outs keep the
+    # narrowphase tests limited to plausible supporting pairs.
+    plane_length := e7_f32_sqrt(plane_x * plane_x + plane_y * plane_y + plane_z * plane_z)
+    support_nx := plane_x
+    support_ny := plane_y
+    support_nz := plane_z
+    if plane_length > 0.000001:
+        support_nx = plane_x / plane_length
+        support_ny = plane_y / plane_length
+        support_nz = plane_z / plane_length
+    sleep_index := 0
+    while sleep_index < body_count:
+        sleeper_sleeping := stored_sleeping[sleep_index as usize] != 0
+        sleeper_shape := stored_shapes[sleep_index as usize]
+        if sleeper_sleeping and sleeper_shape != 3:
+            sleeper_id := ids[sleep_index as usize]
+            sleeper_bounds_base := sleep_index * 6
+            sleeper_min_x := stored_bounds[(sleeper_bounds_base + 0) as usize]
+            sleeper_min_y := stored_bounds[(sleeper_bounds_base + 1) as usize]
+            sleeper_min_z := stored_bounds[(sleeper_bounds_base + 2) as usize]
+            sleeper_max_x := stored_bounds[(sleeper_bounds_base + 3) as usize]
+            sleeper_max_y := stored_bounds[(sleeper_bounds_base + 4) as usize]
+            sleeper_max_z := stored_bounds[(sleeper_bounds_base + 5) as usize]
+            sleeper_x := (sleeper_min_x + sleeper_max_x) * 0.5
+            sleeper_y := (sleeper_min_y + sleeper_max_y) * 0.5
+            sleeper_z := (sleeper_min_z + sleeper_max_z) * 0.5
+            sleeper_half_base := sleep_index * 3
+            sleeper_half_x := stored_half[(sleeper_half_base + 0) as usize]
+            sleeper_half_y := stored_half[(sleeper_half_base + 1) as usize]
+            sleeper_half_z := stored_half[(sleeper_half_base + 2) as usize]
+            sleeper_quat_base := sleep_index * 4
+            sleeper_qx := stored_quats[(sleeper_quat_base + 0) as usize]
+            sleeper_qy := stored_quats[(sleeper_quat_base + 1) as usize]
+            sleeper_qz := stored_quats[(sleeper_quat_base + 2) as usize]
+            sleeper_qw := stored_quats[(sleeper_quat_base + 3) as usize]
+            sleeper_radius := stored_radius[sleep_index as usize]
+            sleeper_half_height := stored_half_height[sleep_index as usize]
+            sleeper_extent := shape_extent_along(
+                sleeper_shape,
+                Vec3 { x: sleeper_half_x, y: sleeper_half_y, z: sleeper_half_z },
+                sleeper_radius,
+                sleeper_half_height,
+                Quat { x: sleeper_qx, y: sleeper_qy, z: sleeper_qz, w: sleeper_qw },
+                Vec3 { x: support_nx, y: support_ny, z: support_nz },
+            )
+            sleeper_along := support_nx * sleeper_x + support_ny * sleeper_y + support_nz * sleeper_z
+            sleeper_bottom := sleeper_along - sleeper_extent
+            supported_now := sleeper_bottom <= ground + 0.03
+            if not supported_now:
+                other := 0
+                while other < body_count:
+                    if other != sleep_index:
+                        other_shape := stored_shapes[other as usize]
+                        # Shape 3 is the collision plane entity; the infinite
+                        # ground plane is handled above instead.
+                        if other_shape != 3:
+                            other_bounds_base := other * 6
+                            other_min_x := stored_bounds[(other_bounds_base + 0) as usize]
+                            other_min_y := stored_bounds[(other_bounds_base + 1) as usize]
+                            other_min_z := stored_bounds[(other_bounds_base + 2) as usize]
+                            other_max_x := stored_bounds[(other_bounds_base + 3) as usize]
+                            other_max_y := stored_bounds[(other_bounds_base + 4) as usize]
+                            other_max_z := stored_bounds[(other_bounds_base + 5) as usize]
+                            other_x := (other_min_x + other_max_x) * 0.5
+                            other_y := (other_min_y + other_max_y) * 0.5
+                            other_z := (other_min_z + other_max_z) * 0.5
+                            other_half_base := other * 3
+                            other_half_x := stored_half[(other_half_base + 0) as usize]
+                            other_half_y := stored_half[(other_half_base + 1) as usize]
+                            other_half_z := stored_half[(other_half_base + 2) as usize]
+                            other_quat_base := other * 4
+                            other_qx := stored_quats[(other_quat_base + 0) as usize]
+                            other_qy := stored_quats[(other_quat_base + 1) as usize]
+                            other_qz := stored_quats[(other_quat_base + 2) as usize]
+                            other_qw := stored_quats[(other_quat_base + 3) as usize]
+                            other_radius := stored_radius[other as usize]
+                            other_half_height := stored_half_height[other as usize]
+                            other_along := support_nx * other_x + support_ny * other_y + support_nz * other_z
+                            if other_along < sleeper_along:
+                                other_extent := shape_extent_along(
+                                    other_shape,
+                                    Vec3 { x: other_half_x, y: other_half_y, z: other_half_z },
+                                    other_radius,
+                                    other_half_height,
+                                    Quat { x: other_qx, y: other_qy, z: other_qz, w: other_qw },
+                                    Vec3 { x: support_nx, y: support_ny, z: support_nz },
+                                )
+                                other_top := other_along + other_extent
+                                # Only a body whose top is near the sleeper's
+                                # bottom can support it; the narrowphase test
+                                # below confirms actual contact.
+                                if e7_f32_abs(other_top - sleeper_bottom) <= 1.0:
+                                    contact := pair_manifold(
+                                        sleeper_shape,
+                                        Vec3 { x: sleeper_x, y: sleeper_y, z: sleeper_z },
+                                        Vec3 { x: sleeper_half_x, y: sleeper_half_y, z: sleeper_half_z },
+                                        sleeper_radius,
+                                        sleeper_half_height,
+                                        Quat { x: sleeper_qx, y: sleeper_qy, z: sleeper_qz, w: sleeper_qw },
+                                        other_shape,
+                                        Vec3 { x: other_x, y: other_y, z: other_z },
+                                        Vec3 { x: other_half_x, y: other_half_y, z: other_half_z },
+                                        other_radius,
+                                        other_half_height,
+                                        Quat { x: other_qx, y: other_qy, z: other_qz, w: other_qw },
+                                    )
+                                    if contact.hit and contact.penetration > 0.0:
+                                        normal_along := contact.normal.x * support_nx + contact.normal.y * support_ny + contact.normal.z * support_nz
+                                        if normal_along > 0.5:
+                                            supported_now = true
+                    other = other + 1
+            if not supported_now:
+                world.sleep_state[sleeper_id] = [0.0, 0.0]
+        sleep_index = sleep_index + 1
 
     spatial.cells = cells
     spatial.ids = ids
