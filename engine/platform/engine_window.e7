@@ -10,7 +10,7 @@ e7_engine_window_flags <- (headless: i64) -> i64:
     ret 268435488
 
 e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
-    headless := e7_host_headless()
+    headless := host::headless()
     initialized := 0
     if headless != 0:
         initialized = video_init("dummy")
@@ -46,7 +46,7 @@ e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
 e7_engine_window_pump <- (handle: u64) -> i64:
     if handle == 0:
         ret 1
-    e7_store_u32(handle + 8, 0)
+    ptr::store_u32(handle + 8, 0)
     text_input_reset(handle)
     mouse_reset_delta(handle)
     window_pump(handle)
@@ -130,7 +130,7 @@ e7_engine_mouse_y <- (handle: u64) -> i64:
 
 e7_engine_text_input <- (handle: u64) -> str:
     if handle == 0:
-        ret e7_str_new(0, 0)
+        ret str::from_bytes(0, 0)
     ret text_input_pending(handle)
 
 e7_engine_capture_mouse <- (handle: u64, enabled: i64) -> nil:

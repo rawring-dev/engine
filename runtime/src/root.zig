@@ -1244,25 +1244,25 @@ test "JIT computes float arithmetic, math intrinsics, and conversions" {
         \\    b := 2.0
         \\    half := a / b
         \\    three_five := half + 1.0
-        \\    s := e7_f32_sin(1.5707963267948966)
-        \\    c := e7_f32_cos(0.0)
-        \\    root := e7_f32_sqrt(9.0)
-        \\    absv := e7_f32_abs(-2.5)
-        \\    clamped := e7_f32_clamp(5.0, 0.0, 1.0)
+        \\    s := f32::sin(1.5707963267948966)
+        \\    c := f32::cos(0.0)
+        \\    root := f32::sqrt(9.0)
+        \\    absv := f32::abs(-2.5)
+        \\    clamped := f32::clamp(5.0, 0.0, 1.0)
         \\    i := three_five as i64
         \\    f := i as f64
         \\    less := three_five < 4.0
         \\    neq := three_five != 4.0
-        \\    total := e7_f32_to_milli(three_five) + e7_f32_to_milli(s) + e7_f32_to_milli(c)
-        \\    total = total + e7_f32_to_milli(root) + e7_f32_to_milli(absv) + e7_f32_to_milli(clamped)
-        \\    total = total + i + e7_f32_to_milli(f) + (less as i64) + (neq as i64)
+        \\    total := f32::to_milli(three_five) + f32::to_milli(s) + f32::to_milli(c)
+        \\    total = total + f32::to_milli(root) + f32::to_milli(absv) + f32::to_milli(clamped)
+        \\    total = total + i + f32::to_milli(f) + (less as i64) + (neq as i64)
         \\    total
-        \\sinm <- () -> i64 = e7_f32_to_milli(e7_f32_sin(1.5707963267948966))
-        \\cosm <- () -> i64 = e7_f32_to_milli(e7_f32_cos(0.0))
-        \\sqrtm <- () -> i64 = e7_f32_to_milli(e7_f32_sqrt(9.0))
-        \\absm <- () -> i64 = e7_f32_to_milli(e7_f32_abs(-2.5))
-        \\clampm <- () -> i64 = e7_f32_to_milli(e7_f32_clamp(5.0, 0.0, 1.0))
-        \\tfm <- () -> i64 = e7_f32_to_milli(5.0 / 2.0 + 1.0)
+        \\sinm <- () -> i64 = f32::to_milli(f32::sin(1.5707963267948966))
+        \\cosm <- () -> i64 = f32::to_milli(f32::cos(0.0))
+        \\sqrtm <- () -> i64 = f32::to_milli(f32::sqrt(9.0))
+        \\absm <- () -> i64 = f32::to_milli(f32::abs(-2.5))
+        \\clampm <- () -> i64 = f32::to_milli(f32::clamp(5.0, 0.0, 1.0))
+        \\tfm <- () -> i64 = f32::to_milli(5.0 / 2.0 + 1.0)
         \\casti <- () -> i64 = (5.0 / 2.0 + 1.0) as i64
         \\castv <- () -> i64:
         \\    a := 5.0
@@ -1276,9 +1276,9 @@ test "JIT computes float arithmetic, math intrinsics, and conversions" {
         \\    half := a / b
         \\    tf := half + 1.0
         \\    i := tf as i64
-        \\    e7_f32_to_milli(i as f64)
-        \\movement <- () -> i64 = e7_f32_to_milli(1.0 + 3.0 * 0.016)
-        \\roundtrip <- () -> i64 = e7_f32_to_milli(e7_f32_from_milli(1235))
+        \\    f32::to_milli(i as f64)
+        \\movement <- () -> i64 = f32::to_milli(1.0 + 3.0 * 0.016)
+        \\roundtrip <- () -> i64 = f32::to_milli(f32::from_milli(1235))
         \\comparisons <- () -> i64:
         \\    a := 1.5
         \\    b := 2.5
@@ -1359,7 +1359,7 @@ test "JIT round-trips JSON for derived structs" {
         \\    json_encode(p)
         \\decode_point <- () -> i64:
         \\    p := json_decode::<Point>("{\"x\": 1.5, \"y\": -2.0, \"name\": \"origin\"}")
-        \\    e7_f32_to_milli(p.x) + e7_f32_to_milli(p.y) + (p.name.len() as i64)
+        \\    f32::to_milli(p.x) + f32::to_milli(p.y) + (p.name.len() as i64)
         \\roundtrip_line <- () -> i64:
         \\    a := Point { x: 1.5, y: -2.0, name: "origin" }
         \\    b := Point { x: 0.0, y: 2.5, name: "dest" }
@@ -1368,7 +1368,7 @@ test "JIT round-trips JSON for derived structs" {
         \\    line := Line { start: a, end: b, tags: tags, points: points, count: 7, visible: true }
         \\    text := json_encode(line)
         \\    copy := json_decode::<Line>(text)
-        \\    e7_f32_to_milli(copy.start.x) + e7_f32_to_milli(copy.end.y) + (copy.end.name.len() as i64) + (copy.tags.len() as i64) + (copy.tags[1].len() as i64) + (copy.points.len() as i64) + e7_f32_to_milli(copy.points[1].x) + copy.count + (copy.visible as i64)
+        \\    f32::to_milli(copy.start.x) + f32::to_milli(copy.end.y) + (copy.end.name.len() as i64) + (copy.tags.len() as i64) + (copy.tags[1].len() as i64) + (copy.points.len() as i64) + f32::to_milli(copy.points[1].x) + copy.count + (copy.visible as i64)
     ,
         .{},
     );
@@ -1449,30 +1449,30 @@ test "JIT runs the complete JSON API from e7 source" {
         \\    text := json::encode(make_box())
         \\    copy := json::decode::<Box>(text)
         \\    total := copy.vector[2] as i64
-        \\    total = total + e7_f32_to_milli(copy.grid[1, 0])
+        \\    total = total + f32::to_milli(copy.grid[1, 0])
         \\    total = total + (copy.lookup["a"] as i64) + (copy.lookup["bb"] as i64)
         \\    total = total + (copy.name.len() as i64)
-        \\    total = total + (copy.points.len() as i64) + e7_f32_to_milli(copy.points[0].x)
+        \\    total = total + (copy.points.len() as i64) + f32::to_milli(copy.points[0].x)
         \\    total = total + shade_value(copy.shade)
         \\    total = total + (copy.colors.len() as i64)
         \\    total
         \\unknown_fields <- () -> i64:
         \\    p := json::decode::<Point>("{\"extra\": true, \"tag\": \"ab\", \"x\": 2.5}")
-        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\    f32::to_milli(p.x) + (p.tag.len() as i64)
         \\missing_field <- () -> i64:
         \\    p := json::decode::<Point>("{\"x\": 1.0}")
-        \\    if e7_handle(p) == 0:
+        \\    if ffi::handle(p) == 0:
         \\        ret 1
         \\    ret 0
         \\malformed <- () -> i64:
         \\    p := json::decode::<Point>("{oops}")
-        \\    if e7_handle(p) == 0:
+        \\    if ffi::handle(p) == 0:
         \\        ret 1
         \\    ret 0
         \\unicode_roundtrip <- () -> i64:
         \\    text := json::encode(Point { x: 2.5, tag: "héllo 😀" })
         \\    p := json::decode::<Point>(text)
-        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\    f32::to_milli(p.x) + (p.tag.len() as i64)
         \\encode_primitive <- () -> str:
         \\    json::encode(42)
         \\encode_vector <- () -> str:
@@ -1699,13 +1699,13 @@ test "JIT executes the generic text and parsing intrinsics" {
     var compiled = try compiler.pipeline.compile(
         std.testing.allocator,
         \\main <- () -> i32:
-        \\    lines := e7_str_lines("aa\nbb\ncc")
-        \\    fields := e7_str_fields(" x  y ")
-        \\    parts := e7_str_split("1/2/3", "/")
-        \\    number := e7_parse_i64("-42")
-        \\    value := e7_parse_f32("1.5")
+        \\    lines := str::lines("aa\nbb\ncc")
+        \\    fields := str::fields(" x  y ")
+        \\    parts := str::split("1/2/3", "/")
+        \\    number := i64::parse("-42")
+        \\    value := f32::parse("1.5")
         \\    values: [f32] := []
-        \\    values = e7_vec_push(values, value)
+        \\    values = vec::push(values, value)
         \\    number32 := number as i32
         \\    ret lines.len() * 100000 + fields.len() * 10000 + parts.len() * 1000 + (0 - number32) * 10 + values.len()
     ,
@@ -1735,11 +1735,11 @@ test "JIT loads an image through the e7 image intrinsics" {
     const source = try std.fmt.allocPrint(
         std.testing.allocator,
         \\main <- () -> i32:
-        \\    image := e7_image_load("{s}")
-        \\    width := e7_image_width(image) as i32
-        \\    height := e7_image_height(image) as i32
-        \\    pixels := e7_image_pixels(image)
-        \\    e7_image_free(image)
+        \\    image := image::load("{s}")
+        \\    width := image::width(image) as i32
+        \\    height := image::height(image) as i32
+        \\    pixels := image::pixels(image)
+        \\    image::free(image)
         \\    ret width * 10 + height + pixels.len() * 0
     ,
         .{absolute},
@@ -1914,7 +1914,7 @@ test "JIT executes broadphase aggregation and narrowphase helpers" {
         \\    )
         \\    cells := map[i64, [i64]] {}
         \\    key := cell_key(0, 0, 0)
-        \\    cells[key] = e7_vec_push(cells[key], 7)
+        \\    cells[key] = vec::push(cells[key], 7)
         \\    spatial := SpatialMap {
         \\        cell_size: 2.0,
         \\        cells: cells,
@@ -2103,12 +2103,12 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
         \\ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit = RayHit { hit: false, distance: 0.0, point: center }
         \\main <- () -> i32:
         \\    normalized := quat_normalize(Quat { x: 2.0, y: 0.0, z: 0.0, w: 0.0 })
-        \\    norm_length := e7_f32_sqrt(normalized.x * normalized.x + normalized.y * normalized.y + normalized.z * normalized.z + normalized.w * normalized.w)
+        \\    norm_length := f32::sqrt(normalized.x * normalized.x + normalized.y * normalized.y + normalized.z * normalized.z + normalized.w * normalized.w)
         \\    rotated_x := quat_rotate(quat_from_euler(0.0, 0.0, 1.5707963), Vec3 { x: 1.0, y: 0.0, z: 0.0 })
         \\    multiplied := quat_mul(quat_from_euler(0.0, 0.0, 0.7853982), quat_from_euler(0.0, 0.0, 0.7853982))
         \\    multiplied_x := quat_rotate(multiplied, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
         \\    integrated := quat_integrate(quat_identity(), Vec3 { x: 0.0, y: 0.0, z: 1.0 }, 0.016)
-        \\    integrated_length := e7_f32_sqrt(integrated.x * integrated.x + integrated.y * integrated.y + integrated.z * integrated.z + integrated.w * integrated.w)
+        \\    integrated_length := f32::sqrt(integrated.x * integrated.x + integrated.y * integrated.y + integrated.z * integrated.z + integrated.w * integrated.w)
         \\    integrated_x := quat_rotate(integrated, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
         \\    overlapping := obb_obb_manifold(
         \\        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, orientation: quat_identity() },
@@ -2137,9 +2137,9 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
         \\    score := 0
         \\    if norm_length > 0.999 and norm_length < 1.001:
         \\        score = score + 1
-        \\    if rotated_x.y > 0.999 and e7_f32_abs(rotated_x.x) < 0.001:
+        \\    if rotated_x.y > 0.999 and f32::abs(rotated_x.x) < 0.001:
         \\        score = score + 2
-        \\    if multiplied_x.y > 0.999 and e7_f32_abs(multiplied_x.x) < 0.001:
+        \\    if multiplied_x.y > 0.999 and f32::abs(multiplied_x.x) < 0.001:
         \\        score = score + 4
         \\    if integrated_length > 0.999 and integrated_length < 1.001:
         \\        score = score + 8
@@ -2155,7 +2155,7 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
         \\        score = score + 256
         \\    if rotated_overlap.hit and rotated_overlap.penetration > 0.1:
         \\        score = score + 512
-        \\    if e7_f32_abs(sideways_axis.x) > 0.999 and e7_f32_abs(sideways_axis.y) < 0.001:
+        \\    if f32::abs(sideways_axis.x) > 0.999 and f32::abs(sideways_axis.y) < 0.001:
         \\        score = score + 1024
         \\    if capsule_plane.hit and capsule_plane.penetration > 0.099 and capsule_plane.penetration < 0.101:
         \\        score = score + 2048
@@ -2174,20 +2174,20 @@ test "JIT executes quaternion, OBB, and oriented capsule narrowphase" {
         \\    by_quat := quat_rotate(quat_from_euler(0.3, 0.4, 0.5), Vec3 { x: 0.2, y: -0.7, z: 1.1 })
         \\    euler_roundtrip := quat_to_euler(quat_from_euler(0.3, 0.4, 0.5))
         \\    det_matrix := quat_to_mat3(quat_from_euler(0.3, 0.4, 0.5))
-        \\    if e7_f32_abs(identity_matrix.m00 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m11 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m22 - 1.0) < 0.0001 and e7_f32_abs(identity_matrix.m01) < 0.0001:
+        \\    if f32::abs(identity_matrix.m00 - 1.0) < 0.0001 and f32::abs(identity_matrix.m11 - 1.0) < 0.0001 and f32::abs(identity_matrix.m22 - 1.0) < 0.0001 and f32::abs(identity_matrix.m01) < 0.0001:
         \\        score = score + 16384
         \\    # +90 around Z (right-handed) maps +X to +Y.
-        \\    if e7_f32_abs(yaw_x.y - 1.0) < 0.001 and e7_f32_abs(yaw_x.x) < 0.001:
+        \\    if f32::abs(yaw_x.y - 1.0) < 0.001 and f32::abs(yaw_x.x) < 0.001:
         \\        score = score + 32768
         \\    # +90 around Y (right-handed) maps +X to -Z.
-        \\    if e7_f32_abs(y_axis_x.z + 1.0) < 0.001 and e7_f32_abs(y_axis_x.x) < 0.001:
+        \\    if f32::abs(y_axis_x.z + 1.0) < 0.001 and f32::abs(y_axis_x.x) < 0.001:
         \\        score = score + 262144
-        \\    if e7_f32_abs(by_matrix.x - by_quat.x) < 0.001 and e7_f32_abs(by_matrix.y - by_quat.y) < 0.001 and e7_f32_abs(by_matrix.z - by_quat.z) < 0.001:
+        \\    if f32::abs(by_matrix.x - by_quat.x) < 0.001 and f32::abs(by_matrix.y - by_quat.y) < 0.001 and f32::abs(by_matrix.z - by_quat.z) < 0.001:
         \\        score = score + 65536
-        \\    if e7_f32_abs(euler_roundtrip.x - 0.3) < 0.01 and e7_f32_abs(euler_roundtrip.y - 0.4) < 0.01 and e7_f32_abs(euler_roundtrip.z - 0.5) < 0.01:
+        \\    if f32::abs(euler_roundtrip.x - 0.3) < 0.01 and f32::abs(euler_roundtrip.y - 0.4) < 0.01 and f32::abs(euler_roundtrip.z - 0.5) < 0.01:
         \\        score = score + 131072
         \\    det := det_matrix.m00 * (det_matrix.m11 * det_matrix.m22 - det_matrix.m12 * det_matrix.m21) - det_matrix.m01 * (det_matrix.m10 * det_matrix.m22 - det_matrix.m12 * det_matrix.m20) + det_matrix.m02 * (det_matrix.m10 * det_matrix.m21 - det_matrix.m11 * det_matrix.m20)
-        \\    if e7_f32_abs(det - 1.0) < 0.001:
+        \\    if f32::abs(det - 1.0) < 0.001:
         \\        score = score + 524288
         \\    ret score
     ;
@@ -2508,7 +2508,7 @@ test "JIT contact friction slows and tips boxes" {
         \\        commands.add_row(Components, { friction_transform, friction_id, friction_bounds, friction_body, friction_collider, friction_flags, friction_orientation })
         \\        stack_index := 0
         \\        while stack_index < 3:
-        \\            stack_y := 0.5 + e7_f32_from_i64(stack_index)
+        \\            stack_y := 0.5 + (stack_index) as f32
         \\            stack_transform := Transform { translation: [0.0, stack_y, 0.0], rotation: [0.04, 0.0, 0.03], scale: [1.0, 1.0, 1.0] }
         \\            stack_id := BodyId { id: 11 + stack_index }
         \\            stack_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
@@ -2530,18 +2530,18 @@ test "JIT contact friction slows and tips boxes" {
         \\pub snapshot <- sys (probe: res &mut Probe, orientations: select &BodyOrientation, &BodyId from Components):
         \\    for (orientation, id) in orientations:
         \\        if id.id == 10:
-        \\            probe.init_qx = e7_f32_to_i64(orientation.x * 1000000.0)
-        \\            probe.init_qy = e7_f32_to_i64(orientation.y * 1000000.0)
-        \\            probe.init_qz = e7_f32_to_i64(orientation.z * 1000000.0)
-        \\            probe.init_qw = e7_f32_to_i64(orientation.w * 1000000.0)
+        \\            probe.init_qx = (orientation.x * 1000000.0) as i64
+        \\            probe.init_qy = (orientation.y * 1000000.0) as i64
+        \\            probe.init_qz = (orientation.z * 1000000.0) as i64
+        \\            probe.init_qw = (orientation.w * 1000000.0) as i64
         \\@trigger(Capture)
         \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId, &BodyOrientation from Components):
         \\    for (transform, body, id, orientation) in boxes:
-        \\        speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[1]) + e7_f32_abs(body.velocity[2])
-        \\        angular := e7_f32_abs(body.angular_velocity[0]) + e7_f32_abs(body.angular_velocity[1]) + e7_f32_abs(body.angular_velocity[2])
-        \\        speed_milli := e7_f32_to_milli(speed)
-        \\        angular_milli := e7_f32_to_milli(angular)
-        \\        y_milli := e7_f32_to_milli(transform.translation[1])
+        \\        speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
+        \\        angular := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
+        \\        speed_milli := f32::to_milli(speed)
+        \\        angular_milli := f32::to_milli(angular)
+        \\        y_milli := f32::to_milli(transform.translation[1])
         \\        if speed_milli > probe.max_speed:
         \\            probe.max_speed = speed_milli
         \\        if angular_milli > probe.max_angular:
@@ -2551,12 +2551,12 @@ test "JIT contact friction slows and tips boxes" {
         \\        if y_milli > probe.max_y:
         \\            probe.max_y = y_milli
         \\        if id.id == 10:
-        \\            probe.vx = e7_f32_to_milli(body.velocity[0])
-        \\            probe.rot_z = e7_f32_to_milli(orientation.z)
-        \\            probe.final_qx = e7_f32_to_i64(orientation.x * 1000000.0)
-        \\            probe.final_qy = e7_f32_to_i64(orientation.y * 1000000.0)
-        \\            probe.final_qz = e7_f32_to_i64(orientation.z * 1000000.0)
-        \\            probe.final_qw = e7_f32_to_i64(orientation.w * 1000000.0)
+        \\            probe.vx = f32::to_milli(body.velocity[0])
+        \\            probe.rot_z = f32::to_milli(orientation.z)
+        \\            probe.final_qx = (orientation.x * 1000000.0) as i64
+        \\            probe.final_qy = (orientation.y * 1000000.0) as i64
+        \\            probe.final_qz = (orientation.z * 1000000.0) as i64
+        \\            probe.final_qw = (orientation.w * 1000000.0) as i64
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
@@ -2701,13 +2701,13 @@ test "JIT rotates body inverse inertia by quaternion" {
         \\        score = score + 2
         \\    if upright.m22 > 0.5999 and upright.m22 < 0.6001:
         \\        score = score + 4
-        \\    if e7_f32_abs(upright.m01) < 0.001 and e7_f32_abs(upright.m12) < 0.001:
+        \\    if f32::abs(upright.m01) < 0.001 and f32::abs(upright.m12) < 0.001:
         \\        score = score + 8
         \\    if turned.m00 > 0.7057 and turned.m00 < 0.7060:
         \\        score = score + 16
         \\    if turned.m11 > 2.399 and turned.m11 < 2.401:
         \\        score = score + 32
-        \\    if e7_f32_abs(diagonal.m01) > 0.5:
+        \\    if f32::abs(diagonal.m01) > 0.5:
         \\        score = score + 64
         \\    ret score
     ;
@@ -2799,11 +2799,11 @@ test "JIT body pairs exchange equal and opposite impulses" {
         \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
         \\    for (transform, body, id) in boxes:
         \\        if id.id == 10:
-        \\            probe.avx = e7_f32_to_milli(body.velocity[0])
-        \\            probe.awz = e7_f32_to_milli(body.angular_velocity[2])
+        \\            probe.avx = f32::to_milli(body.velocity[0])
+        \\            probe.awz = f32::to_milli(body.angular_velocity[2])
         \\        if id.id == 11:
-        \\            probe.bvx = e7_f32_to_milli(body.velocity[0])
-        \\            probe.bwz = e7_f32_to_milli(body.angular_velocity[2])
+        \\            probe.bvx = f32::to_milli(body.velocity[0])
+        \\            probe.bwz = f32::to_milli(body.angular_velocity[2])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
@@ -2930,9 +2930,9 @@ test "JIT sleeping body wakes on contact" {
         \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
         \\    for (transform, body, id) in boxes:
         \\        if id.id == 10:
-        \\            probe.ax = e7_f32_to_milli(transform.translation[0])
-        \\            probe.ay = e7_f32_to_milli(transform.translation[1])
-        \\            probe.avx = e7_f32_to_milli(body.velocity[0])
+        \\            probe.ax = f32::to_milli(transform.translation[0])
+        \\            probe.ay = f32::to_milli(transform.translation[1])
+        \\            probe.avx = f32::to_milli(body.velocity[0])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)

@@ -34,10 +34,10 @@ impl Input:
         ret e7_engine_key_down(input.window, code) != 0
 
     pub mouse_dx <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_dx(input.window))
+        ret (e7_engine_mouse_dx(input.window)) as f32
 
     pub mouse_dy <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_dy(input.window))
+        ret (e7_engine_mouse_dy(input.window)) as f32
 
     pub mouse_x <- (input: &Input) -> i64:
         ret e7_engine_mouse_x(input.window)
@@ -46,10 +46,10 @@ impl Input:
         ret e7_engine_mouse_y(input.window)
 
     pub cursor_x <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_x(input.window))
+        ret (e7_engine_mouse_x(input.window)) as f32
 
     pub cursor_y <- (input: &Input) -> f32:
-        ret e7_f32_from_i64(e7_engine_mouse_y(input.window))
+        ret (e7_engine_mouse_y(input.window)) as f32
 
     pub mouse_down <- (input: &Input, button: i64) -> bool:
         ret e7_engine_mouse_down(input.window, button) != 0
@@ -108,8 +108,8 @@ pub gather_input <- sys (input: res &mut Input, window: res &Window):
     input.look_up = input.key_down(9)
     input.look_down = input.key_down(10)
 
-    input.look_dx = e7_f32_clamp(input.mouse_dx(), -600.0, 600.0)
-    input.look_dy = e7_f32_clamp(input.mouse_dy(), -600.0, 600.0)
+    input.look_dx = f32::clamp(input.mouse_dx(), -600.0, 600.0)
+    input.look_dy = f32::clamp(input.mouse_dy(), -600.0, 600.0)
 
     jump_down := input.key_down(11)
     interact_down := input.move_up

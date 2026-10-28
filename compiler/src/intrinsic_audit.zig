@@ -1,11 +1,11 @@
 //! Audit for direct `e7_*` intrinsic calls in engine e7 sources.
 //!
-//! Engine code should reach the runtime through language syntax (typed raw
-//! pointers and `as` casts) and the compiler-known native methods in
-//! `native_methods.zig`, not by spelling the C ABI itself.  This audit scans
-//! every `.e7` file under `engine/`, reports calls to a symbol in
-//! `intrinsics.zig`, and fails when a call is outside the explicit boundary
-//! below.
+//! Engine code and the e7-authored tests in `tests/e7` should reach the runtime
+//! through language syntax (typed raw pointers and `as` casts) and the
+//! compiler-known native methods in `native_methods.zig`, not by spelling the
+//! C ABI itself.  This audit scans every `.e7` file under `engine/` and
+//! `tests/e7/`, reports calls to a symbol in `intrinsics.zig`, and fails when a
+//! call is outside the explicit boundary below.
 //!
 //! The audit is **report-only by default** while the engine migration is in
 //! progress: it prints a summary and passes.  Set `E7_INTRINSIC_AUDIT=strict`
@@ -172,23 +172,28 @@ fn scanSource(
     }
 }
 
-test "audit: engine e7 sources call intrinsics only inside the native boundary" {
+test "audit: engine and tests/e7 sources call intrinsics only inside the native boundary" {
     var files: std.ArrayList([]u8) = .empty;
     defer {
         for (files.items) |file| std.testing.allocator.free(file);
         files.deinit(std.testing.allocator);
     }
 
-    const candidates = [_][]const u8{ "engine", "../engine", "../../engine" };
-    var root: []const u8 = "";
-    for (candidates) |candidate| {
-        var directory = std.Io.Dir.cwd().openDir(std.testing.io, candidate, .{ .iterate = true }) catch continue;
-        directory.close(std.testing.io);
-        root = candidate;
-        break;
+    const roots = [_][]const u8{ "engine", "tests/e7" };
+    const prefixes = [_][]const u8{ "", "../", "../../" };
+    var roots_found: usize = 0;
+    for (roots) |root| {
+        for (prefixes) |prefix| {
+            var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+            const candidate = std.fmt.bufPrint(&path_buffer, "{s}{s}", .{ prefix, root }) catch continue;
+            var directory = std.Io.Dir.cwd().openDir(std.testing.io, candidate, .{ .iterate = true }) catch continue;
+            directory.close(std.testing.io);
+            try collectE7Files(std.testing.allocator, candidate, &files);
+            roots_found += 1;
+            break;
+        }
     }
-    if (root.len == 0) return error.SkipZigTest;
-    try collectE7Files(std.testing.allocator, root, &files);
+    if (roots_found == 0) return error.SkipZigTest;
 
     var violations: std.ArrayList(Violation) = .empty;
     defer violations.deinit(std.testing.allocator);
@@ -225,7 +230,7 @@ test "audit: engine e7 sources call intrinsics only inside the native boundary" 
         reported += 1;
     }
     std.debug.print(
-        "intrinsic audit: {d} intrinsic call(s) in {d} engine e7 file(s): {d} allowed, {d} outside the boundary ({s} mode)\n",
+        "intrinsic audit: {d} intrinsic call(s) in {d} e7 file(s) under engine/ and tests/e7: {d} allowed, {d} outside the boundary ({s} mode)\n",
         .{ violations.items.len, files.items.len, allowed_count, reported, if (strictMode()) "strict" else "report" },
     );
     if (strictMode() and reported != 0) return error.TestUnexpectedResult;

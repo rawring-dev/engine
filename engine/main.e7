@@ -210,7 +210,7 @@ pub DemoPlugin <- plugin
                 target_id: 4 + stack_index,
                 held_by: 0,
             }
-            cube_tint := e7_f32_from_i64(stack_index)
+            cube_tint := (stack_index) as f32
             cube_colour := [0.95 - cube_tint * 0.2, 0.85 + cube_tint * 0.05, 0.65 + cube_tint * 0.2]
             cube_renderable := Renderable { kind: 0, colour: cube_colour }
             cube_material := Material { texture: 0, tint: cube_colour }
@@ -370,7 +370,7 @@ pub demo_ui_actions <- sys (
                 cont
             index := id.id - 4
             transform.translation[0] = -2.0
-            transform.translation[1] = 0.5 + e7_f32_from_i64(index)
+            transform.translation[1] = 0.5 + (index) as f32
             transform.translation[2] = 0.0
             # Orientation is quaternion-only: reset the authoritative physics
             # quaternion and let physics_publish_orientation refresh the render
