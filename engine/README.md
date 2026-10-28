@@ -132,19 +132,29 @@ engine/
   the 32-byte-stride variant of the lit pipeline.  The normal slot is uploaded
   as neutral vertex colour and the lit vertex stage derives UVs from
   position.xy; material tint/texture still apply.
-- Procedural shapes: kind 0 uses the shared cube mesh; kinds 1 (sphere), 2
-  (capsule) and 3 (plane) use CPU-generated meshes uploaded once per scene as
-  host-visible mapped buffers and drawn through the existing 32-byte-stride
-  lit pipeline.  Resolutions: 425-vertex/2304-index UV sphere (16 stacks x 24
-  slices, radius 0.5), 450-vertex/2448-index capsule (radius 0.5, 24 slices, 8
-  cap stacks, closed cylinder band) and a 4-vertex/6-index flat XZ plane
-  (half extent 0.5, Y scale ignored).  All meshes are unit-sized like the cube
-  and keep the transform, full XYZ rotation, tint, texture id and the
-  per-object lit UBO path.  The capsule caps are ellipsoidal when the Y scale
-  differs from the radius (a single static mesh is scaled per axis; the
-  cylinder band and pole height are exact, the cap roundness is approximate).
-  Capsule scale semantics: x/z scale is the radius and y scale is the total
-  half height (the body half extents are halved like the other unit meshes).
+- Procedural shapes: kind 0 uses the shared cube mesh (positions span
+  [-1, 1], so scales are half extents: a 1x1x1 cube uses scale 1,1,1); kinds 1
+  (sphere), 2 (capsule) and 3 (plane) use CPU-generated meshes uploaded once
+  per scene as host-visible mapped buffers and drawn through the existing
+  32-byte-stride lit pipeline.  Resolutions: 425-vertex/2304-index UV sphere
+  (16 stacks x 24 slices, radius 1), 450-vertex/2448-index capsule (radius 1,
+  24 slices, 8 cap stacks, closed cylinder band, cap rings at y=+/-1 and poles
+  at y=+/-2) and a 4-vertex/6-index flat XZ plane (spans [-1, 1], Y scale
+  ignored).  These extents match the removed Zig renderer, so the same
+  half-extent scales produce the same world size.  All meshes keep the
+  transform, full XYZ rotation, tint, texture id and the per-object lit UBO
+  path.  The capsule caps are ellipsoidal when the Y scale differs from the
+  radius (a single static mesh is scaled per axis; the cylinder band and pole
+  height are exact, the cap roundness is approximate).  Capsule scale
+  semantics: x/z scale is the radius and y scale is the cylinder half-height
+  (the world pole half-height is twice the y scale), matching the old
+  renderer.
+- The procedural model matrix is `translate * Rz * Ry * Rx * scale`
+  (intrinsic-XYZ Euler, column-major `Mat4[col][row]`), matching the removed
+  Zig renderer's `boxModel`.  `object_model_matrix` in `scene.e7` writes the
+  rotation/scale columns; the runtime parity tests compare every entry against
+  an independently computed reference matrix and check projected silhouettes
+  for X/Y/Z rotations with asymmetric scales.
 - UI widgets (each row carries all five component slots; zero/empty selects
   the role): `UIRect`, `UIPanel`, `UILabel`, `UIButton { label, action }`,
   `UITextField { text, max_len, focused, revision, texture, ... }`.
