@@ -19,6 +19,17 @@ impl Window:
 
     pub pump <- (window: &mut Window) -> nil:
         window.quit_requested = e7_engine_window_pump(window.handle) != 0
+        out_width := e7_alloc_bytes(4)
+        out_height := e7_alloc_bytes(4)
+        resized := e7_engine_window_take_resize(window.handle, out_width, out_height)
+        if resized != 0:
+            new_width := e7_load_u32(out_width)
+            new_height := e7_load_u32(out_height)
+            if new_width > 0 and new_height > 0:
+                window.width = new_width as i32
+                window.height = new_height as i32
+        e7_free_ptr(out_width)
+        e7_free_ptr(out_height)
         ret
 
     # Window close OR the host frame limiter (`--frames`) requests shutdown.

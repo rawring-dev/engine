@@ -24,6 +24,7 @@ e7_engine_scene_destroy <- (scene: u64) -> nil:
 e7_engine_scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
     if scene == 0:
         ret
+    scene_resize(scene, width, height)
     ret
 
 e7_engine_scene_set_camera <- (scene: u64, eye_x: i64, eye_y: i64, eye_z: i64, yaw: i64, pitch: i64) -> nil:

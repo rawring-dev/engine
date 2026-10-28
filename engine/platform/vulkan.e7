@@ -974,6 +974,82 @@ vulkan_render_targets <- (
     e7_free_ptr(render_pass_info)
     ret 1
 
+# Create swapchain image views and framebuffers for an existing render pass.
+# Used when recreating a swapchain on resize: the render pass and pipelines stay
+# valid, so only views/framebuffers (and the depth attachment) are rebuilt.
+vulkan_render_targets_views <- (
+    device: i64,
+    swapchain_images: i64,
+    image_count: i64,
+    format: i64,
+    width: i64,
+    height: i64,
+    depth_view: i64,
+    render_pass: i64,
+    out_views: u64,
+    out_framebuffers: u64,
+) -> nil:
+    views := e7_alloc_bytes(image_count * 8)
+    framebuffers := e7_alloc_bytes(image_count * 8)
+    if image_count > 0:
+        image := e7_load_u64(swapchain_images)
+        view_out := e7_alloc_bytes(8)
+        create_image_view(device, image, format, view_out)
+        view := e7_load_u64(view_out)
+        e7_store_u64(views, view)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers)
+        e7_free_ptr(view_out)
+    if image_count > 1:
+        image := e7_load_u64(swapchain_images + 8)
+        view_out := e7_alloc_bytes(8)
+        create_image_view(device, image, format, view_out)
+        view := e7_load_u64(view_out)
+        e7_store_u64(views + 8, view)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 8)
+        e7_free_ptr(view_out)
+    if image_count > 2:
+        image := e7_load_u64(swapchain_images + 16)
+        view_out := e7_alloc_bytes(8)
+        create_image_view(device, image, format, view_out)
+        view := e7_load_u64(view_out)
+        e7_store_u64(views + 16, view)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 16)
+        e7_free_ptr(view_out)
+    if image_count > 3:
+        image := e7_load_u64(swapchain_images + 24)
+        view_out := e7_alloc_bytes(8)
+        create_image_view(device, image, format, view_out)
+        view := e7_load_u64(view_out)
+        e7_store_u64(views + 24, view)
+        create_framebuffer_depth(device, render_pass, view, depth_view, width, height, framebuffers + 24)
+        e7_free_ptr(view_out)
+    e7_store_u64(out_views, views)
+    e7_store_u64(out_framebuffers, framebuffers)
+
+# Destroy only the per-image views/framebuffers, keeping the render pass.
+vulkan_render_targets_views_destroy <- (device: i64, views: i64, framebuffers: i64, image_count: i64) -> nil:
+    destroy_framebuffer := bind_vk("vkDestroyFramebuffer")
+    destroy_view := bind_vk("vkDestroyImageView")
+    if image_count > 0:
+        e7_ffi_call3(destroy_framebuffer, device, e7_load_u64(framebuffers), 0)
+        e7_ffi_call3(destroy_view, device, e7_load_u64(views), 0)
+    if image_count > 1:
+        e7_ffi_call3(destroy_framebuffer, device, e7_load_u64(framebuffers + 8), 0)
+        e7_ffi_call3(destroy_view, device, e7_load_u64(views + 8), 0)
+    if image_count > 2:
+        e7_ffi_call3(destroy_framebuffer, device, e7_load_u64(framebuffers + 16), 0)
+        e7_ffi_call3(destroy_view, device, e7_load_u64(views + 16), 0)
+    if image_count > 3:
+        e7_ffi_call3(destroy_framebuffer, device, e7_load_u64(framebuffers + 24), 0)
+        e7_ffi_call3(destroy_view, device, e7_load_u64(views + 24), 0)
+    e7_free_ptr(views)
+    e7_free_ptr(framebuffers)
+
+vulkan_device_wait_idle <- (device: i64) -> nil:
+    wait_idle := bind_vk("vkDeviceWaitIdle")
+    e7_ffi_call1(wait_idle, device)
+    ret
+
 vulkan_render_targets_destroy <- (device: i64, render_pass: i64, views: i64, framebuffers: i64, image_count: i64) -> nil:
     destroy_framebuffer := bind_vk("vkDestroyFramebuffer")
     destroy_view := bind_vk("vkDestroyImageView")

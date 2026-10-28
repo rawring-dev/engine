@@ -1294,6 +1294,86 @@ scene_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i
     append_draw(scene, pipeline, e7_load_u64(scene + 1200), e7_load_u64(scene + 1208), 0, 6, 0, base, 1, texture_set(scene, texture as i64), 0, 0, 0)
     e7_store_u32(scene + 1232, quad + 1)
 
+# Recreate the swapchain, depth attachment, image views, and framebuffers after
+# a window resize.  The render pass, pipelines, descriptors, meshes and textures
+# are preserved.
+scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
+    if scene == 0 or width <= 0 or height <= 0:
+        ret
+    device := e7_load_u64(scene + 32)
+    physical := e7_load_u64(scene + 24)
+    surface := e7_load_u64(scene + 16)
+    vulkan_device_wait_idle(device)
+    image_count := e7_load_u32(scene + 52)
+    render_pass := e7_load_u64(scene + 64)
+    vulkan_render_targets_views_destroy(device, e7_load_u64(scene + 96), e7_load_u64(scene + 80), image_count)
+    vulkan_depth_target_destroy(device, e7_load_u64(scene + 208), e7_load_u64(scene + 216), e7_load_u64(scene + 224))
+    vulkan_swapchain_destroy(device, e7_load_u64(scene + 56))
+
+    swapchain_out := e7_alloc_bytes(8)
+    format_out := e7_alloc_bytes(4)
+    width_out := e7_alloc_bytes(4)
+    height_out := e7_alloc_bytes(4)
+    images_out := e7_alloc_bytes(8)
+    image_count_out := e7_alloc_bytes(4)
+    window_state := e7_load_u64(scene) as u64
+    if vulkan_swapchain_create(device, physical, surface, window_state, swapchain_out, format_out, width_out, height_out, images_out, image_count_out) == 0:
+        e7_free_ptr(swapchain_out)
+        e7_free_ptr(format_out)
+        e7_free_ptr(width_out)
+        e7_free_ptr(height_out)
+        e7_free_ptr(images_out)
+        e7_free_ptr(image_count_out)
+        ret
+    new_swapchain := e7_load_u64(swapchain_out)
+    new_format := e7_load_u32(format_out)
+    new_width := e7_load_u32(width_out)
+    new_height := e7_load_u32(height_out)
+    images := e7_load_u64(images_out)
+    new_image_count := e7_load_u32(image_count_out)
+    e7_store_u64(scene + 56, new_swapchain)
+    e7_store_u32(scene + 52, new_image_count)
+    e7_store_u32(scene + 88, new_width)
+    e7_store_u32(scene + 92, new_height)
+
+    depth_image_out := e7_alloc_bytes(8)
+    depth_memory_out := e7_alloc_bytes(8)
+    depth_view_out := e7_alloc_bytes(8)
+    if vulkan_depth_target(device, physical, new_width, new_height, depth_image_out, depth_memory_out, depth_view_out) == 0:
+        e7_free_ptr(depth_image_out)
+        e7_free_ptr(depth_memory_out)
+        e7_free_ptr(depth_view_out)
+        e7_free_ptr(swapchain_out)
+        e7_free_ptr(format_out)
+        e7_free_ptr(width_out)
+        e7_free_ptr(height_out)
+        e7_free_ptr(images_out)
+        e7_free_ptr(image_count_out)
+        ret
+    depth_view := e7_load_u64(depth_view_out)
+    e7_store_u64(scene + 208, e7_load_u64(depth_image_out))
+    e7_store_u64(scene + 216, e7_load_u64(depth_memory_out))
+    e7_store_u64(scene + 224, depth_view)
+
+    views_out := e7_alloc_bytes(8)
+    framebuffers_out := e7_alloc_bytes(8)
+    vulkan_render_targets_views(device, images, new_image_count, new_format, new_width, new_height, depth_view, render_pass, views_out, framebuffers_out)
+    e7_store_u64(scene + 96, e7_load_u64(views_out))
+    e7_store_u64(scene + 80, e7_load_u64(framebuffers_out))
+
+    e7_free_ptr(swapchain_out)
+    e7_free_ptr(format_out)
+    e7_free_ptr(width_out)
+    e7_free_ptr(height_out)
+    e7_free_ptr(images_out)
+    e7_free_ptr(image_count_out)
+    e7_free_ptr(depth_image_out)
+    e7_free_ptr(depth_memory_out)
+    e7_free_ptr(depth_view_out)
+    e7_free_ptr(views_out)
+    e7_free_ptr(framebuffers_out)
+    e7_free_ptr(images)
+
 scene_destroy <- (scene: u64) -> nil:
     device := e7_load_u64(scene + 32)
     instance := e7_load_u64(scene + 8)

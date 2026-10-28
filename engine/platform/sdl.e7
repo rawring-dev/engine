@@ -13,13 +13,15 @@
 #   24  mouse dy           (f32 bits)
 #   28  mouse buttons      (u32)
 #   32  keyboard state*    (u64)
-#   40  (unused)
+#   40  window width       (u32)
+#   44  window height      (u32)
 #   48  numkeys            (u64)
 #   64  SDL_Event buffer   (128 bytes)
 #   192 text buffer*       (u64)
 #   200 text length        (u32)
 #   204 text capacity      (u32)
 #   208 mouse captured     (u32)
+#   212 resize pending     (u32)
 
 bind_sdl <- (name: str) -> u64:
     ret e7_cffi_bind("SDL3", name)
@@ -170,6 +172,9 @@ window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
         ret 0
     e7_store_u64(state, win)
     e7_store_u32(state + 8, 0)
+    e7_store_u32(state + 40, width)
+    e7_store_u32(state + 44, height)
+    e7_store_u32(state + 212, 0)
     e7_store_u64(state + 192, 0)
     e7_store_u32(state + 200, 0)
     e7_store_u32(state + 204, 0)
@@ -180,9 +185,8 @@ window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
 # `window_pump` so engine tests can drive synthetic events without a device.
 window_handle_event <- (state: u64, event: u64) -> nil:
     kind := e7_load_u32(event)
-    if kind == 256:
-        e7_store_u32(state + 8, 1)
-    if kind == 528:
+    # SDL3: QUIT=256, WINDOW_CLOSE_REQUESTED=528 (526 is FOCUS_GAINED).
+    if kind == 256 or kind == 528:
         e7_store_u32(state + 8, 1)
     if kind == 1024:
         # SDL3 SDL_MouseMotionEvent: x@40, y@44, xrel@48, yrel@52 (floats).
@@ -193,6 +197,7 @@ window_handle_event <- (state: u64, event: u64) -> nil:
         e7_store_f32(state + 20, dx)
         e7_store_f32(state + 24, dy)
     if kind == 526:
+        # SDL3 SDL_EVENT_WINDOW_FOCUS_GAINED
         start_text_input(state)
     if kind == 768:
         # Escape releases relative capture so the cursor can drive the UI; the
@@ -231,6 +236,36 @@ window_size <- (state: u64, out_width: u64, out_height: u64) -> i64:
     win := e7_load_u64(state)
     size := bind_sdl("SDL_GetWindowSizeInPixels")
     ret e7_ffi_call3(size, win, out_width, out_height) as i64
+
+# Query the current pixel size, record it, and flag a pending resize.
+window_sync_size <- (state: u64) -> nil:
+    window := e7_load_u64(state)
+    if window == 0:
+        ret
+    width := e7_alloc_bytes(4)
+    height := e7_alloc_bytes(4)
+    get_size := bind_sdl("SDL_GetWindowSizeInPixels")
+    e7_ffi_call3(get_size, window, width, height)
+    new_width := e7_load_u32(width)
+    new_height := e7_load_u32(height)
+    e7_free_ptr(width)
+    e7_free_ptr(height)
+    if new_width == 0 or new_height == 0:
+        ret
+    if new_width != e7_load_u32(state + 40) or new_height != e7_load_u32(state + 44):
+        e7_store_u32(state + 40, new_width)
+        e7_store_u32(state + 44, new_height)
+        e7_store_u32(state + 212, 1)
+    ret
+
+# Return 1 once per pending resize; writes the new pixel size.
+window_take_resize <- (state: u64, out_width: u64, out_height: u64) -> i64:
+    if e7_load_u32(state + 212) == 0:
+        ret 0
+    e7_store_u32(out_width, e7_load_u32(state + 40))
+    e7_store_u32(out_height, e7_load_u32(state + 44))
+    e7_store_u32(state + 212, 0)
+    ret 1
 
 window_destroy <- (state: u64) -> nil:
     if state == 0:

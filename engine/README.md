@@ -228,3 +228,11 @@ Query projection iteration, ECS resources/components/plugins/Commands, project
 module loading, float arithmetic/math, and the engine JIT host are implemented.
 Remaining work: trigger field binding, trait-object query projections, and
 early-break query handle release.
+
+## Window resizing
+
+Non-headless windows are resizable. SDL3 window/pixel-size changes are tracked
+by the e7 platform layer; the scene recreates its swapchain, depth attachment,
+image views and framebuffers while preserving the render pass, pipelines,
+descriptors, textures and meshes. The engine resizes the scene before rendering
+so projection aspect and capture dimensions match the client area.

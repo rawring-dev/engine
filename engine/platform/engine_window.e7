@@ -57,7 +57,13 @@ e7_engine_window_pump <- (handle: u64) -> i64:
     window_pump(handle)
     window_pump(handle)
     window_pump(handle)
+    window_sync_size(handle)
     ret window_should_close(handle)
+
+e7_engine_window_take_resize <- (handle: u64, out_width: u64, out_height: u64) -> i64:
+    if handle == 0:
+        ret 0
+    ret window_take_resize(handle, out_width, out_height)
 
 e7_engine_window_should_close <- (handle: u64) -> i64:
     if handle == 0:

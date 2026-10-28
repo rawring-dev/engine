@@ -42,6 +42,13 @@ impl Gpu:
         gpu.height = window.height
         ret
 
+    pub resize_scene <- (gpu: &mut Gpu, width: i32, height: i32) -> nil:
+        if gpu.scene != 0 and width > 0 and height > 0:
+            e7_engine_scene_resize(gpu.scene, width as i64, height as i64)
+            gpu.width = width
+            gpu.height = height
+        ret
+
     pub destroy_scene <- (gpu: &mut Gpu) -> nil:
         e7_engine_scene_destroy(gpu.scene)
         gpu.scene = 0

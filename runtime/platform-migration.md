@@ -451,7 +451,7 @@ Final state (supersedes the round-79 notes above):
 - All platform shaders use e7s -> Slang -> SPIR-V; e7s supports combined image
   samplers (`Sampler2D<[f32;4]>`) for the textured/UI/lit fragment stages.
 - Host PPM capture writes RGB from BGRA swapchain bytes.
-- Full suite: scheduler 8, compiler 206, runtime 130, transpiler 26; all pass
+- Full suite: scheduler 8, compiler 206, runtime 132, transpiler 26; all pass
   with zero skipped tests (capture assertions now require actual frame content).
 - Procedural sphere (UV 16x24), capsule (24 slices, closed band, 8 cap stacks),
   and plane meshes render through the lit pipeline; box keeps the cube. Full
@@ -459,3 +459,9 @@ Final state (supersedes the round-79 notes above):
   Capsule caps are ellipsoidal when Y scale differs from radius (static
   per-kind mesh scaled per axis); this is the only documented visual
   approximation.
+
+- Visible windows are resizable: SDL3 resize/pixel-size changes are tracked in e7,
+  the swapchain/depth/views/framebuffers are recreated in place (render pass,
+  pipelines, descriptors, meshes and textures are preserved), and the engine
+  resizes the scene before rendering so aspect ratio and captures follow the
+  client area.

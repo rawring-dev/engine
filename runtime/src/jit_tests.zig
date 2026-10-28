@@ -1051,6 +1051,67 @@ test "e7 SDL platform decodes SDL3 mouse motion fields and accumulates deltas" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 SDL platform reports a window resize once" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
+    const module_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(module_source);
+    const selftest =
+        \\resize_track_selftest <- () -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret -1
+        \\    win := window_create("e7 sdl resize", 64, 48, 8)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret -2
+        \\    set_size := bind_sdl("SDL_SetWindowSize")
+        \\    e7_ffi_call3(set_size, e7_load_u64(win), 80, 60)
+        \\    window_sync_size(win)
+        \\    out_w := e7_alloc_bytes(4)
+        \\    out_h := e7_alloc_bytes(4)
+        \\    first := window_take_resize(win, out_w, out_h)
+        \\    width := e7_load_u32(out_w)
+        \\    height := e7_load_u32(out_h)
+        \\    second := window_take_resize(win, out_w, out_h)
+        \\    e7_free_ptr(out_w)
+        \\    e7_free_ptr(out_h)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if first == 0 or width != 80 or height != 60:
+        \\        ret -3
+        \\    if second != 0:
+        \\        ret -4
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ module_source, selftest });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("e7 SDL resize parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("e7 SDL resize diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-sdl-resize");
+    const Selftest = *const fn () callconv(.c) i64;
+    const selftest_fn = try jit.get(Selftest, "resize_track_selftest");
+    const result = selftest_fn();
+    if (result == -1) return error.SkipZigTest;
+    if (result != 1) std.debug.print("SDL resize selftest result {d}\n", .{result});
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
 test "e7 SDL+Vulkan platform module creates a window surface" {
     if (!canResolve("libSDL3.so", "SDL_Vulkan_CreateSurface") or !canResolve("libvulkan.so", "vkCreateInstance")) {
         std.debug.print("skipping e7 Vulkan surface test: SDL Vulkan or Vulkan loader unavailable\n", .{});
@@ -1582,6 +1643,87 @@ test "e7 engine scene module renders and captures a frame" {
         if (byte != 0) non_zero += 1;
     }
     try std.testing.expect(non_zero > 1000);
+}
+
+test "e7 scene resize recreates the swapchain and capture size" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+    const window_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_window.e7");
+    defer std.testing.allocator.free(window_source);
+    const engine_scene_source = try readRepoSource(std.testing.allocator, "engine/platform/engine_scene.e7");
+    defer std.testing.allocator.free(engine_scene_source);
+    const probe =
+        \\scene_resize_probe <- () -> i64:
+        \\    win := e7_engine_window_create("e7 resize scene", 64, 48)
+        \\    if win == 0:
+        \\        ret 0
+        \\    scene := e7_engine_scene_create(win, "", "")
+        \\    if scene == 0:
+        \\        e7_engine_window_destroy(win)
+        \\        ret -2
+        \\    set_size := bind_sdl("SDL_SetWindowSize")
+        \\    e7_ffi_call3(set_size, e7_load_u64(win), 96, 64)
+        \\    window_pump(win)
+        \\    window_pump(win)
+        \\    window_sync_size(win)
+        \\    e7_engine_scene_resize(scene, 96, 64)
+        \\    if scene_width(scene) != 96 or scene_height(scene) != 64:
+        \\        e7_engine_scene_destroy(scene)
+        \\        e7_engine_window_destroy(win)
+        \\        ret -3
+        \\    e7_engine_scene_set_camera(scene, 0, 0, 3000, 0, 0)
+        \\    e7_engine_scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    e7_engine_scene_begin_frame(scene)
+        \\    e7_engine_scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
+        \\    e7_engine_scene_end_frame(scene)
+        \\    e7_engine_scene_destroy(scene)
+        \\    e7_engine_window_destroy(win)
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, window_source, engine_scene_source, probe });
+    defer std.testing.allocator.free(source);
+    host_mod.reset();
+    defer host_mod.reset();
+    host_mod.setHeadless(true);
+    host_mod.setCaptureEnabled(true);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("resize scene parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("resize scene diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-resize-scene");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "scene_resize_probe");
+    const result = probe_fn();
+    if (result == 0) return error.SkipZigTest;
+    if (result != 1) std.debug.print("resize scene probe result {d}\n", .{result});
+    try std.testing.expectEqual(@as(i64, 1), result);
+    var capture = host_mod.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 96), capture.width);
+    try std.testing.expectEqual(@as(u32, 64), capture.height);
+    try std.testing.expectEqual(@as(usize, 96 * 64 * 4), capture.pixels.len);
+    const center = capturePixel(capture.pixels, 96, 48, 32);
+    try std.testing.expect(center != 0xFF000000);
 }
 
 test "e7 async task returns an i64 result" {

@@ -24,6 +24,12 @@ pub render_scene <- sys (
     ui_state: res &mut UIState,
     widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
 ):
+    # Follow window resizes before projecting so the swapchain and aspect
+    # ratio always match the client area.
+    if gpu.scene != 0 and (gpu.width != window.width or gpu.height != window.height):
+        if window.width > 0 and window.height > 0:
+            gpu.resize_scene(window.width, window.height)
+
     # First-person: the ECS camera is the eye.  Every renderable shares it.
     for camera in cameras:
         yaw_degrees := camera.yaw * 57.2957795
