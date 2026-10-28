@@ -1,0 +1,83 @@
+# e7 language tests, authored in e7 and run by `zig build test-e7`.
+#
+# A test is a top-level function named `test_*` with no parameters that returns
+# 0 on success.  Assertion helpers come from runtime/src/test_support.zig:
+# assert_eq_i64, assert_eq_bool, assert_i64_near, assert_f32_near,
+# assert_str_eq and assert_fail.
+
+add <- (a: i64, b: i64) -> i64 = a + b
+
+factorial <- (n: i64) -> i64:
+    if n <= 1:
+        ret 1
+    ret n * factorial(n - 1)
+
+sum_to <- (n: i64) -> i64:
+    total := 0
+    index := 1
+    while index <= n:
+        total = total + index
+        index = index + 1
+    ret total
+
+Point <- struct
+    x: i64
+    y: i64
+
+point_dist_sq <- (point: Point) -> i64 = point.x * point.x + point.y * point.y
+
+Color <- enum
+    red
+    green
+    blue
+
+color_code <- (color: Color) -> i64:
+    match color:
+        Color::red: 1
+        Color::green: 2
+        Color::blue: 3
+
+seven <- async () -> i64:
+    ret 7
+
+test_integer_arithmetic <- () -> i64:
+    assert_eq_i64(add(2, 3), 5)
+    assert_eq_i64(add(0 - 4, 1), 0 - 3)
+    assert_eq_i64(7 / 2, 3)
+    assert_eq_i64(7 % 2, 1)
+    assert_i64_near(1000, 1003, 5)
+    ret 0
+
+test_boolean_logic <- () -> i64:
+    assert_eq_bool(3 < 4, true)
+    assert_eq_bool(4 <= 4, true)
+    assert_eq_bool(4 > 5, false)
+    assert_eq_bool(true and false, false)
+    assert_eq_bool(true or false, true)
+    ret 0
+
+test_float_math <- () -> i64:
+    half := 1.0 / 2.0
+    assert_f32_near(half, 0.5, 0.000001)
+    assert_f32_near(e7_f32_sqrt(9.0), 3.0, 0.000001)
+    assert_f32_near(e7_f32_sin(0.0), 0.0, 0.000001)
+    assert_f32_near(e7_f32_cos(0.0), 1.0, 0.000001)
+    assert_f32_near(e7_f32_abs(0.0 - 2.5), 2.5, 0.000001)
+    assert_i64_near(e7_f32_to_milli(half), 500, 1)
+    ret 0
+
+test_recursion_and_loops <- () -> i64:
+    assert_eq_i64(factorial(5), 120)
+    assert_eq_i64(sum_to(10), 55)
+    ret 0
+
+test_structs_and_enums <- () -> i64:
+    point := Point { x: 3, y: 4 }
+    assert_eq_i64(point_dist_sq(point), 25)
+    assert_eq_i64(color_code(Color::green), 2)
+    ret 0
+
+test_async_await <- async () -> i64:
+    value := (await seven())?
+    assert_eq_i64(value, 7)
+    ret 0

@@ -1,0 +1,37 @@
+# e7 collection and string builtin tests.
+
+test_strings <- () -> i64:
+    assert_str_eq("e7" + "test", "e7test")
+    assert_eq_i64(e7_str_len("engine7") as i64, 7)
+    ret 0
+
+test_string_helpers <- () -> i64:
+    lines := e7_str_lines("aa\nbb\ncc")
+    assert_eq_i64(lines.len() as i64, 3)
+    fields := e7_str_fields(" x  y ")
+    assert_eq_i64(fields.len() as i64, 2)
+    parts := e7_str_split("1/2/3", "/")
+    assert_eq_i64(parts.len() as i64, 3)
+    assert_str_eq(parts[1], "2")
+    assert_eq_i64(e7_parse_i64("-42") as i64, 0 - 42)
+    assert_f32_near(e7_parse_f32("1.5"), 1.5, 0.000001)
+    ret 0
+
+test_vectors <- () -> i64:
+    values: [i64] := []
+    values = e7_vec_push(values, 10)
+    values = e7_vec_push(values, 20)
+    values = e7_vec_push(values, 30)
+    assert_eq_i64(values.len() as i64, 3)
+    assert_eq_i64(values[1], 20)
+    total := values[0] + values[1] + values[2]
+    assert_eq_i64(total, 60)
+    ret 0
+
+test_maps <- () -> i64:
+    scores := map[i64, i64] { 1: 10, 2: 20 }
+    assert_eq_i64(scores.len() as i64, 2)
+    assert_eq_i64(scores[2], 20)
+    names := map[str, i64] { "one": 1 }
+    assert_eq_i64(names["one"], 1)
+    ret 0

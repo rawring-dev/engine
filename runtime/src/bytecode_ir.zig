@@ -95,7 +95,7 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
 /// `"instcombine-no-verify-fixpoint"`; the driver's own fixed-point loop still
 /// limits repeated optimization.
 fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
-    for (function.code) |op| switch (op) {
+    for (function.code, 0..) |op, index| switch (op) {
         // Container/map lowering expands into branchy call chains that can trip
         // LLVM 23's InstCombine fixed-point verifier.
         .vec_new,
@@ -118,6 +118,12 @@ fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
         .map_value_at,
         .str_len,
         => return true,
+        // Backward branches lower to loop-shaped stack-machine IR that trips
+        // LLVM 23's InstCombine fixed-point verifier even when the loop body is
+        // pure integer code (e.g. a simple accumulator).  Mark every function
+        // with a loop for the opt-out attribute.
+        .jump => |target| if (target <= index) return true,
+        .jump_if_false => |target| if (target <= index) return true,
         .runtime_call => |call| switch (call.function) {
             // `e7_vec_push`/`e7_str_*` helpers expand into large branchy IR.
             .vec_push => return true,
