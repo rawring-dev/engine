@@ -70,6 +70,142 @@ fn capturePixel(pixels: []const u8, width: usize, x: usize, y: usize) u32 {
     return std.mem.readInt(u32, pixels[offset..][0..4], .little);
 }
 
+/// Engine model-matrix parity helpers.  These mirror the removed Zig renderer
+/// (`translate * Rz * Ry * Rx * scale`, column-major `Mat4[col][row]`) without
+/// calling into the e7 implementation, so a wrong e7 formula fails the tests.
+fn parityMilliToF32(value: i64) f32 {
+    return @floatCast(@as(f64, @floatFromInt(value)) / 1000.0);
+}
+
+fn parityRadians(value: i64) f64 {
+    return @as(f64, @floatFromInt(value)) / 1000.0;
+}
+
+fn parityModelMatrix(sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64) [16]f32 {
+    const scale_x: f64 = parityMilliToF32(sx_milli);
+    const scale_y: f64 = parityMilliToF32(sy_milli);
+    const scale_z: f64 = parityMilliToF32(sz_milli);
+    const rx = parityRadians(rx_milli);
+    const ry = parityRadians(ry_milli);
+    const rz = parityRadians(rz_milli);
+    const cx = @cos(rx);
+    const sin_x = @sin(rx);
+    const cy = @cos(ry);
+    const sin_y = @sin(ry);
+    const cz = @cos(rz);
+    const sin_z = @sin(rz);
+    // R = Rz * Ry * Rx columns, each scaled by (sx, sy, sz); column 3 is the
+    // identity translation so object_model_matrix can be compared directly.
+    var out: [16]f32 = undefined;
+    out[0] = @floatCast((cy * cz) * scale_x);
+    out[1] = @floatCast((cy * sin_z) * scale_x);
+    out[2] = @floatCast((-sin_y) * scale_x);
+    out[3] = 0.0;
+    out[4] = @floatCast((((sin_y * sin_x) * cz) - (cx * sin_z)) * scale_y);
+    out[5] = @floatCast((((sin_y * sin_x) * sin_z) + (cx * cz)) * scale_y);
+    out[6] = @floatCast((cy * sin_x) * scale_y);
+    out[7] = 0.0;
+    out[8] = @floatCast((((sin_y * cx) * cz) + (sin_x * sin_z)) * scale_z);
+    out[9] = @floatCast((((sin_y * cx) * sin_z) - (sin_x * cz)) * scale_z);
+    out[10] = @floatCast((cy * cx) * scale_z);
+    out[11] = 0.0;
+    out[12] = 0.0;
+    out[13] = 0.0;
+    out[14] = 0.0;
+    out[15] = 1.0;
+    return out;
+}
+
+const ParityBox = struct {
+    min_col: f64,
+    max_col: f64,
+    min_row: f64,
+    max_row: f64,
+};
+
+/// Project the unit box [-1,1]^3 through `model` and the test camera
+/// (eye (0,0,5), 60 degree vertical FOV, square target), returning the
+/// continuous pixel-space bounding box.  Callers compare it with the captured
+/// silhouette using a small rasterisation tolerance.
+fn parityProjectBox(model: [16]f32, width: f64, height: f64) ParityBox {
+    const f = 1.0 / @tan(std.math.pi / 6.0);
+    const aspect = width / height;
+    var out = ParityBox{
+        .min_col = std.math.inf(f64),
+        .max_col = -std.math.inf(f64),
+        .min_row = std.math.inf(f64),
+        .max_row = -std.math.inf(f64),
+    };
+    for ([_]f64{ -1.0, 1.0 }) |x| {
+        for ([_]f64{ -1.0, 1.0 }) |y| {
+            for ([_]f64{ -1.0, 1.0 }) |z| {
+                const m0: f64 = model[0];
+                const m1: f64 = model[1];
+                const m2: f64 = model[2];
+                const m4: f64 = model[4];
+                const m5: f64 = model[5];
+                const m6: f64 = model[6];
+                const m8: f64 = model[8];
+                const m9: f64 = model[9];
+                const m10: f64 = model[10];
+                const world_x = m0 * x + m4 * y + m8 * z;
+                const world_y = m1 * x + m5 * y + m9 * z;
+                const world_z = m2 * x + m6 * y + m10 * z;
+                const view_z = world_z - 5.0;
+                const clip_w = -view_z;
+                if (clip_w <= 0.0) continue;
+                const ndc_x = (f / aspect) * world_x / clip_w;
+                const ndc_y = (-f) * world_y / clip_w;
+                const col = (ndc_x + 1.0) * 0.5 * width;
+                const row = (1.0 + ndc_y) * 0.5 * height;
+                out.min_col = @min(out.min_col, col);
+                out.max_col = @max(out.max_col, col);
+                out.min_row = @min(out.min_row, row);
+                out.max_row = @max(out.max_row, row);
+            }
+        }
+    }
+    return out;
+}
+
+const BoxMetrics = struct {
+    count: i64,
+    min_row: i64,
+    max_row: i64,
+    min_col: i64,
+    max_col: i64,
+    top_min_col: i64,
+
+    fn decode(value: i64) @This() {
+        var rest = value;
+        const top_min_col = @mod(rest, 100);
+        rest = @divTrunc(rest, 100);
+        const max_col = @mod(rest, 100);
+        rest = @divTrunc(rest, 100);
+        const min_col = @mod(rest, 100);
+        rest = @divTrunc(rest, 100);
+        const max_row = @mod(rest, 100);
+        rest = @divTrunc(rest, 100);
+        const min_row = @mod(rest, 100);
+        rest = @divTrunc(rest, 100);
+        return .{
+            .count = rest,
+            .min_row = min_row,
+            .max_row = max_row,
+            .min_col = min_col,
+            .max_col = max_col,
+            .top_min_col = top_min_col,
+        };
+    }
+};
+
+fn expectParityBox(measured: BoxMetrics, expected: ParityBox, tolerance: f64) !void {
+    try std.testing.expect(@abs(@as(f64, @floatFromInt(measured.min_col)) - expected.min_col) <= tolerance);
+    try std.testing.expect(@abs(@as(f64, @floatFromInt(measured.max_col)) - expected.max_col) <= tolerance);
+    try std.testing.expect(@abs(@as(f64, @floatFromInt(measured.min_row)) - expected.min_row) <= tolerance);
+    try std.testing.expect(@abs(@as(f64, @floatFromInt(measured.max_row)) - expected.max_row) <= tolerance);
+}
+
 fn makeJit() !orc.Jit {
     var jit = try orc.Jit.init(std.testing.allocator);
     errdefer jit.deinit();
@@ -2842,7 +2978,7 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
 
     // Render one procedural shape at the origin on a black 96x96 frame and
     // return count * 1000000 + widest row * 1000 + silhouette rows.  The
-    // camera sits at (0, eye_y, 3.0) looking down -Z, so a flat XZ plane is
+    // camera sits at (0, eye_y, 5.0) looking down -Z, so a flat XZ plane is
     // edge-on at eye_y = 0 and visible from above at eye_y = 1000.
     const probe =
         \\shape_metric <- (kind: i64, eye_y: i64) -> i64:
@@ -2857,7 +2993,7 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
         \\        window_destroy(win)
         \\        video_quit()
         \\        ret -3
-        \\    scene_set_camera(scene, 0, eye_y, 3000, 0, 0)
+        \\    scene_set_camera(scene, 0, eye_y, 5000, 0, 0)
         \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
         \\    scene_begin_frame(scene)
         \\    scene_draw_shape_rot(scene, kind as i32, 0, 0, 0, 1000, 1000, 1000, 0, 0, 0, 1000, 1000, 1000, 0 as u64)
@@ -2997,6 +3133,246 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
     // area from above: flatness instead of a box slab silhouette.
     try std.testing.expect(plane_edge_m.count * 10 < box_m.count);
     try std.testing.expect(plane_above_m.count > plane_edge_m.count * 3 + 10);
+}
+
+test "e7 model matrix matches translate * Rz * Ry * Rx * scale" {
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+
+    // The removed Zig renderer composed `translate * Rz * Ry * Rx * scale` into
+    // four contiguous column-major columns.  This exercises the e7 helper that
+    // fills those columns directly (no GPU needed).
+    const probe =
+        \\matrix_probe <- (out: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64) -> i64:
+        \\    object_model_matrix(out, sx, sy, sz, rx, ry, rz)
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("matrix probe parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("matrix probe diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-model-matrix");
+    const Probe = *const fn (i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "matrix_probe");
+
+    const Case = struct { sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64 };
+    const cases = [_]Case{
+        // Independent X, Y and Z rotations with asymmetric scales.
+        .{ .sx = 2000, .sy = 1000, .sz = 1000, .rx = 500, .ry = 0, .rz = 0 },
+        .{ .sx = 2000, .sy = 1000, .sz = 1000, .rx = 0, .ry = 500, .rz = 0 },
+        .{ .sx = 2000, .sy = 1000, .sz = 1000, .rx = 0, .ry = 0, .rz = 500 },
+        // Combined intrinsic-XYZ order; Rz is applied last.
+        .{ .sx = 2000, .sy = 500, .sz = 1000, .rx = 300, .ry = 400, .rz = 500 },
+        // Negative angles and a different scale assignment.
+        .{ .sx = 500, .sy = 2000, .sz = 1000, .rx = -700, .ry = -400, .rz = 250 },
+        // Unit scale, rotations only.
+        .{ .sx = 1000, .sy = 1000, .sz = 1000, .rx = 700, .ry = 900, .rz = 1100 },
+    };
+    for (cases) |case| {
+        var got: [16]f32 = undefined;
+        const result = probe_fn(
+            @as(i64, @intCast(@intFromPtr(&got))),
+            case.sx,
+            case.sy,
+            case.sz,
+            case.rx,
+            case.ry,
+            case.rz,
+        );
+        try std.testing.expectEqual(@as(i64, 1), result);
+        const want = parityModelMatrix(case.sx, case.sy, case.sz, case.rx, case.ry, case.rz);
+        for (want, 0..) |expected, index| {
+            try std.testing.expectApproxEqAbs(expected, got[index], 1e-5);
+        }
+    }
+}
+
+test "e7 box scale and axis rotation projects match the zig renderer" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+
+    // Render one unit box (kind 0, span [-1, 1] before scale) on a black 96x96
+    // frame and return count*100 + min_row, max_row, min_col, max_col and the
+    // topmost row's first column packed in base 100.  The camera sits at
+    // (0, 0, 5.0) with a 60 degree vertical field of view.
+    const probe =
+        \\box_metric <- (sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64) -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret -1
+        \\    win := window_create("e7 box parity", 96, 96, 268435464)
+        \\    if win == 0:
+        \\        video_quit()
+        \\        ret -2
+        \\    scene := scene_create(win, 96, 96)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        video_quit()
+        \\        ret -3
+        \\    scene_set_camera(scene, 0, 0, 5000, 0, 0)
+        \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    scene_begin_frame(scene)
+        \\    scene_draw_shape_rot(scene, 0, 0, 0, 0, sx, sy, sz, rx, ry, rz, 1000, 1000, 1000, 0 as u64)
+        \\    pixels_out := e7_alloc_bytes(8)
+        \\    size_out := e7_alloc_bytes(8)
+        \\    drew := scene_draw(scene, pixels_out, size_out)
+        \\    pixels := e7_load_u64(pixels_out) as u64
+        \\    count := 0
+        \\    min_row := 96
+        \\    max_row := 0
+        \\    min_col := 96
+        \\    max_col := 0
+        \\    top_min_col := 0
+        \\    row := 0
+        \\    while row < 96:
+        \\        col := 0
+        \\        while col < 96:
+        \\            offset := ((row * 96 + col) * 4) as u64
+        \\            pixel := e7_load_u32(pixels + offset)
+        \\            if pixel != 0 and pixel != 4278190080:
+        \\                count = count + 1
+        \\                if row < min_row:
+        \\                    min_row = row
+        \\                    top_min_col = col
+        \\                elif row == min_row:
+        \\                    if col < top_min_col:
+        \\                        top_min_col = col
+        \\                if row > max_row:
+        \\                    max_row = row
+        \\                if col < min_col:
+        \\                    min_col = col
+        \\                if col > max_col:
+        \\                    max_col = col
+        \\            col = col + 1
+        \\        row = row + 1
+        \\    e7_free_ptr(pixels)
+        \\    e7_free_ptr(pixels_out)
+        \\    e7_free_ptr(size_out)
+        \\    scene_destroy(scene)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if drew == 0:
+        \\        ret -4
+        \\    count_value := e7_f32_to_i64(e7_f32_from_i64(count))
+        \\    min_row_value := e7_f32_to_i64(e7_f32_from_i64(min_row))
+        \\    max_row_value := e7_f32_to_i64(e7_f32_from_i64(max_row))
+        \\    min_col_value := e7_f32_to_i64(e7_f32_from_i64(min_col))
+        \\    max_col_value := e7_f32_to_i64(e7_f32_from_i64(max_col))
+        \\    top_value := e7_f32_to_i64(e7_f32_from_i64(top_min_col))
+        \\    ret (((((count_value * 100 + min_row_value) * 100 + max_row_value) * 100 + min_col_value) * 100 + max_col_value) * 100 + top_value)
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("box parity probe parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("box parity diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-box-parity");
+    const Probe = *const fn (i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "box_metric");
+
+    // Unit box, half-extent scale 1: the old renderer's [-1,1] cube projects
+    // to 27.2..68.8 px.  A half-sized ([-0.5,0.5]) cube would land near
+    // 38.8..57.2, which the parity tolerance rejects.
+    const size_one = probe_fn(1000, 1000, 1000, 0, 0, 0);
+    const size_half = probe_fn(500, 500, 500, 0, 0, 0);
+    // Asymmetric boxes rotated about each axis independently.  These bounding
+    // boxes are perspective-asymmetric, so an inverted rotation fails them.
+    const rx_pos = probe_fn(2000, 1000, 1000, 500, 0, 0);
+    const rx_neg = probe_fn(2000, 1000, 1000, -500, 0, 0);
+    const ry_pos = probe_fn(2000, 1000, 1000, 0, 700, 0);
+    const ry_neg = probe_fn(2000, 1000, 1000, 0, -700, 0);
+    const rz_pos = probe_fn(2000, 1000, 1000, 0, 0, 700);
+    const rz_neg = probe_fn(2000, 1000, 1000, 0, 0, -700);
+    const combined = probe_fn(2000, 500, 1000, 300, 400, 500);
+    const values = [_]i64{ size_one, size_half, rx_pos, rx_neg, ry_pos, ry_neg, rz_pos, rz_neg, combined };
+    for (values) |value| {
+        if (value < 0) {
+            std.debug.print("skipping e7 box parity test: scene/device unavailable ({d})\n", .{value});
+            return error.SkipZigTest;
+        }
+    }
+    const size_one_m = BoxMetrics.decode(size_one);
+    const size_half_m = BoxMetrics.decode(size_half);
+    const rx_pos_m = BoxMetrics.decode(rx_pos);
+    const rx_neg_m = BoxMetrics.decode(rx_neg);
+    const ry_pos_m = BoxMetrics.decode(ry_pos);
+    const ry_neg_m = BoxMetrics.decode(ry_neg);
+    const rz_pos_m = BoxMetrics.decode(rz_pos);
+    const rz_neg_m = BoxMetrics.decode(rz_neg);
+    const combined_m = BoxMetrics.decode(combined);
+
+    const tolerance = 2.0;
+    // Every case must render a solid silhouette; the smallest is the 0.5
+    // half-extent box at ~18x18 px (~340 covered pixels).
+    for ([_]*const BoxMetrics{ &size_one_m, &size_half_m, &rx_pos_m, &rx_neg_m, &ry_pos_m, &ry_neg_m, &rz_pos_m, &rz_neg_m, &combined_m }) |metric| {
+        try std.testing.expect(metric.count > 200);
+    }
+
+    // Size parity: [-1,1] extents at half-extent scales 1.0 and 0.5.
+    try expectParityBox(size_one_m, parityProjectBox(parityModelMatrix(1000, 1000, 1000, 0, 0, 0), 96, 96), tolerance);
+    try expectParityBox(size_half_m, parityProjectBox(parityModelMatrix(500, 500, 500, 0, 0, 0), 96, 96), tolerance);
+
+    // Axis rotation magnitudes and composition order.
+    try expectParityBox(rx_pos_m, parityProjectBox(parityModelMatrix(2000, 1000, 1000, 500, 0, 0), 96, 96), tolerance);
+    try expectParityBox(rx_neg_m, parityProjectBox(parityModelMatrix(2000, 1000, 1000, -500, 0, 0), 96, 96), tolerance);
+    try expectParityBox(ry_pos_m, parityProjectBox(parityModelMatrix(2000, 1000, 1000, 0, 700, 0), 96, 96), tolerance);
+    try expectParityBox(ry_neg_m, parityProjectBox(parityModelMatrix(2000, 1000, 1000, 0, -700, 0), 96, 96), tolerance);
+    try expectParityBox(rz_pos_m, parityProjectBox(parityModelMatrix(2000, 1000, 1000, 0, 0, 700), 96, 96), tolerance);
+    try expectParityBox(combined_m, parityProjectBox(parityModelMatrix(2000, 500, 1000, 300, 400, 500), 96, 96), tolerance);
+
+    // Rotation direction: +X brings the far top face towards the camera (larger
+    // bottom extent), +Y moves the left/large half towards the camera (smaller
+    // left margin), and +Z raises the +X end (topmost row starts right of
+    // centre).  Inverted or transposed matrices fail these relations.
+    try std.testing.expect(rx_pos_m.max_row > rx_neg_m.max_row + 2);
+    try std.testing.expect(ry_pos_m.min_col < ry_neg_m.min_col - 4);
+    try std.testing.expect(rz_pos_m.top_min_col > 48);
+    try std.testing.expect(rz_neg_m.top_min_col < 48);
 }
 
 test "e7 text module loads a font, measures, and rasterizes text" {

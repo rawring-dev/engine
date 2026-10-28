@@ -73,15 +73,19 @@ pub render_scene <- sys (
             sy = radius
             sz = radius
         if renderable.kind == 2:
-            # Capsule mesh: radius on x/z with the cylinder band between cap
-            # rings at y=+/-0.5 and poles at y=+/-1, so the y scale is the
-            # total half height.  Like the shared cube the mesh is unit-sized
-            # (half extent 0.5), hence the 0.5 factor on the half extent.
+            # Capsule mesh: radius 1 on x/z with the cylinder band between cap
+            # rings at y=+/-1 and poles at y=+/-2 (the removed Zig renderer's
+            # capsule geometry).  The x/z scale is the radius and the y scale is
+            # the cylinder half-height, so the pole half-height is twice it and
+            # the caps are ellipsoidal when the y scale differs from the radius.
             radius := sx
             if sz > radius:
                 radius = sz
+            cylinder_half := sy - radius
+            if cylinder_half < 0.0:
+                cylinder_half = 0.0
             sx = radius
-            sy = sy * 0.5
+            sy = cylinder_half
             sz = radius
         # Full XYZ Euler orientation from the physics Transform (roll/pitch/yaw
         # in radians), matching the physics quaternion convention.

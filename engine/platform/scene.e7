@@ -441,20 +441,22 @@ texture_set_lit <- (scene: u64, texture: i64) -> i64:
         ret white
     ret set
 
-# Write the 320-byte per-object UBO slot (model = T * R * S with R = Ry*Rx*Rz,
-# then the material tint).  Slot 0's frame block (view/proj/camera/light) is
-# copied from the previous slot; scene_set_camera/scene_set_light write it
-# before the frame is recorded.
-write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64) -> nil:
-    ubo := e7_load_u64(scene + 152)
-    if ubo == 0:
-        ret
-    slot := ubo + slot_index * 320
-    if slot_index > 0:
-        e7_memcpy(slot, ubo, 320)
-    px := milli_to_f32(x_milli)
-    py := milli_to_f32(y_milli)
-    pz := milli_to_f32(z_milli)
+# Write the 12 rotation/scale floats (columns 0..2) of the model matrix for the
+# given half-extent scale and intrinsic-XYZ Euler rotation; column 3 is set to
+# (0, 0, 0, 1).  This is the removed Zig renderer's column-major
+# `translate * Rz(z) * Ry(y) * Rx(x) * scale`: rotation
+#
+#   R = Rz * Ry * Rx =
+#       [ cy*cz,  sy*sx*cz - cx*sz,  sy*cx*cz + sx*sz ]
+#       [ cy*sz,  sy*sx*sz + cx*cz,  sy*cx*sz - sx*cz ]
+#       [ -sy,    cy*sx,             cy*cx            ]
+#
+# with each column scaled by (sx, sy, sz) and stored as four contiguous columns
+# (Mat4[col][row]), matching the shader's `column_major` Scene block.
+# Exposed as a separate helper so the rotation parity tests can exercise the
+# matrix directly; write_object_slot fills the translation and tint after it.
+#   out layout: col0 @0, col1 @16, col2 @32, col3 @48 (identity translation).
+object_model_matrix <- (out: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64) -> nil:
     sx := milli_to_f32(sx_milli)
     sy := milli_to_f32(sy_milli)
     sz := milli_to_f32(sz_milli)
@@ -462,35 +464,55 @@ write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z
     ry := e7_f32_div(e7_f32_from_i64(ry_milli), 1000.0)
     rz := e7_f32_div(e7_f32_from_i64(rz_milli), 1000.0)
     cx := e7_f32_cos(rx)
-    sxr := e7_f32_sin(rx)
+    sin_x := e7_f32_sin(rx)
     cy := e7_f32_cos(ry)
-    syr := e7_f32_sin(ry)
+    sin_y := e7_f32_sin(ry)
     cz := e7_f32_cos(rz)
-    szr := e7_f32_sin(rz)
-    m00 := e7_f32_add(e7_f32_mul(cy, cz), e7_f32_mul(e7_f32_mul(syr, sxr), szr))
-    m01 := e7_f32_sub(e7_f32_mul(e7_f32_mul(syr, sxr), cz), e7_f32_mul(cy, szr))
-    m02 := e7_f32_mul(syr, cx)
-    m10 := e7_f32_mul(cx, szr)
-    m11 := e7_f32_mul(cx, cz)
-    m12 := e7_f32_neg(sxr)
-    m20 := e7_f32_sub(e7_f32_mul(e7_f32_mul(cy, sxr), szr), e7_f32_mul(syr, cz))
-    m21 := e7_f32_add(e7_f32_mul(syr, szr), e7_f32_mul(e7_f32_mul(cy, sxr), cz))
-    m22 := e7_f32_mul(cy, cx)
-    e7_store_f32(slot, e7_f32_mul(m00, sx))
-    e7_store_f32(slot + 4, e7_f32_mul(m10, sx))
-    e7_store_f32(slot + 8, e7_f32_mul(m20, sx))
-    e7_store_f32(slot + 12, 0.0)
-    e7_store_f32(slot + 16, e7_f32_mul(m01, sy))
-    e7_store_f32(slot + 20, e7_f32_mul(m11, sy))
-    e7_store_f32(slot + 24, e7_f32_mul(m21, sy))
-    e7_store_f32(slot + 28, 0.0)
-    e7_store_f32(slot + 32, e7_f32_mul(m02, sz))
-    e7_store_f32(slot + 36, e7_f32_mul(m12, sz))
-    e7_store_f32(slot + 40, e7_f32_mul(m22, sz))
-    e7_store_f32(slot + 44, 0.0)
-    e7_store_f32(slot + 48, px)
-    e7_store_f32(slot + 52, py)
-    e7_store_f32(slot + 56, pz)
+    sin_z := e7_f32_sin(rz)
+    # Column 0 = (R00, R10, R20) * sx.
+    c00 := e7_f32_mul(cy, cz)
+    c01 := e7_f32_mul(cy, sin_z)
+    c02 := e7_f32_neg(sin_y)
+    # Column 1 = (R01, R11, R21) * sy.
+    c10 := e7_f32_sub(e7_f32_mul(e7_f32_mul(sin_y, sin_x), cz), e7_f32_mul(cx, sin_z))
+    c11 := e7_f32_add(e7_f32_mul(e7_f32_mul(sin_y, sin_x), sin_z), e7_f32_mul(cx, cz))
+    c12 := e7_f32_mul(cy, sin_x)
+    # Column 2 = (R02, R12, R22) * sz.
+    c20 := e7_f32_add(e7_f32_mul(e7_f32_mul(sin_y, cx), cz), e7_f32_mul(sin_x, sin_z))
+    c21 := e7_f32_sub(e7_f32_mul(e7_f32_mul(sin_y, cx), sin_z), e7_f32_mul(sin_x, cz))
+    c22 := e7_f32_mul(cy, cx)
+    e7_store_f32(out, e7_f32_mul(c00, sx))
+    e7_store_f32(out + 4, e7_f32_mul(c01, sx))
+    e7_store_f32(out + 8, e7_f32_mul(c02, sx))
+    e7_store_f32(out + 12, 0.0)
+    e7_store_f32(out + 16, e7_f32_mul(c10, sy))
+    e7_store_f32(out + 20, e7_f32_mul(c11, sy))
+    e7_store_f32(out + 24, e7_f32_mul(c12, sy))
+    e7_store_f32(out + 28, 0.0)
+    e7_store_f32(out + 32, e7_f32_mul(c20, sz))
+    e7_store_f32(out + 36, e7_f32_mul(c21, sz))
+    e7_store_f32(out + 40, e7_f32_mul(c22, sz))
+    e7_store_f32(out + 44, 0.0)
+    e7_store_f32(out + 48, 0.0)
+    e7_store_f32(out + 52, 0.0)
+    e7_store_f32(out + 56, 0.0)
+    e7_store_f32(out + 60, 1.0)
+
+# Write the 320-byte per-object UBO slot (model = T * Rz*Ry*Rx * S, then the
+# material tint).  Slot 0's frame block (view/proj/camera/light) is copied from
+# the previous slot; scene_set_camera/scene_set_light write it before the frame
+# is recorded.
+write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    slot := ubo + slot_index * 320
+    if slot_index > 0:
+        e7_memcpy(slot, ubo, 320)
+    object_model_matrix(slot, sx_milli, sy_milli, sz_milli, rx_milli, ry_milli, rz_milli)
+    e7_store_f32(slot + 48, milli_to_f32(x_milli))
+    e7_store_f32(slot + 52, milli_to_f32(y_milli))
+    e7_store_f32(slot + 56, milli_to_f32(z_milli))
     e7_store_f32(slot + 60, 1.0)
     e7_store_f32(slot + 256, e7_f32_div(e7_f32_from_i64(r_milli), 1000.0))
     e7_store_f32(slot + 260, e7_f32_div(e7_f32_from_i64(g_milli), 1000.0))
@@ -503,12 +525,13 @@ write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z
 # Box draws keep the shared 8-vertex cube buffer.  Sphere, capsule and plane
 # meshes are generated once per scene on the CPU and uploaded into host-visible
 # mapped buffers; their draws use the existing 32-byte-stride lit pipeline
-# (position xyz at 0, neutral vertex colour at 12, 8 bytes padding).  The
-# meshes are unit-sized like the shared cube (half extent 0.5):
-#   * sphere radius 0.5 (16 stacks x 24 slices),
-#   * capsule radius 0.5, cap rings at y=+/-0.5 and poles at y=+/-1
-#     (24 slices, 8 cap stacks, closed cylinder band),
-#   * plane spanning [-0.5, 0.5] on XZ at y=0 (the Y scale is ignored).
+# (position xyz at 0, neutral vertex colour at 12, 8 bytes padding).  Extents
+# match the removed Zig renderer, so engine scales are half extents:
+#   * sphere radius 1 (16 stacks x 24 slices),
+#   * capsule radius 1, cap rings at y=+/-1 and poles at y=+/-2
+#     (24 slices, 8 cap stacks, closed cylinder band); scale (x, y, z) is
+#     (radius, cylinder half-height, radius) like the old renderer,
+#   * plane spanning [-1, 1] on XZ at y=0 (the Y scale is ignored).
 # Vertex totals: sphere 425, capsule 450, plane 4 -> 879 * 32 = 28128 bytes.
 # Index totals:  sphere 2304, capsule 2448, plane 6 -> 4758 * 2 = 9516 bytes.
 # Scene state: 1320/1328 vertex buffer/memory, 1336/1344 index buffer/memory,
@@ -529,14 +552,14 @@ shape_write_vertex <- (vertices: u64, index: i64, x: f32, y: f32, z: f32) -> nil
 shape_write_index <- (indices: u64, at: i64, vertex: i64) -> nil:
     e7_store_u16(indices + (at * 2) as u64, vertex)
 
-# UV sphere, radius 0.5, neutral white vertex colour (the per-object tint and
+# UV sphere, radius 1, neutral white vertex colour (the per-object tint and
 # texture come from the lit UBO/descriptors).  The float helper calls in the
 # loop bodies also put this function under the LLVM instcombine fixed-point
 # attribute that loop-heavy stack-machine IR needs on LLVM 23.
 shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
     stacks := 16
     slices := 24
-    radius: f32 := 0.5
+    radius: f32 := 1.0
     row_stride := slices + 1
     stack := 0
     slice := 0
@@ -572,15 +595,16 @@ shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
             slice = slice + 1
         stack = stack + 1
 
-# Capsule along Y: radius 0.5, hemispherical caps centred at y=+/-0.5 (rings at
-# y=+/-0.5, poles at y=+/-1) and a closed cylinder band between the two rings.
+# Capsule along Y: radius 1, hemispherical caps centred at y=+/-1 (rings at
+# y=+/-1, poles at y=+/-2) and a closed cylinder band between the two rings,
+# matching the old renderer's capsule mesh.
 shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
     slices := 24
     cap_stacks := 8
     rows := cap_stacks + 1
     row_stride := slices + 1
-    radius: f32 := 0.5
-    cap_center: f32 := 0.5
+    radius: f32 := 1.0
+    cap_center: f32 := 1.0
     bottom_base := rows * row_stride
     stack := 0
     slice := 0
@@ -638,12 +662,12 @@ shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_i
         at = at + 6
         slice = slice + 1
 
-# Flat XZ plane spanning [-0.5, 0.5] with a +Y facing quad at y=0.
+# Flat XZ plane spanning [-1, 1] with a +Y facing quad at y=0.
 shape_generate_plane <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
-    shape_write_vertex(vertices, base_vertex, 0.0 - 0.5, 0.0, 0.0 - 0.5)
-    shape_write_vertex(vertices, base_vertex + 1, 0.5, 0.0, 0.0 - 0.5)
-    shape_write_vertex(vertices, base_vertex + 2, 0.5, 0.0, 0.5)
-    shape_write_vertex(vertices, base_vertex + 3, 0.0 - 0.5, 0.0, 0.5)
+    shape_write_vertex(vertices, base_vertex, 0.0 - 1.0, 0.0, 0.0 - 1.0)
+    shape_write_vertex(vertices, base_vertex + 1, 1.0, 0.0, 0.0 - 1.0)
+    shape_write_vertex(vertices, base_vertex + 2, 1.0, 0.0, 1.0)
+    shape_write_vertex(vertices, base_vertex + 3, 0.0 - 1.0, 0.0, 1.0)
     shape_write_index(indices, base_index, base_vertex)
     shape_write_index(indices, base_index + 1, base_vertex + 1)
     shape_write_index(indices, base_index + 2, base_vertex + 2)
