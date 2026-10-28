@@ -3148,7 +3148,7 @@ const Checker = struct {
             .boolean => try self.store.make(.bool),
             .nil => try self.store.make(.{ .optional = try self.store.freshVar(.any) }),
             .error_literal => |path| try self.errorValueType(path),
-            .path => |path| try self.checkPath(path),
+            .path => |path| try self.checkPathValue(path),
             .function => |function| try self.checkFunctionExpr(function),
             .struct_literal => |literal| try self.checkStructLiteral(literal),
             .map_literal => |literal| try self.checkMapLiteral(literal),
@@ -3215,6 +3215,24 @@ const Checker = struct {
         // A row is a runtime table shape; semantics stays opaque until the ECS
         // execution task defines row layout.
         return self.store.make(.unknown);
+    }
+
+    /// A path in value position.  Plain functions are first-class values of
+    /// their function type; async and `sys` functions are rejected with a
+    /// diagnostic (call them directly instead).
+    fn checkPathValue(self: *Checker, path: ast.Path) Error!*types.Type {
+        const ty = try self.checkPath(path);
+        if (path.segments.len == 1 and self.lookup(path.segments[0].name) == null) {
+            if (self.lookupFunction(path.segments[0].name)) |callable| {
+                if (callable.kind == .sys or callable.is_async) {
+                    try self.report("cannot use {s} function `{s}` as a value; first-class function values require a plain function", .{
+                        if (callable.kind == .sys) "system" else "async",
+                        callable.name,
+                    });
+                }
+            }
+        }
+        return ty;
     }
 
     fn checkPath(self: *Checker, path: ast.Path) !*types.Type {

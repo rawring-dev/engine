@@ -1992,3 +1992,151 @@ test "rejects casts to non-scalar targets" {
         .{},
     ));
 }
+
+test "lowers first-class function values and indirect calls" {
+    var result = try compile(
+        std.testing.allocator,
+        \\double <- (x: i64) -> i64 = x * 2
+        \\apply <- (value: i64, f: (i64) -> i64) -> i64:
+        \\    ret f(value)
+        \\run <- () -> i64:
+        \\    ret apply(21, double)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    var double_index: ?u16 = null;
+    for (result.bytecode.functions, 0..) |function, index| {
+        if (std.mem.eql(u8, function.name, "double")) double_index = @intCast(index);
+    }
+    try std.testing.expect(double_index != null);
+
+    // `apply` calls its callback through call_indirect.
+    const apply_fn = result.functionNamed("apply").?;
+    var apply_indirect = false;
+    for (apply_fn.code) |op| switch (op) {
+        .call_indirect => |argc| if (argc == 1) {
+            apply_indirect = true;
+        },
+        else => {},
+    };
+    try std.testing.expect(apply_indirect);
+
+    // `run` passes `double` as a function value and still calls `apply` directly.
+    const run_fn = result.functionNamed("run").?;
+    var saw_ref = false;
+    var saw_direct_apply = false;
+    for (run_fn.code) |op| switch (op) {
+        .function_ref => |callee| if (callee == double_index.?) {
+            saw_ref = true;
+        },
+        .call => |call| {
+            if (std.mem.eql(u8, result.bytecode.functions[call.function].name, "apply")) {
+                saw_direct_apply = true;
+            }
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_ref and saw_direct_apply);
+}
+
+test "lowers function values through struct fields, maps, and returned functions" {
+    var result = try compile(
+        std.testing.allocator,
+        \\double <- (x: i64) -> i64 = x * 2
+        \\negate <- (x: i64) -> i64 = 0 - x
+        \\Ops <- struct
+        \\    f: (i64) -> i64
+        \\pick <- (which: i64) -> (i64) -> i64:
+        \\    if which == 0:
+        \\        ret double
+        \\    ret negate
+        \\run <- () -> i64:
+        \\    ops := Ops { f: negate }
+        \\    dispatch := map[str, (i64) -> i64] { "double": double, "negate": negate }
+        \\    chosen := dispatch["double"]
+        \\    chosen2 := pick(0)
+        \\    ret ops.f(10) + chosen(4) + chosen2(3)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const run_fn = result.functionNamed("run").?;
+    var indirect_count: usize = 0;
+    var function_ref_count: usize = 0;
+    for (run_fn.code) |op| switch (op) {
+        .call_indirect => indirect_count += 1,
+        .function_ref => function_ref_count += 1,
+        else => {},
+    };
+    try std.testing.expect(indirect_count >= 3);
+    try std.testing.expect(function_ref_count >= 3);
+}
+
+test "passes function values across modules" {
+    const math_source =
+        \\pub double <- (x: i64) -> i64 = x * 2
+    ;
+    var result = try compileProjectFromSources(
+        std.testing.allocator,
+        \\mod math
+        \\use math::*;
+        \\apply <- (value: i64, f: (i64) -> i64) -> i64:
+        \\    ret f(value)
+        \\run <- () -> i64:
+        \\    ret apply(21, double)
+    ,
+        &.{.{ .name = "math", .source = math_source }},
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+    const run_fn = result.functionNamed("run").?;
+    var saw_ref = false;
+    for (run_fn.code) |op| switch (op) {
+        .function_ref => saw_ref = true,
+        else => {},
+    };
+    try std.testing.expect(saw_ref);
+}
+
+test "rejects mismatched function values and indirect arity" {
+    // Function value type does not match the parameter type.
+    try std.testing.expectError(error.SemanticFailed, compile(
+        std.testing.allocator,
+        \\strfn <- (x: i64) -> str = "x"
+        \\takes <- (f: (i64) -> i64) -> i64:
+        \\    ret f(1)
+        \\bad <- () -> i64:
+        \\    ret takes(strfn)
+    ,
+        .{},
+    ));
+    // Calling a function value with the wrong number of arguments.
+    try std.testing.expectError(error.SemanticFailed, compile(
+        std.testing.allocator,
+        \\double <- (x: i64) -> i64 = x * 2
+        \\bad <- () -> i64:
+        \\    f := double
+        \\    ret f(1, 2)
+    ,
+        .{},
+    ));
+    // Async functions are not first-class values.
+    try std.testing.expectError(error.SemanticFailed, compile(
+        std.testing.allocator,
+        \\later <- async () -> i64 = 1
+        \\bad <- () -> i64:
+        \\    f := later
+        \\    ret 0
+    ,
+        .{},
+    ));
+}

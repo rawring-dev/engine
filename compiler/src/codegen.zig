@@ -116,6 +116,8 @@ const MethodTable = struct {
     enums: *const std.StringHashMapUnmanaged(*const ast.EnumDecl),
     /// First bytecode index occupied by impl-method functions.
     base_index: u16,
+    /// Bytecode indices of plain functions that may be used as values.
+    value_functions: ?*const std.AutoHashMapUnmanaged(u16, void) = null,
     by_decl: std.AutoHashMapUnmanaged(usize, u16) = .empty,
     pending: std.ArrayList(PendingMethod) = .empty,
     functions: std.ArrayList(bytecode.Function) = .empty,
@@ -177,6 +179,7 @@ const MethodTable = struct {
                 .tables = self.tables,
                 .enums = self.enums,
                 .methods = self,
+                .value_functions = self.value_functions,
                 .name_override = pending.name,
             };
             const compiled = try builder.finish();
@@ -557,6 +560,15 @@ pub fn lower(
         try sys_wrappers.put(allocator, info.constructor_index, wrapper);
     }
 
+    // Plain, non-async functions may be referenced as first-class values.  The
+    // value is the stable bytecode function index; indirect calls dispatch on it.
+    var value_functions = std.AutoHashMapUnmanaged(u16, void).empty;
+    defer value_functions.deinit(allocator);
+    for (infos.items) |info| {
+        if (info.body_index != null or info.sys_decl != null) continue;
+        try value_functions.put(allocator, info.constructor_index, {});
+    }
+
     // Plugin id -> init constructor index, used by `commands.add_plugin`.
     var plugin_inits = std.AutoHashMapUnmanaged(i64, u16).empty;
     defer plugin_inits.deinit(allocator);
@@ -587,6 +599,7 @@ pub fn lower(
         .tables = &tables,
         .enums = &enums,
         .base_index = next_index,
+        .value_functions = &value_functions,
     };
     defer methods.deinit();
 
@@ -618,6 +631,7 @@ pub fn lower(
                 .mode = .async_constructor,
                 .body_index = body_index,
                 .sys_wrappers = &sys_wrappers,
+                .value_functions = &value_functions,
             };
             functions[info.constructor_index] = try constructor.finish();
             initialized += 1;
@@ -638,6 +652,7 @@ pub fn lower(
                 .module_prefix = info.module_prefix,
                 .plugin_inits = &plugin_inits,
                 .sys_wrappers = &sys_wrappers,
+                .value_functions = &value_functions,
                 .emit_ecs_setup = is_main and has_ecs,
             };
             functions[body_index] = try body.finish();
@@ -680,6 +695,7 @@ pub fn lower(
                 .name_override = info.qualified_name,
                 .plugin_inits = &plugin_inits,
                 .sys_wrappers = &sys_wrappers,
+                .value_functions = &value_functions,
                 .emit_ecs_setup = is_main and has_ecs,
             };
             functions[info.constructor_index] = try builder.finish();
@@ -813,6 +829,8 @@ const Builder = struct {
     module_prefix: []const u8 = "",
     /// Declared system whose body is being lowered; non-null in sys_body mode.
     sys_decl: ?*const ast.SysDecl = null,
+    /// Bytecode indices of plain functions usable as first-class values.
+    value_functions: ?*const std.AutoHashMapUnmanaged(u16, void) = null,
     /// Plugin id -> init constructor index for `commands.add_plugin`.
     plugin_inits: ?*const std.AutoHashMapUnmanaged(i64, u16) = null,
     /// System constructor index -> zero-argument trigger constructor.
@@ -2101,33 +2119,47 @@ const Builder = struct {
                         try self.emit(.{ .load_local = slot });
                         return;
                     }
-                    // Unit-struct constructor shorthand: `mesh := CubeMesh`.
-                    // A zero-field struct/table value is an empty aggregate.
-                    if (self.exprType(expr)) |ty| {
-                        if (self.namedBase(ty)) |named| {
-                            if (self.structFields(named.name)) |fields| {
-                                if (fields.len == 0) {
-                                    try self.push(0);
-                                    try self.emit(.alloc);
-                                    return;
-                                }
+                }
+                if (path.segments.len >= 2) {
+                    if (self.enums.get(path.segments[0].name)) |def| {
+                        // Value form of a tuple enum variant: tag-only aggregate
+                        // (payload construction goes through the call form).
+                        const variant_name = path.segments[path.segments.len - 1].name;
+                        const tag = enumTag(def, variant_name) orelse return error.UnsupportedFeature;
+                        // Value form is the tag-only aggregate (one slot);
+                        // payload construction uses the call form.
+                        const temp = try self.allocLocal("<enum>");
+                        try self.push(1);
+                        try self.emit(.alloc);
+                        try self.emit(.{ .store_local = temp });
+                        try self.emit(.{ .load_local = temp });
+                        try self.push(@intCast(tag));
+                        try self.emit(.store_mem);
+                        try self.emit(.{ .load_local = temp });
+                        return;
+                    }
+                }
+                // First-class function value: a bare top-level/module function
+                // name pushes its stable bytecode index.
+                if (self.isFunctionValueExpr(expr)) {
+                    try self.lowerFunctionRef(path);
+                    return;
+                }
+                if (path.segments.len >= 2) return error.UnsupportedFeature;
+                // Unit-struct constructor shorthand: `mesh := CubeMesh`.
+                // A zero-field struct/table value is an empty aggregate.
+                if (self.exprType(expr)) |ty| {
+                    if (self.namedBase(ty)) |named| {
+                        if (self.structFields(named.name)) |fields| {
+                            if (fields.len == 0) {
+                                try self.push(0);
+                                try self.emit(.alloc);
+                                return;
                             }
                         }
                     }
-                    return error.UnsupportedFeature;
                 }
-                const enum_name = path.segments[0].name;
-                const def = self.enums.get(enum_name) orelse return error.UnsupportedFeature;
-                const variant_name = path.segments[path.segments.len - 1].name;
-                const tag = enumTag(def, variant_name) orelse return error.UnsupportedFeature;
-                const temp = try self.allocLocal("<enum>");
-                try self.push(1);
-                try self.emit(.alloc);
-                try self.emit(.{ .store_local = temp });
-                try self.emit(.{ .load_local = temp });
-                try self.push(@intCast(tag));
-                try self.emit(.store_mem);
-                try self.emit(.{ .load_local = temp });
+                return error.UnsupportedFeature;
             },
             .string => |text| try self.emit(.{ .string_lit = text }),
             .struct_literal => |literal| try self.lowerStructLiteral(literal),
@@ -2917,6 +2949,70 @@ const Builder = struct {
         return true;
     }
 
+    /// True when `expr` has a function type (a first-class function value).
+    fn isFunctionValueExpr(self: *Builder, expr: *ast.Expr) bool {
+        const ty = self.exprType(expr) orelse return false;
+        return self.resolvedType(ty).* == .function;
+    }
+
+    /// Resolve a path to a compiled top-level/module function index using the
+    /// same precedence as direct calls (qualified path first, then the
+    /// module-scoped and imported aliases).
+    fn resolveFunctionIndex(self: *Builder, path: ast.Path) ?u16 {
+        if (path.segments.len >= 2) {
+            var buffer: [512]u8 = undefined;
+            const full = joinPathBuf(&buffer, path);
+            if (self.name_map.get(full)) |index| return index;
+            // Module-relative reference (`obj::load_obj` inside an
+            // `assets::AssetsPlugin` item) resolves against the owning module.
+            // Match the longest module prefix shared with the current item.
+            var best: ?u16 = null;
+            var best_shared: usize = 0;
+            var it = self.name_map.iterator();
+            while (it.next()) |entry| {
+                const key = entry.key_ptr.*;
+                if (key.len <= full.len + 2) continue;
+                if (!std.mem.endsWith(u8, key, full)) continue;
+                if (!std.mem.eql(u8, key[key.len - full.len - 2 .. key.len - full.len], "::")) continue;
+                var shared: usize = 0;
+                while (shared < self.module_prefix.len and shared < key.len and
+                    self.module_prefix[shared] == key[shared]) : (shared += 1)
+                {}
+                if (best == null or shared > best_shared) {
+                    best = entry.value_ptr.*;
+                    best_shared = shared;
+                }
+            }
+            if (best) |index| return index;
+            // Imported alias: semantics resolve qualified paths through their
+            // last segment as well.
+            return self.name_map.get(path.segments[path.segments.len - 1].name);
+        }
+        if (path.segments.len != 1) return null;
+        const name = path.segments[0].name;
+        var qualified_buffer: [512]u8 = undefined;
+        const qualified = qualifiedNameBuf(&qualified_buffer, self.module_prefix, name);
+        if (self.name_map.get(qualified)) |index| return index;
+        return self.name_map.get(name);
+    }
+
+    /// Lower a bare function name in value position: push its bytecode index.
+    /// Lower a bare function name in value position: push its bytecode index.
+    fn lowerFunctionRef(self: *Builder, path: ast.Path) Error!void {
+        const index = self.resolveFunctionIndex(path) orelse return error.UnsupportedFeature;
+        const allowed = self.value_functions orelse return error.UnsupportedFeature;
+        if (!allowed.contains(index)) return error.UnsupportedFeature;
+        try self.emit(.{ .function_ref = index });
+    }
+
+    /// Lower an indirect call: callee value first, then arguments, then the
+    /// `call_indirect` op carrying the argument count.
+    fn lowerIndirectCall(self: *Builder, call: ast.Call) Error!void {
+        try self.lowerExpr(call.callee);
+        for (call.args) |arg| try self.lowerCallArg(arg);
+        try self.emit(.{ .call_indirect = @intCast(call.args.len) });
+    }
+
     fn lowerCall(self: *Builder, call: ast.Call, expr: *ast.Expr) Error!void {
         if (try self.lowerJsonCall(call, expr)) return;
         if (try self.lowerCommandsMethodCall(call)) return;
@@ -2926,59 +3022,63 @@ const Builder = struct {
             if (try self.lowerBuiltinMethodCall(call)) return;
             if (try self.lowerInherentMethodCall(call)) return;
         }
-        if (call.callee.* != .path) return error.UnsupportedFeature;
-        const path = call.callee.path;
-        if (path.segments.len == 0) return error.UnsupportedFeature;
-        const name = path.segments[path.segments.len - 1].name;
-        if (path.segments.len >= 2) {
-            if (self.enums.get(path.segments[0].name)) |def| {
-                const tag = enumTag(def, name) orelse return error.UnsupportedFeature;
-                const variant = def.variants[tag];
-                if (variant.payload != .tuple) return error.UnsupportedFeature;
-                const payloads = variant.payload.tuple;
-                const temp = try self.allocLocal("<enum>");
-                try self.push(@intCast(payloads.len + 1));
-                try self.emit(.alloc);
-                try self.emit(.{ .store_local = temp });
-                try self.emit(.{ .load_local = temp });
-                try self.push(@intCast(tag));
-                try self.emit(.store_mem);
-                for (call.args, 0..) |arg, i| {
+        if (call.callee.* == .path) {
+            const path = call.callee.path;
+            if (path.segments.len == 0) return error.UnsupportedFeature;
+            const name = path.segments[path.segments.len - 1].name;
+            // A local/parameter shadows a top-level function of the same name
+            // (the analyzer resolves values the same way): call through the slot.
+            if (path.segments.len == 1 and self.local(name) != null) {
+                if (self.isFunctionValueExpr(call.callee)) return self.lowerIndirectCall(call);
+                return error.UnsupportedFeature;
+            }
+            if (path.segments.len >= 2) {
+                if (self.enums.get(path.segments[0].name)) |def| {
+                    const tag = enumTag(def, name) orelse return error.UnsupportedFeature;
+                    const variant = def.variants[tag];
+                    if (variant.payload != .tuple) return error.UnsupportedFeature;
+                    const payloads = variant.payload.tuple;
+                    const temp = try self.allocLocal("<enum>");
+                    try self.push(@intCast(payloads.len + 1));
+                    try self.emit(.alloc);
+                    try self.emit(.{ .store_local = temp });
                     try self.emit(.{ .load_local = temp });
-                    try self.push(@intCast(8 + i * 8));
-                    try self.emit(.add);
-                    try self.lowerExpr(arg);
+                    try self.push(@intCast(tag));
                     try self.emit(.store_mem);
+                    for (call.args, 0..) |arg, i| {
+                        try self.emit(.{ .load_local = temp });
+                        try self.push(@intCast(8 + i * 8));
+                        try self.emit(.add);
+                        try self.lowerExpr(arg);
+                        try self.emit(.store_mem);
+                    }
+                    try self.emit(.{ .load_local = temp });
+                    return;
                 }
-                try self.emit(.{ .load_local = temp });
+            }
+            const direct = self.resolveFunctionIndex(path);
+            if (direct == null and std.mem.eql(u8, name, "print")) {
+                for (call.args) |arg| {
+                    try self.lowerExpr(arg);
+                    try self.pop();
+                }
+                try self.push(0);
                 return;
             }
-        }
-        if (std.mem.eql(u8, name, "print")) {
-            for (call.args) |arg| {
-                try self.lowerExpr(arg);
-                try self.pop();
+            if (direct) |function| {
+                for (call.args) |arg| try self.lowerCallArg(arg);
+                try self.callFunction(function, call.args.len);
+                return;
             }
-            try self.push(0);
+            // Function value reached through a path the direct map does not
+            // cover (for example an imported alias): call indirectly.
+            if (self.isFunctionValueExpr(call.callee)) return self.lowerIndirectCall(call);
+            for (call.args) |arg| try self.lowerCallArg(arg);
+            try self.emitCall(name, call.args.len);
             return;
         }
-        for (call.args) |arg| try self.lowerCallArg(arg);
-        if (path.segments.len >= 2) {
-            var buffer: [512]u8 = undefined;
-            const full = joinPathBuf(&buffer, path);
-            if (self.name_map.get(full)) |function| {
-                try self.callFunction(function, call.args.len);
-                return;
-            }
-        }
-        if (path.segments.len == 1) {
-            var qualified_buffer: [512]u8 = undefined;
-            const qualified = qualifiedNameBuf(&qualified_buffer, self.module_prefix, name);
-            if (self.name_map.get(qualified)) |function| {
-                try self.callFunction(function, call.args.len);
-                return;
-            }
-        }
-        try self.emitCall(name, call.args.len);
+        // Function-typed field, index, or call-expression callee.
+        if (self.isFunctionValueExpr(call.callee)) return self.lowerIndirectCall(call);
+        return error.UnsupportedFeature;
     }
 };
