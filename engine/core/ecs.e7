@@ -14,11 +14,26 @@ pub CameraController <- struct
     move_speed: f32
     look_speed: f32
 
+# Authored/static transform.  `rotation` is an intrinsic-XYZ Euler angle used
+# for authoring static bodies and by non-physics callers; the physics step does
+# not write it for dynamic bodies.
 @Components
 pub Transform <- struct
     translation: [f32; 3]
     rotation: [f32; 3]
     scale: [f32; 3]
+
+# Render-facing orientation as a unit quaternion (x, y, z, w).  This is the
+# single source of truth for dynamic body rotation: the physics step publishes
+# PhysicsWorld.quaternions here every step and the renderer builds the model
+# matrix directly from it (no quaternion -> Euler -> matrix round trip).  Static
+# bodies are initialised once from their authored Transform.rotation.
+@Components
+pub BodyOrientation <- struct
+    x: f32
+    y: f32
+    z: f32
+    w: f32
 
 @Components
 pub MeshRenderer <- struct

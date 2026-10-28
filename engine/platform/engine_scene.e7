@@ -80,6 +80,30 @@ e7_engine_scene_draw_shape_rot <- (
         ret
     scene_draw_shape_rot(scene, shape, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
 
+# Quaternion procedural draw: rotation is a unit quaternion (x, y, z, w), so the
+# renderer builds the model matrix directly from physics orientation.
+e7_engine_scene_draw_shape_quat <- (
+    scene: u64,
+    shape: i32,
+    x: i64,
+    y: i64,
+    z: i64,
+    sx: i64,
+    sy: i64,
+    sz: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    r: i64,
+    g: i64,
+    b: i64,
+    texture: u64,
+) -> nil:
+    if scene == 0:
+        ret
+    scene_draw_shape_quat(scene, shape, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b, texture)
+
 e7_engine_scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, r: i64, g: i64, b: i64, angle: i64) -> nil:
     if scene == 0:
         ret
@@ -105,6 +129,29 @@ e7_engine_scene_draw_custom_rot <- (
     if scene == 0:
         ret
     scene_draw_custom(scene, mesh, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
+
+# Quaternion custom-mesh draw (same quaternion-only model-matrix path).
+e7_engine_scene_draw_custom_quat <- (
+    scene: u64,
+    mesh: u64,
+    x: i64,
+    y: i64,
+    z: i64,
+    sx: i64,
+    sy: i64,
+    sz: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    r: i64,
+    g: i64,
+    b: i64,
+    texture: u64,
+) -> nil:
+    if scene == 0:
+        ret
+    scene_draw_custom_quat(scene, mesh, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b, texture)
 
 e7_engine_scene_draw_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) -> nil:
     if scene == 0:

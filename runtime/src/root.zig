@@ -2306,10 +2306,19 @@ test "JIT contact friction slows and tips boxes" {
         \\    max_angular: i64
         \\    min_y: i64
         \\    max_y: i64
+        \\    init_qx: i64
+        \\    init_qy: i64
+        \\    init_qz: i64
+        \\    init_qw: i64
+        \\    final_qx: i64
+        \\    final_qy: i64
+        \\    final_qz: i64
+        \\    final_qw: i64
+        \\pub Snapshot <- trigger
         \\pub Capture <- trigger
         \\pub ContactScene <- plugin
         \\    contact_scene_plugin_init <- sys (commands: &mut Commands):
-        \\        commands.insert_resource(Probe { vx: 0, rot_z: 0, max_speed: 0, max_angular: 0, min_y: 1000000, max_y: -1000000 })
+        \\        commands.insert_resource(Probe { vx: 0, rot_z: 0, max_speed: 0, max_angular: 0, min_y: 1000000, max_y: -1000000, init_qx: 0, init_qy: 0, init_qz: 0, init_qw: 0, final_qx: 0, final_qy: 0, final_qz: 0, final_qw: 0 })
         \\        commands.insert_resource(Input {
         \\            window: 0,
         \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
@@ -2333,7 +2342,8 @@ test "JIT contact friction slows and tips boxes" {
         \\        }
         \\        friction_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
         \\        friction_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 10, held_by: 0 }
-        \\        commands.add_row(Components, { friction_transform, friction_id, friction_bounds, friction_body, friction_collider, friction_flags })
+        \\        friction_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        \\        commands.add_row(Components, { friction_transform, friction_id, friction_bounds, friction_body, friction_collider, friction_flags, friction_orientation })
         \\        stack_index := 0
         \\        while stack_index < 3:
         \\            stack_y := 0.5 + e7_f32_from_i64(stack_index)
@@ -2351,11 +2361,20 @@ test "JIT contact friction slows and tips boxes" {
         \\            }
         \\            stack_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
         \\            stack_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 11 + stack_index, held_by: 0 }
-        \\            commands.add_row(Components, { stack_transform, stack_id, stack_bounds, stack_body, stack_collider, stack_flags })
+        \\            stack_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        \\            commands.add_row(Components, { stack_transform, stack_id, stack_bounds, stack_body, stack_collider, stack_flags, stack_orientation })
         \\            stack_index = stack_index + 1
+        \\@trigger(Snapshot)
+        \\pub snapshot <- sys (probe: res &mut Probe, orientations: select &BodyOrientation, &BodyId from Components):
+        \\    for (orientation, id) in orientations:
+        \\        if id.id == 10:
+        \\            probe.init_qx = e7_f32_to_i64(orientation.x * 1000000.0)
+        \\            probe.init_qy = e7_f32_to_i64(orientation.y * 1000000.0)
+        \\            probe.init_qz = e7_f32_to_i64(orientation.z * 1000000.0)
+        \\            probe.init_qw = e7_f32_to_i64(orientation.w * 1000000.0)
         \\@trigger(Capture)
-        \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId from Components):
-        \\    for (transform, body, id) in boxes:
+        \\pub capture <- sys (probe: res &mut Probe, boxes: select &Transform, &RigidBody, &BodyId, &BodyOrientation from Components):
+        \\    for (transform, body, id, orientation) in boxes:
         \\        speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[1]) + e7_f32_abs(body.velocity[2])
         \\        angular := e7_f32_abs(body.angular_velocity[0]) + e7_f32_abs(body.angular_velocity[1]) + e7_f32_abs(body.angular_velocity[2])
         \\        speed_milli := e7_f32_to_milli(speed)
@@ -2371,7 +2390,11 @@ test "JIT contact friction slows and tips boxes" {
         \\            probe.max_y = y_milli
         \\        if id.id == 10:
         \\            probe.vx = e7_f32_to_milli(body.velocity[0])
-        \\            probe.rot_z = e7_f32_to_milli(transform.rotation[2])
+        \\            probe.rot_z = e7_f32_to_milli(orientation.z)
+        \\            probe.final_qx = e7_f32_to_i64(orientation.x * 1000000.0)
+        \\            probe.final_qy = e7_f32_to_i64(orientation.y * 1000000.0)
+        \\            probe.final_qz = e7_f32_to_i64(orientation.z * 1000000.0)
+        \\            probe.final_qw = e7_f32_to_i64(orientation.w * 1000000.0)
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
@@ -2380,6 +2403,7 @@ test "JIT contact friction slows and tips boxes" {
         \\    commands.add_plugin(ContactScene)
         \\    disown commands
         \\    await Init()
+        \\    await Snapshot()
         \\    await Update()
         \\    await Update()
         \\    await Update()
@@ -2410,6 +2434,7 @@ test "JIT contact friction slows and tips boxes" {
         \\    await Update()
         \\    await Update()
         \\    await Update()
+        \\    await PostUpdate()
         \\    await Capture()
         \\    ret 0
     ;
@@ -2446,13 +2471,29 @@ test "JIT contact friction slows and tips boxes" {
     const probe_ptr = ecs.e7_ecs_resource(probe_id);
     try std.testing.expect(probe_ptr != 0);
     const vx = aggregate.e7_load_i64(probe_ptr);
-    const rot_z = aggregate.e7_load_i64(probe_ptr + 8);
     const max_speed = aggregate.e7_load_i64(probe_ptr + 16);
     const max_angular = aggregate.e7_load_i64(probe_ptr + 24);
     const min_y = aggregate.e7_load_i64(probe_ptr + 32);
     const max_y = aggregate.e7_load_i64(probe_ptr + 40);
+    const init_qx = aggregate.e7_load_i64(probe_ptr + 48);
+    const init_qy = aggregate.e7_load_i64(probe_ptr + 56);
+    const init_qz = aggregate.e7_load_i64(probe_ptr + 64);
+    const init_qw = aggregate.e7_load_i64(probe_ptr + 72);
+    const final_qx = aggregate.e7_load_i64(probe_ptr + 80);
+    const final_qy = aggregate.e7_load_i64(probe_ptr + 88);
+    const final_qz = aggregate.e7_load_i64(probe_ptr + 96);
+    const final_qw = aggregate.e7_load_i64(probe_ptr + 104);
     try std.testing.expect(vx > -500 and vx < 500);
-    try std.testing.expect(e7Abs(i64, rot_z - 250) > 50);
+    // Contacts change the BodyOrientation quaternion (the render source of
+    // truth) and keep it normalised; the Euler Transform mirror is not used.
+    const dqx = e7Abs(i64, final_qx - init_qx);
+    const dqy = e7Abs(i64, final_qy - init_qy);
+    const dqz = e7Abs(i64, final_qz - init_qz);
+    const dqw = e7Abs(i64, final_qw - init_qw);
+    try std.testing.expect(dqx > 10000 or dqy > 10000 or dqz > 10000 or dqw > 10000);
+    const norm_sq = final_qx * final_qx + final_qy * final_qy + final_qz * final_qz + final_qw * final_qw;
+    // |q| = 1 within 0.2% (values are 1e6-scaled).
+    try std.testing.expect(norm_sq > 998000000000 and norm_sq < 1002000000000);
     try std.testing.expect(min_y > 300);
     try std.testing.expect(max_y < 5000);
     try std.testing.expect(max_speed > 0);
