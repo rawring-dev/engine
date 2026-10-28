@@ -451,8 +451,9 @@ Final state (supersedes the round-79 notes above):
 - All platform shaders use e7s -> Slang -> SPIR-V; e7s supports combined image
   samplers (`Sampler2D<[f32;4]>`) for the textured/UI/lit fragment stages.
 - Host PPM capture writes RGB from BGRA swapchain bytes.
-- Full suite: scheduler 8, compiler 206, runtime 139, transpiler 26; all pass
-  with zero skipped tests (capture assertions now require actual frame content).
+- Full suite: scheduler 8, compiler 217, runtime 157, transpiler 26; all pass
+  with zero skipped tests. `zig build test-e7` additionally runs 14
+  e7-authored tests / 57 assertions directly through the JIT.
 - Procedural sphere (UV 16x24), capsule (24 slices, closed band, 8 cap stacks),
   and plane meshes render through the lit pipeline; box keeps the cube. Full
   XYZ Euler transforms, tint, textures, and dynamic UBO slots are preserved.
@@ -481,3 +482,17 @@ Final state (supersedes the round-79 notes above):
   (`object_model_matrix_quat`, normalized R(quat) * scale with translate) used
   by the procedural and custom-mesh paths; authored Euler rotation is converted
   once at Init for static bodies only.
+
+- Quaternion-only rotation: `BodyOrientation` is published from the solver
+  quaternion and rendered with `object_model_matrix_quat`; no dynamic Euler
+  roundtrip or `Transform.rotation` writes remain.
+- Direct e7-language testing harness: `zig build test-e7` compiles and runs
+  `tests/e7/*.e7`, discovers `test_*` functions, and reports assertion detail.
+- Intrinsic migration: all 3,935 direct `e7_*` intrinsic calls under
+  `engine/` and `tests/e7/` were replaced by casts, typed raw-pointer syntax,
+  or native methods; `E7_INTRINSIC_AUDIT=strict` reports 0 calls outside the
+  boundary.
+- JSON serialization/deserialization: `json::encode` / `json::decode::<T>`
+  supports primitives, strings, structs, enums, optionals, vectors, fixed
+  arrays, matrices, and string-keyed maps, with documented wire format in
+  `notes/design/json.md`.
