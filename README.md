@@ -51,6 +51,8 @@ it through the iterative pass pipeline and LLJIT.
 │       │   ├── types.zig  shared type graph, unification, substitution
 │       │   └── analyzer.zig scopes, inference, exhaustiveness, borrows
 │       ├── bytecode.zig   bytecode format, verifier, fixed-point optimizer
+│       ├── native_methods.zig compiler-known f32/ptr/str/ffi native methods
+│       ├── intrinsic_audit.zig e7-source audit for direct e7_* intrinsic calls
 │       ├── codegen.zig    checked AST -> bytecode lowering
 │       ├── pipeline.zig   source -> parse -> semantics -> bytecode
 │       └── iterative.zig  fixed-point LLVM New Pass Manager driver
@@ -406,12 +408,64 @@ load <- (p: *raw T) -> T:
 - `unsafe:` introduces an unsafe block.
 - `name: T` declares a mutable but initially undefined local; reading it before
   assignment is a definite-assignment error.
-- Raw pointer dereference and raw pointer arithmetic require unsafe context.
-- Raw pointers use the same 8-byte slot ABI as other values; `p + 1` advances by
-  one slot.
+- Raw pointer dereference, indexing, and arithmetic require unsafe context.
+- Raw pointers are typed (`*raw T`). `*p`, `*p = value`, and `p[i]` address the
+  pointee at the pointer's ABI stride: the C-interop scalars `u8`, `u16`, `u32`,
+  and `f32` load/store their 1/2/4-byte storage width, while every other
+  pointee (`i8`/`i16`/`i32`, `u64`/`i64`, pointers, aggregates) uses the e7
+  8-byte slot load/store.
+- Pointer arithmetic scales by that stride, so `p + 1` on `*raw u32` advances
+  four bytes and on `*raw i32` advances one 8-byte slot; `p[i]` is equivalent to
+  `*(p + i)`. `ptr::offset(p, bytes)` is explicit byte arithmetic for
+  struct-field-style offsets, and `ptr::load_*`/`ptr::store_*` cover typed byte
+  access on a slot pointer.
+- `as` casts cover scalar↔scalar (int↔float go through the `e7_f32_*` helpers),
+  integer↔raw pointer, pointer↔pointer, and string-handle→integer. Aggregate
+  targets are rejected instead of silently reinterpreting a value.
 - `&place`, `*pointer`, field/index assignment, struct literals, enums, vector
   and matrix literals, map literals, and string literals all lower to the
   aggregate ABI.
+
+### Native methods and the intrinsic boundary
+
+Normal e7 code does not spell the runtime C ABI (`e7_*`) directly. Language
+syntax covers pointers, casts, and float operators; everything else is a
+compiler-known **native method** of the form `namespace::method(...)`. Native
+methods lower to the same bytecode `runtime_call` as the intrinsic they replace,
+so they add no runtime ABI and no wrapper module. A user-defined qualified
+function with the same path takes precedence.
+
+| Namespace | Methods | Runtime entry |
+| --- | --- | --- |
+| `f32` | `parse`, `sin`, `cos`, `sqrt`, `abs`, `clamp`, `to_milli`, `from_milli`, `to_i64`, `from_i64` | `parse_f32`, `f32_*` helpers |
+| `i64` | `parse` | `parse_i64` |
+| `str` | `from_bytes`, `data`, `cstr`, `len`, `lines`, `fields`, `split` | `str_new`, `str_data`, `cstr`, `str_len`, `str_lines`, `str_fields`, `str_split` |
+| `vec` | `push` | `vec_push` |
+| `ptr` | `alloc`, `free`, `copy`, `offset`, `load_{u8,u16,u32,u64,i64,f32,usize}`, `store_{u8,u16,u32,u64,i64,f32,usize}` | `alloc_bytes`, `free_ptr`, `memcpy`, `load_*`/`store_*` |
+| `ffi` | `bind`, `call0`..`call16`, `call_f32_2`, `handle` | `cffi_bind`, `ffi_call*`, `handle` |
+| `host` | `time_now_ms`, `read_shader`, `headless`, `should_close`, `note_frame`, `capture` | engine/host helpers |
+| `image` | `load`, `from_argb`, `width`, `height`, `pixels`, `free` | `image_*` |
+
+```text
+probe <- (path: str, p: *raw u32) -> i64:
+    image := image::load(path)
+    width := image::width(image)
+    unsafe:
+        *p = 7
+        n := *p
+        ptr::store_u32(ptr::offset(p, 16), n)
+        ptr::free(p)
+    ret width
+```
+
+The table lives in [`compiler/src/native_methods.zig`](compiler/src/native_methods.zig).
+Direct `e7_*` calls remain the documented escape hatch for intrinsics without a
+native-method spelling; the explicit boundary list in
+[`compiler/src/intrinsic_audit.zig`](compiler/src/intrinsic_audit.zig) records
+which ones may stay. That audit scans every `engine/**.e7` file and is
+report-only by default while the engine migration is in progress; run
+`E7_INTRINSIC_AUDIT=strict zig build test` to enforce it (direct calls outside
+the boundary then fail the audit test).
 
 ### Aggregates, iteration, and references
 

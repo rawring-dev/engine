@@ -7,6 +7,8 @@ pub const iterative = @import("iterative.zig");
 pub const bytecode = @import("bytecode.zig");
 pub const codegen = @import("codegen.zig");
 pub const pipeline = @import("pipeline.zig");
+pub const native_methods = @import("native_methods.zig");
+pub const intrinsic_audit = @import("intrinsic_audit.zig");
 /// Compile a single source buffer.
 pub const compile = pipeline.compile;
 /// Compile a multi-file project: external `mod name` references load sibling
@@ -29,4 +31,6 @@ test {
     _ = bytecode;
     _ = codegen;
     _ = pipeline;
+    _ = native_methods;
+    _ = intrinsic_audit;
 }

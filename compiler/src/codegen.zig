@@ -33,6 +33,7 @@ const bytecode = @import("bytecode.zig");
 const semantic = @import("semantic/analyzer.zig");
 const types = @import("semantic/types.zig");
 const intrinsics = @import("intrinsics.zig");
+const native_methods = @import("native_methods.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -1512,6 +1513,13 @@ const Builder = struct {
                 if (index_expr.indices.len != 1) return error.UnsupportedFeature;
                 try self.emit(if (self.isStringType(m.key)) .map_get_str else .map_get);
             },
+            .raw_pointer => |pointee| {
+                if (index_expr.indices.len != 1) return error.UnsupportedFeature;
+                try self.push(self.rawPointeeSize(resolved));
+                try self.emit(.mul);
+                try self.emit(.add);
+                try self.emitRawLoad(pointee);
+            },
             .named => {
                 if (index_expr.indices.len != 1) return error.UnsupportedFeature;
                 const method = self.analysis.operatorMethod(resolved, "Index", "index") orelse
@@ -1624,6 +1632,10 @@ const Builder = struct {
                         return;
                     }
                 },
+                .raw_pointer => |pointee| {
+                    try self.lowerExpr(unary.operand);
+                    return self.emitRawLoad(pointee);
+                },
                 else => {},
             }
         }
@@ -1710,6 +1722,20 @@ const Builder = struct {
                     if (assign.op != .assign) return error.UnsupportedFeature;
                     const base_ty = self.exprType(target.index.target) orelse return error.UnsupportedFeature;
                     const resolved = self.unwrapReferences(base_ty);
+                    const resolved_value = self.resolvedType(resolved);
+                    if (resolved_value.* == .raw_pointer) {
+                        // `p[i] = value`: store at `p + i * pointee stride` using
+                        // the pointee's ABI width.
+                        if (target.index.indices.len != 1) return error.UnsupportedFeature;
+                        try self.lowerExpr(target.index.target);
+                        try self.lowerExpr(target.index.indices[0]);
+                        try self.push(self.rawPointeeSize(resolved));
+                        try self.emit(.mul);
+                        try self.emit(.add);
+                        try self.lowerExpr(assign.value);
+                        try self.emitRawStore(resolved_value.raw_pointer);
+                        return;
+                    }
                     try self.lowerExpr(target.index.target);
                     for (target.index.indices) |index| try self.lowerExpr(index);
                     try self.lowerExpr(assign.value);
@@ -1734,6 +1760,19 @@ const Builder = struct {
                     }
                 } else {
                     if (assign.op != .assign) return error.UnsupportedFeature;
+                    // `*p = value` through a raw pointer stores with the
+                    // pointee's ABI width (narrow C scalars) or the 8-byte slot.
+                    if (target.* == .unary and target.unary.op == .deref) {
+                        if (self.exprType(target.unary.operand)) |operand_ty| {
+                            const resolved = self.resolvedType(operand_ty);
+                            if (resolved.* == .raw_pointer) {
+                                try self.lowerExpr(target.unary.operand);
+                                try self.lowerExpr(assign.value);
+                                try self.emitRawStore(resolved.raw_pointer);
+                                return;
+                            }
+                        }
+                    }
                     // Whole-value assignment through a reference to an
                     // aggregate cannot be represented: the reference aliases
                     // the object pointer, not the referent's storage slot.
@@ -2319,7 +2358,7 @@ const Builder = struct {
             if (l.* == .raw_pointer and self.isScalarType(r)) {
                 try self.lowerExpr(binary.lhs);
                 try self.lowerExpr(binary.rhs);
-                try self.push(8);
+                try self.push(self.rawPointeeSize(l));
                 try self.emit(.mul);
                 try self.emit(if (binary.op == .sub) .sub else .add);
                 return;
@@ -2327,7 +2366,7 @@ const Builder = struct {
             if (r.* == .raw_pointer and self.isScalarType(l)) {
                 try self.lowerExpr(binary.lhs);
                 try self.lowerExpr(binary.rhs);
-                try self.push(8);
+                try self.push(self.rawPointeeSize(r));
                 try self.emit(.mul);
                 try self.emit(.add);
                 return;
@@ -2669,6 +2708,106 @@ const Builder = struct {
         return true;
     }
 
+    /// Compiler-known native method (`f32::sin`, `ptr::load_u32`, ...): lower
+    /// the arguments and emit the same `runtime_call` the matching intrinsic
+    /// would.  A user-defined qualified function with the same path wins.
+    fn lowerNativeMethodCall(self: *Builder, call: ast.Call) Error!bool {
+        if (call.callee.* != .path) return false;
+        const path = call.callee.path;
+        if (path.segments.len != 2) return false;
+        const namespace = path.segments[0].name;
+        const method_name = path.segments[1].name;
+        const method = native_methods.lookup(namespace, method_name) orelse return false;
+        var full_buffer: [512]u8 = undefined;
+        const full = joinPathBuf(&full_buffer, path);
+        if (self.name_map.get(full) != null) return false;
+        if (self.structs.get(namespace) != null or
+            self.enums.get(namespace) != null or
+            self.tables.get(namespace) != null) return false;
+        if (call.type_args.len != 0) return error.UnsupportedFeature;
+        if (call.args.len != method.params.len) return error.UnsupportedFeature;
+        switch (method.lowering) {
+            .byte_offset => {
+                // `ptr::offset(pointer, bytes)`: unchecked byte arithmetic, no
+                // pointee-size scaling (unlike `pointer + count`).
+                try self.lowerExpr(call.args[0]);
+                try self.lowerExpr(call.args[1]);
+                try self.emit(.add);
+            },
+            .runtime_call => {
+                const runtime_function = method.runtime orelse return error.UnsupportedFeature;
+                for (call.args) |arg| try self.lowerExpr(arg);
+                try self.runtimeCall(runtime_function, @intCast(call.args.len));
+            },
+        }
+        return true;
+    }
+
+    /// ABI stride in bytes of a raw pointer's pointee.  The C-interop scalars
+    /// `u8`/`u16`/`u32`/`f32` use their storage width; every other pointee
+    /// (`i8`/`i16`/`i32`, `u64`/`i64`, pointers, aggregates) keeps the e7
+    /// 8-byte slot stride.
+    fn rawPointeeSize(self: *Builder, pointer_ty: *types.Type) i64 {
+        const resolved = self.resolvedType(pointer_ty);
+        if (resolved.* != .raw_pointer) return 8;
+        const pointee = self.resolvedType(resolved.raw_pointer);
+        return switch (pointee.*) {
+            .int => |kind| switch (kind) {
+                .u8 => 1,
+                .u16 => 2,
+                .u32 => 4,
+                else => 8,
+            },
+            .float => |kind| switch (kind) {
+                .f32 => 4,
+                else => 8,
+            },
+            else => 8,
+        };
+    }
+
+    /// Load through the address on top of the stack as `pointee_ty`.  The
+    /// unsigned narrow integers and `f32` use the typed ABI helpers (with
+    /// `e7_load_f32` widening to the shared f64 representation); every other
+    /// pointee uses the 8-byte slot load.
+    fn emitRawLoad(self: *Builder, pointee_ty: *types.Type) Error!void {
+        const pointee = self.resolvedType(pointee_ty);
+        switch (pointee.*) {
+            .int => |kind| switch (kind) {
+                .u8 => return self.runtimeCall(.load_u8, 1),
+                .u16 => return self.runtimeCall(.load_u16, 1),
+                .u32 => return self.runtimeCall(.load_u32, 1),
+                else => {},
+            },
+            .float => |kind| switch (kind) {
+                .f32 => return self.runtimeCall(.load_f32, 1),
+                else => {},
+            },
+            else => {},
+        }
+        try self.emit(.load_mem);
+    }
+
+    /// Store the value below the address on the stack, truncating to
+    /// `pointee_ty` the same way the typed ABI helpers do.
+    fn emitRawStore(self: *Builder, pointee_ty: *types.Type) Error!void {
+        const pointee = self.resolvedType(pointee_ty);
+        switch (pointee.*) {
+            .int => |kind| switch (kind) {
+                .u8 => return self.runtimeCall(.store_u8, 2),
+                .u16 => return self.runtimeCall(.store_u16, 2),
+                .u32 => return self.runtimeCall(.store_u32, 2),
+                else => {},
+            },
+            .float => |kind| switch (kind) {
+                .f32 => return self.runtimeCall(.store_f32, 2),
+                else => {},
+            },
+            else => {},
+        }
+        try self.emit(.store_mem);
+    }
+
     /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,    /// Lower builtin container methods (`len`, `slice`, `char_at`) on string,
     /// vector, and map values.  Returns false for any other call.
     /// Receiver-call sugar for inherent `impl Type:` methods.  The receiver is
@@ -2772,6 +2911,7 @@ const Builder = struct {
         if (try self.lowerJsonCall(call, expr)) return;
         if (try self.lowerCommandsMethodCall(call)) return;
         if (try self.lowerIntrinsicCall(call)) return;
+        if (try self.lowerNativeMethodCall(call)) return;
         if (call.callee.* == .field) {
             if (try self.lowerBuiltinMethodCall(call)) return;
             if (try self.lowerInherentMethodCall(call)) return;

@@ -16,6 +16,7 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("types.zig");
 const intrinsics = @import("../intrinsics.zig");
+const native_methods = @import("../native_methods.zig");
 
 /// Traits with compiler-known operator syntax.
 const builtin_trait_names = [_][]const u8{
@@ -1642,6 +1643,7 @@ const Checker = struct {
                             break :blk2 resolved;
                         },
                         .unknown => resolved,
+                        .raw_pointer => |child| if (count == 1) child else try self.store.make(.unknown),
                         .named => if (self.implementsTrait(resolved, "Index")) blk2: {
                             if (count != 1) {
                                 try self.report("custom `Index` implementations take a single index, found {d}", .{count});
@@ -1711,6 +1713,7 @@ const Checker = struct {
                     ty = self.store.resolve(ty);
                 },
                 .index => |count| {
+                    var raw_pointer_index = false;
                     while (self.store.resolve(ty).* == .reference) {
                         const ref = self.store.resolve(ty).reference;
                         if (!ref.mutable) return false;
@@ -1723,6 +1726,7 @@ const Checker = struct {
                         ty = self.store.resolve(ty.box);
                     } else if (ty.* == .raw_pointer) {
                         allowed = true;
+                        raw_pointer_index = true;
                         ty = self.store.resolve(ty.raw_pointer);
                     }
                     ty = switch (ty.*) {
@@ -1737,7 +1741,7 @@ const Checker = struct {
                             ty,
                         .map => |m| if (count == 1) m.value else ty,
                         .string => ty,
-                        else => return false,
+                        else => if (raw_pointer_index) ty else return false,
                     };
                 },
             }
@@ -3033,10 +3037,7 @@ const Checker = struct {
             .prefix => |prefix_expr| try self.checkPrefix(prefix_expr),
             .binary => |binary| try self.checkBinary(binary),
             .range => |range| try self.checkRange(range),
-            .cast => |cast| blk: {
-                _ = try self.checkExpr(cast.expr, null);
-                break :blk try self.resolveType(cast.ty);
-            },
+            .cast => |cast| try self.checkCast(cast),
             .call => |call| try self.checkCall(call),
             .field => |field| try self.checkField(field),
             .index => |index| try self.checkIndex(index),
@@ -4023,6 +4024,126 @@ const Checker = struct {
         return self.intrinsicResultType(intrinsic.result);
     }
 
+    /// Map a native-method `Type` spelling to the shared type graph.
+    fn nativeType(self: *Checker, spec: native_methods.Type) Error!*types.Type {
+        return switch (spec) {
+            .i64_ => self.store.make(.{ .int = .i64 }),
+            .u64_ => self.store.make(.{ .int = .u64 }),
+            .i32_ => self.store.make(.{ .int = .i32 }),
+            .bool_ => self.store.make(.bool),
+            .float_ => try self.store.floatVar(),
+            .str_ => self.store.make(.string),
+            .str_vec_ => self.store.make(.{ .array = .{
+                .element = try self.store.make(.string),
+                .length = null,
+                .columns = null,
+            } }),
+            .any_ => self.store.make(.unknown),
+            .unit => self.store.make(.unit),
+            .raw_u8 => self.store.make(.{ .raw_pointer = try self.store.make(.{ .int = .u8 }) }),
+        };
+    }
+
+    /// A user-defined qualified type/function named like the native-method
+    /// namespace wins over the compiler-known method (the native namespaces are
+    /// otherwise reserved in call position).
+    fn userDefinesNativeNamespace(self: *Checker, full: []const u8, namespace: []const u8) bool {
+        if (self.qualified_functions.get(full) != null) return true;
+        if (self.current_module.len > 0) {
+            var buffer: [512]u8 = undefined;
+            if (std.fmt.bufPrint(&buffer, "{s}::{s}", .{ self.current_module, full }) catch null) |scoped| {
+                if (self.qualified_functions.get(scoped) != null) return true;
+            }
+        }
+        if (self.type_defs.get(namespace) != null) return true;
+        if (self.qualified_types.get(namespace) != null) return true;
+        return false;
+    }
+
+    /// Compiler-known native methods: `f32::sin(x)`, `ptr::load_u32(p)`,
+    /// `ffi::call4(...)`, and the other spellings in
+    /// `native_methods.zig`.  They lower to the same `runtime_call` as the
+    /// matching `e7_*` intrinsic, so e7 source does not spell the ABI directly.
+    fn checkNativeMethodCall(self: *Checker, call: ast.Call) Error!?*types.Type {
+        if (call.callee.* != .path) return null;
+        const path = call.callee.path;
+        if (path.segments.len != 2) return null;
+        const namespace = path.segments[0].name;
+        const method_name = path.segments[1].name;
+        const method = native_methods.lookup(namespace, method_name) orelse return null;
+        const full = self.normalizePath(try self.joinPath("", path));
+        if (self.userDefinesNativeNamespace(full, namespace)) return null;
+        if (call.type_args.len != 0) {
+            try self.report("native method `{s}::{s}` takes no type arguments", .{ namespace, method_name });
+        }
+        if (call.args.len != method.params.len) {
+            try self.report("native method `{s}::{s}` expects {d} argument(s), found {d}", .{
+                namespace, method_name, method.params.len, call.args.len,
+            });
+            for (call.args) |arg| _ = try self.checkExpr(arg, null);
+            return try self.nativeType(method.result);
+        }
+        // `vec::push` is generic over the vector element type, like the
+        // `e7_vec_push` intrinsic.
+        if (method.runtime != null and method.runtime.? == .vec_push) {
+            const vector_ty = try self.checkMoveExpr(call.args[0], null);
+            const resolved = self.store.resolve(vector_ty);
+            if (resolved.* != .array) {
+                const found = try self.store.typeName(resolved);
+                try self.report("`vec::push` expects a vector, found `{s}`", .{found});
+                _ = try self.checkMoveExpr(call.args[1], null);
+                return self.store.make(.unknown);
+            }
+            _ = try self.checkMoveExpr(call.args[1], resolved.array.element);
+            return vector_ty;
+        }
+        for (call.args, 0..) |arg, index| {
+            const actual = try self.checkMoveExpr(arg, null);
+            if (index >= method.params.len) continue;
+            switch (method.params[index]) {
+                .any_ => continue,
+                .float_ => {
+                    if (!self.isFloatLike(actual)) {
+                        const found = try self.store.typeName(self.store.resolve(actual));
+                        try self.report("native method `{s}::{s}` expects a float argument, found `{s}`", .{
+                            namespace, method_name, found,
+                        });
+                    }
+                    continue;
+                },
+                else => {},
+            }
+            const expected = try self.nativeType(method.params[index]);
+            try self.expectAssignable(expected, actual, method_name);
+        }
+        return self.nativeType(method.result);
+    }
+
+    /// `expr as Type`.  Scalar and pointer casts lower to a bit copy or the
+    /// `e7_f32_*` conversion helpers; aggregate targets are rejected so a typo
+    /// does not silently reinterpret a value.
+    fn checkCast(self: *Checker, cast: ast.Cast) Error!*types.Type {
+        const source_ty = try self.checkExpr(cast.expr, null);
+        const target_ty = try self.resolveType(cast.ty);
+        const source = self.store.resolve(source_ty);
+        const target = self.store.resolve(target_ty);
+        if (source.* == .unknown or source.* == .generic or source.* == .variable) return target_ty;
+        if (target.* == .unknown or target.* == .generic or target.* == .variable) return target_ty;
+        const castable = switch (target.*) {
+            .int, .float, .bool, .raw_pointer, .box => switch (source.*) {
+                .int, .float, .bool, .string, .raw_pointer, .box => true,
+                else => false,
+            },
+            else => false,
+        };
+        if (!castable) {
+            const from = try self.store.typeName(source);
+            const to = try self.store.typeName(target);
+            try self.report("cannot cast `{s}` to `{s}`; only scalar and pointer casts are supported", .{ from, to });
+        }
+        return target_ty;
+    }
+
     /// Resolve the builtin/runtime `Commands` type through any reference
     /// layers.    /// Resolve the builtin/runtime `Commands` type through any reference
     /// layers.  Programs may declare their own `Commands <- struct`, so the
@@ -4216,6 +4337,7 @@ const Checker = struct {
     fn checkCall(self: *Checker, call: ast.Call) !*types.Type {
         if (try self.checkCommandsMethodCall(call)) |result| return result;
         if (try self.checkIntrinsicCall(call)) |result| return result;
+        if (try self.checkNativeMethodCall(call)) |result| return result;
         if (try self.checkJsonBuiltinCall(call)) |result| return result;
         if (try self.checkInherentMethodCall(call)) |result| return result;
         if (try self.checkBuiltinMethodCall(call)) |result| return result;
@@ -4471,6 +4593,16 @@ const Checker = struct {
                 break :blk target_ty;
             },
             .unknown => target_ty,
+            .raw_pointer => |child| blk: {
+                if (self.unsafe_depth == 0) {
+                    try self.report("raw pointer indexing requires an `unsafe` block", .{});
+                }
+                if (count != 1) {
+                    try self.report("raw pointer indexing takes a single index, found {d}", .{count});
+                    break :blk try self.store.make(.unknown);
+                }
+                break :blk child;
+            },
             .named => blk: {
                 if (self.implementsTrait(target_ty, "Index")) {
                     if (count != 1) {
