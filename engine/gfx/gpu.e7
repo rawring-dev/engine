@@ -25,8 +25,8 @@ pub Gpu <- struct
     cube_fragment_shader: u64
 
 
-# Inherent Gpu methods: the raw e7_engine_scene_* / e7_engine_read_shader
-# intrinsics are confined here; game code calls methods such as
+# Inherent Gpu methods: the raw e7_engine_scene_* platform functions and the
+# host::read_shader native method are confined here; game code calls methods such as
 # `gpu.set_camera(...)`, `gpu.begin_frame()`, `gpu.draw_renderable(...)`.
 impl Gpu:
     pub read_shader <- (gpu: &Gpu, path: str) -> str:
@@ -219,7 +219,7 @@ impl Gpu:
         ret
 
 
-# Asset text reader wrapper (OBJ/shader text).  Raw intrinsic stays here.
+# Asset text reader wrapper (OBJ/shader text).  The host::read_shader call stays here.
 pub read_asset <- (path: str) -> str:
     ret host::read_shader(path)
 

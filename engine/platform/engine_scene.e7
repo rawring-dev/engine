@@ -1,8 +1,8 @@
 # Engine scene layer implemented in e7 on top of `platform::scene`.
 #
-# Temporary `e7_engine_scene_*` prefix: the runtime engine still publishes the original
-# `e7_engine_scene_*` JIT symbols.  These functions will take those names once
-# the runtime manifest is removed.
+# These `e7_engine_scene_*` functions are ordinary e7 platform functions (the
+# compiler has no engine-scene intrinsics); engine code calls them through the
+# `Gpu` wrapper in `gfx::gpu`.
 
 e7_engine_scene_create <- (window: u64, vertex_shader: str, fragment_shader: str) -> u64:
     width_out := ptr::alloc(4) as u64
