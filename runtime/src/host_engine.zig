@@ -89,6 +89,18 @@ fn listDir(path: []const u8) ![]u8 {
     return out.toOwnedSlice(std.heap.c_allocator);
 }
 
+fn writeAsset(path: []const u8, bytes: []const u8) !void {
+    asset_mutex.lock();
+    defer asset_mutex.unlock();
+    if (asset_threaded == null) {
+        asset_threaded = std.Io.Threaded.init(std.heap.c_allocator, .{});
+    }
+    const io = asset_threaded.?.io();
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, bytes);
+}
+
 fn stringSlice(value: i64) []const u8 {
     const length = aggregate.e7_str_len(value);
     if (length <= 0) return &.{};
@@ -110,6 +122,17 @@ pub export fn e7_engine_read_shader(path: i64) callconv(.c) i64 {
     return aggregate.e7_str_new(@intCast(@intFromPtr(data.ptr)), @intCast(data.len));
 }
 
+/// Write an e7 `str` payload to a cwd-relative file, creating/truncating it.
+/// Returns 0 on success and -1 on I/O failure.  Used by editor/document saves
+/// (scene files, generated e7 snippets); the read side is
+/// `e7_engine_read_shader` (aliased as `host::read_asset` in e7).
+pub export fn e7_engine_write_asset(path: i64, data: i64) callconv(.c) i64 {
+    const text = stringSlice(path);
+    const bytes = stringSlice(data);
+    writeAsset(text, bytes) catch return -1;
+    return 0;
+}
+
 /// List a cwd-relative directory as an e7 `str` in the runtime filesystem list
 /// format (one name per line, directories suffixed with `/`).  Returns 0 when
 /// the directory is missing or unreadable, which e7 treats as an empty listing.
@@ -120,10 +143,11 @@ pub export fn e7_engine_list_dir(path: i64) callconv(.c) i64 {
     return aggregate.e7_str_new(@intCast(@intFromPtr(listing.ptr)), @intCast(listing.len));
 }
 
-pub fn symbols() [3]Symbol {
+pub fn symbols() [4]Symbol {
     return .{
         .{ .name = "e7_engine_time_now_ms", .address = @intFromPtr(&e7_engine_time_now_ms) },
         .{ .name = "e7_engine_read_shader", .address = @intFromPtr(&e7_engine_read_shader) },
         .{ .name = "e7_engine_list_dir", .address = @intFromPtr(&e7_engine_list_dir) },
+        .{ .name = "e7_engine_write_asset", .address = @intFromPtr(&e7_engine_write_asset) },
     };
 }

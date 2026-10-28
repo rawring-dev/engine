@@ -678,6 +678,14 @@ the scanned cube image/OBJ and keeps its fixed loads as fallback.  See
 [`notes/design/assetserver.md`](notes/design/assetserver.md) for the directory
 layout, callback contract, folder-key semantics, and lifetime rules.
 
+The e7 project editor is scaffolded as its own e7 project
+(`engine/editor_main.e7`) run by the `editor-run` host: `zig build run-editor`
+(append `-- --frames 2 --headless --capture out.ppm` for a headless capture, or
+`-- --frames 3 --headless --reload-test` to exercise the in-process code swap).
+The scene file format, editing UI, and ECS mapping are described in
+[`notes/design/editor.md`](notes/design/editor.md); `zig build run-editor`
+renders the sample scene through the same engine renderer as the demo.
+
 ![engine scene](engine/scene-preview.png)
 
 ### Runtime

@@ -101,6 +101,16 @@ pub fn build(b: *std.Build) void {
     const run_engine_step = b.step("run-engine", "Compile and run the e7 engine project");
     run_engine_step.dependOn(&run_engine.step);
 
+    // e7 project editor (`zig build run-editor -- --frames 2 --headless --capture out.ppm`).
+    // The executable is defined by runtime/build.zig and can recompile/restart
+    // the editor project in place when e7 requests a code reload.
+    const editor_run = runtime_dep.artifact("editor-run");
+    const run_editor = b.addRunArtifact(editor_run);
+    if (b.args) |args| run_editor.addArgs(args);
+    run_editor.has_side_effects = true;
+    const run_editor_step = b.step("run-editor", "Compile and run the e7 project editor");
+    run_editor_step.dependOn(&run_editor.step);
+
     // Convenience step that compiles and runs every module root directly.
     const check_step = b.step("check", "Compile and test all workspace modules");
     inline for (.{

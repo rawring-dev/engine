@@ -1,0 +1,272 @@
+# Editor scene file format (version 1) and JSON (de)serialization.
+#
+# A scene document is a plain JSON object serialized through the e7 JSON API
+# (`json::encode` / `json::decode::<T>` with `@derive`).  It is intentionally
+# independent of ECS row ids: the editor maps objects to rows when loading and
+# rebuilds the document from component rows when saving.
+#
+# Wire example (one object; every field is required except none — writers must
+# emit a complete document, readers reject missing required fields):
+#
+#   {
+#     "format": "engine7-scene",
+#     "version": 1,
+#     "name": "sample",
+#     "camera": { "position": {...}, "yaw": 0.0, ... },
+#     "light": { "position": {...}, "colour": {...}, "intensity": 2.8 },
+#     "objects": [
+#       {
+#         "name": "cube",
+#         "kind": "Box",
+#         "translation": { "x": 0.0, "y": 0.5, "z": 0.0 },
+#         "rotation": { "x": 0.0, "y": 0.0, "z": 0.0 },   # Euler degrees (XYZ)
+#         "half_extents": { "x": 0.5, "y": 0.5, "z": 0.5 },
+#         "colour": { "r": 1.0, "g": 0.55, "b": 0.22, "a": 1.0 },
+#         "texture": ""                                    # image key or ""
+#       }
+#     ]
+#   }
+#
+# Compatibility policy: `format` must be "engine7-scene" and `version` must be
+# 1 for a document to load.  Unknown JSON fields are skipped by the decoder;
+# future versions bump `version` and add migration code here.
+#
+# Textures use the AssetServer relative image key (e.g. "cube/cube.png") or an
+# empty string for the built-in white texture.
+
+pub scene_format <- () -> str = "engine7-scene"
+pub scene_version <- () -> i64 = 1
+
+@derive(Serialize, Deserialize)
+pub Vec3 <- struct
+    x: f32
+    y: f32
+    z: f32
+
+@derive(Serialize, Deserialize)
+pub Quat <- struct
+    x: f32
+    y: f32
+    z: f32
+    w: f32
+
+@derive(Serialize, Deserialize)
+pub Colour <- struct
+    r: f32
+    g: f32
+    b: f32
+    a: f32
+
+# Renderable shape selector; maps to the scene renderer's procedural meshes.
+@derive(Serialize, Deserialize)
+pub ShapeKind <- enum
+    Box
+    Sphere
+    Capsule
+    Plane
+
+@derive(Serialize, Deserialize)
+pub SceneCamera <- struct
+    position: Vec3
+    yaw: f32
+    pitch: f32
+    fov_y: f32
+    near: f32
+    far: f32
+
+@derive(Serialize, Deserialize)
+pub SceneLight <- struct
+    position: Vec3
+    colour: Vec3
+    intensity: f32
+
+@derive(Serialize, Deserialize)
+pub SceneObject <- struct
+    name: str
+    kind: ShapeKind
+    translation: Vec3
+    # Euler angles in degrees (intrinsic X, then Y, then Z) for authoring.
+    rotation: Vec3
+    # Half extents (renderer scale) in world units.
+    half_extents: Vec3
+    colour: Colour
+    # AssetServer image key, or "" for the built-in white texture.
+    texture: str
+
+@derive(Serialize, Deserialize)
+pub SceneDocument <- struct
+    format: str
+    version: i64
+    name: str
+    camera: SceneCamera
+    light: SceneLight
+    objects: [SceneObject]
+
+# ------------------------------------------------------------------ values ---
+
+pub vec3 <- (x: f32, y: f32, z: f32) -> Vec3 = Vec3 { x: x, y: y, z: z }
+pub colour4 <- (r: f32, g: f32, b: f32, a: f32) -> Colour = Colour { r: r, g: g, b: b, a: a }
+
+pub default_camera <- () -> SceneCamera:
+    ret SceneCamera {
+        position: Vec3 { x: 0.0, y: 1.8, z: 6.0 },
+        yaw: 0.0,
+        pitch: 0.0 - 0.15,
+        fov_y: 1.0471975512,
+        near: 0.1,
+        far: 100.0,
+    }
+
+pub default_light <- () -> SceneLight:
+    ret SceneLight {
+        position: Vec3 { x: 3.0, y: 4.0, z: 2.0 },
+        colour: Vec3 { x: 1.0, y: 0.9, z: 0.8 },
+        intensity: 2.8,
+    }
+
+pub empty_document <- () -> SceneDocument:
+    ret SceneDocument {
+        format: "",
+        version: 0,
+        name: "",
+        camera: default_camera(),
+        light: default_light(),
+        objects: [],
+    }
+
+# The scene the editor opens when no saved scene exists.  Same shapes as the
+# engine demo so the renderer path is exercised (box/sphere/capsule/plane).
+pub sample_scene <- () -> SceneDocument:
+    ret SceneDocument {
+        format: "engine7-scene",
+        version: 1,
+        name: "sample",
+        camera: default_camera(),
+        light: default_light(),
+        objects: [
+            SceneObject {
+                name: "ground",
+                kind: ShapeKind::Plane,
+                translation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                half_extents: Vec3 { x: 8.0, y: 0.1, z: 8.0 },
+                colour: Colour { r: 0.42, g: 0.48, b: 0.42, a: 1.0 },
+                texture: "",
+            },
+            SceneObject {
+                name: "cube",
+                kind: ShapeKind::Box,
+                translation: Vec3 { x: 0.0, y: 0.5, z: 0.0 },
+                rotation: Vec3 { x: 0.0, y: 20.0, z: 0.0 },
+                half_extents: Vec3 { x: 0.5, y: 0.5, z: 0.5 },
+                colour: Colour { r: 1.0, g: 0.55, b: 0.22, a: 1.0 },
+                texture: "",
+            },
+            SceneObject {
+                name: "sphere",
+                kind: ShapeKind::Sphere,
+                translation: Vec3 { x: 1.8, y: 0.6, z: 0.0 },
+                rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                half_extents: Vec3 { x: 0.6, y: 0.6, z: 0.6 },
+                colour: Colour { r: 0.25, g: 0.6, b: 0.95, a: 1.0 },
+                texture: "",
+            },
+            SceneObject {
+                name: "capsule",
+                kind: ShapeKind::Capsule,
+                translation: Vec3 { x: 0.0 - 1.8, y: 0.9, z: 0.0 },
+                rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                half_extents: Vec3 { x: 0.4, y: 1.2, z: 0.4 },
+                colour: Colour { r: 0.35, g: 0.85, b: 0.45, a: 1.0 },
+                texture: "",
+            },
+        ],
+    }
+
+# ------------------------------------------------------------------- json ----
+
+pub scene_to_json <- (scene: &SceneDocument) -> str:
+    ret json::encode(scene)
+
+# Parse strict scene JSON.  Malformed/unsupported documents produce the zero
+# document (`format == ""`, `version == 0`), so callers can detect the failure.
+pub scene_from_json <- (text: str) -> SceneDocument:
+    decoded := json::decode::<SceneDocument>(text)
+    # Borrow the aggregate for the null-handle check so `decoded` stays usable
+    # (aggregate handles are pointers; `ffi::handle` returns the handle value).
+    if ffi::handle(&decoded) == 0:
+        ret empty_document()
+    if decoded.format != "engine7-scene" or decoded.version != 1:
+        ret empty_document()
+    ret decoded
+
+pub document_is_valid <- (scene: &SceneDocument) -> bool:
+    ret scene.format == "engine7-scene" and scene.version == 1
+
+# Read a scene file.  Missing files, unreadable files, and invalid/migrated
+# documents fall back to the sample scene so the editor always has content.
+pub load_scene <- (path: str) -> SceneDocument:
+    text := host::read_asset(path)
+    if text.len() == 0:
+        ret sample_scene()
+    scene := scene_from_json(text)
+    if not document_is_valid(&scene):
+        ret sample_scene()
+    ret scene
+
+# Save a scene as JSON.  Returns 0 on success and -1 on I/O failure; callers
+# report the status in the editor status line.
+pub save_scene <- (path: str, scene: &SceneDocument) -> i64:
+    if not document_is_valid(scene):
+        ret 0 - 1
+    ret host::write_asset(path, scene_to_json(scene))
+
+# ------------------------------------------------------------------ helpers --
+
+pub shape_kind_code <- (kind: ShapeKind) -> i32:
+    code := match kind:
+        ShapeKind::Box: 0
+        ShapeKind::Sphere: 1
+        ShapeKind::Capsule: 2
+        ShapeKind::Plane: 3
+    ret code as i32
+
+pub shape_kind_from_code <- (code: i32) -> ShapeKind:
+    if code == 1:
+        ret ShapeKind::Sphere
+    if code == 2:
+        ret ShapeKind::Capsule
+    if code == 3:
+        ret ShapeKind::Plane
+    ret ShapeKind::Box
+
+pub shape_kind_name <- (kind: ShapeKind) -> str:
+    name := match kind:
+        ShapeKind::Box: "Box"
+        ShapeKind::Sphere: "Sphere"
+        ShapeKind::Capsule: "Capsule"
+        ShapeKind::Plane: "Plane"
+    ret name
+
+# Convert authored Euler degrees (intrinsic X, then Y, then Z) into the
+# render/physics quaternion component used by the scene renderer.
+pub euler_to_quaternion <- (rotation: Vec3) -> Quat:
+    to_radians := 0.017453292519943295
+    hx := rotation.x * to_radians * 0.5
+    hy := rotation.y * to_radians * 0.5
+    hz := rotation.z * to_radians * 0.5
+    cx := f32::cos(hx)
+    sx := f32::sin(hx)
+    cy := f32::cos(hy)
+    sy := f32::sin(hy)
+    cz := f32::cos(hz)
+    sz := f32::sin(hz)
+    ret Quat {
+        x: sx * cy * cz - cx * sy * sz,
+        y: cx * sy * cz + sx * cy * sz,
+        z: cx * cy * sz - sx * sy * cz,
+        w: cx * cy * cz + sx * sy * sz,
+    }
+
+pub object_count <- (scene: &SceneDocument) -> i64:
+    ret scene.objects.len() as i64

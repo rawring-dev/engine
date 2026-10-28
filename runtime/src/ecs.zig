@@ -770,13 +770,26 @@ pub export fn e7_ecs_commands_flush(cmd: i64) callconv(.c) i32 {
         return status_ok;
     }
 
-    // Reserve everything that can fail before mutating the world.
+    // Reserve everything that can fail before mutating the world.  Row entries
+    // are grouped per column first: calling ensureUnusedCapacity(1) once per
+    // pending row entry does not accumulate capacity for columns that receive
+    // several rows in the same flush (e.g. plugin init spawning a large list).
+    var row_capacity: std.AutoHashMapUnmanaged(i64, usize) = .empty;
+    defer row_capacity.deinit(allocator);
     for (world.pending_rows.items) |pending| {
         for (pending.entries.items) |entry| {
-            const column = world.columns.getPtr(entry.type_id) orelse continue;
-            column.entity_ids.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
-            column.values.ensureUnusedCapacity(allocator, 1) catch return status_out_of_memory;
+            const slot = row_capacity.getPtr(entry.type_id) orelse blk: {
+                row_capacity.put(allocator, entry.type_id, 0) catch return status_out_of_memory;
+                break :blk row_capacity.getPtr(entry.type_id).?;
+            };
+            slot.* += 1;
         }
+    }
+    var row_columns = row_capacity.iterator();
+    while (row_columns.next()) |entry| {
+        const column = world.columns.getPtr(entry.key_ptr.*) orelse continue;
+        column.entity_ids.ensureUnusedCapacity(allocator, entry.value_ptr.*) catch return status_out_of_memory;
+        column.values.ensureUnusedCapacity(allocator, entry.value_ptr.*) catch return status_out_of_memory;
     }
     for (world.pending_component_adds.items) |pending| {
         const column = world.columns.getPtr(pending.type_id) orelse continue;
@@ -1251,6 +1264,49 @@ test "queries filter by projections and has with mutable flags" {
     try testing.expectEqual(@as(i64, 3), e7_ecs_query_next(fresh)); // e2
     try testing.expectEqual(@as(i64, 5), e7_ecs_query_next(fresh)); // e4
     try testing.expectEqual(@as(i64, 0), e7_ecs_query_next(fresh));
+}
+
+test "many rows for one column flush without capacity corruption" {
+    e7_ecs_reset();
+    defer e7_ecs_reset();
+
+    try testing.expectEqual(status_ok, e7_ecs_register_component(20, 1));
+    try testing.expectEqual(status_ok, e7_ecs_register_component(21, 1));
+    const cmd = e7_ecs_commands();
+
+    // Regression: the flush pre-reservation used to call ensureUnusedCapacity(1)
+    // once per pending row entry without accumulating, so a single flush adding
+    // more rows than the column's existing spare capacity panicked in
+    // appendAssumeCapacity.  Large plugin-init row sets hit this.
+    var bulk = [_]i64{0};
+    for (0..40) |index| {
+        bulk[0] = @intCast(index);
+        try addRow(cmd, &.{.{ .type_id = 20, .values = &bulk }});
+    }
+    var bulk_a = [_]i64{0};
+    var bulk_b = [_]i64{0};
+    for (0..20) |index| {
+        bulk_a[0] = @intCast(1000 + index);
+        bulk_b[0] = @intCast(2000 + index);
+        try addRow(cmd, &.{
+            .{ .type_id = 20, .values = &bulk_a },
+            .{ .type_id = 21, .values = &bulk_b },
+        });
+    }
+    try testing.expectEqual(status_ok, e7_ecs_commands_flush(cmd));
+    try testing.expectEqual(@as(i64, 60), e7_ecs_entity_count());
+
+    var ids = [_]i64{21};
+    var muts = [_]i64{0};
+    const query = e7_ecs_query_begin(1, sourcePtr(&ids), sourcePtr(&muts), -1);
+    var seen: i64 = 0;
+    while (e7_ecs_query_next(query) != 0) seen += 1;
+    try testing.expectEqual(@as(i64, 20), seen);
+
+    const all = e7_ecs_query_begin(0, 0, 0, -1);
+    var total: i64 = 0;
+    while (e7_ecs_query_next(all) != 0) total += 1;
+    try testing.expectEqual(@as(i64, 60), total);
 }
 
 test "plugins activate only when the command buffer is flushed" {
