@@ -667,6 +667,17 @@ scene surface pipeline are owned by `engine/platform/*.e7` through the generic C
 FFI. [`runtime/src/host.zig`](runtime/src/host.zig) keeps the frame limiter and
 capture bookkeeping.
 
+The asset pipeline is a higher-order server: `engine/assets/server.e7` walks a
+directory tree recursively and calls a `(str) -> T` function value for every
+file, producing `files` and `folders` maps (`engine/assets/main.e7` builds the
+concrete `ImageAssets`/`MeshAssets`/`AudioAssets`, the `AssetServer` resource,
+and `AssetServerPlugin`).  Scans use the SDL/Vulkan-free `host::list_dir` /
+`host::read_asset` native methods and cover `engine/assets/{images,meshes,audio}`
+(relative keys such as `cube/cube.png`, `sfx/tone.wav`); `AssetsPlugin` prefers
+the scanned cube image/OBJ and keeps its fixed loads as fallback.  See
+[`notes/design/assetserver.md`](notes/design/assetserver.md) for the directory
+layout, callback contract, folder-key semantics, and lifetime rules.
+
 ![engine scene](engine/scene-preview.png)
 
 ### Runtime

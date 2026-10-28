@@ -1,0 +1,151 @@
+# Higher-order asset scanning.
+#
+# `scan_assets<T>(root, process)` walks a directory tree recursively and calls
+# the caller-supplied function value for every *file* it finds.  The processor
+# receives the full cwd-relative path (`<root>/<relative path>`), so it can be
+# an engine loader such as `image::load`, an OBJ parser wrapper, or an audio
+# loader.  Directories are walked, never passed to the processor.
+#
+# Returned aggregation (`AssetCollection<T>`, non-recursive two-level maps):
+#
+#   files    relative path from `root` -> processed value.
+#            Keys are POSIX style (`/` separators) and include subfolders,
+#            e.g. "cube/cube.png", "nested/deep/metal.png".
+#
+#   folders  directory path from `root` -> map of files inside that directory.
+#            One entry exists for every non-empty-relative directory that the
+#            walk visits, including nested ones (e.g. "cube", "cube/nested").
+#            The inner map keys are paths *relative to that directory*, so
+#            `folders["cube"]["cube.png"]` and `folders["cube/nested"]["a.png"]`
+#            both address one immediate/descendant file.
+#
+# Contract for `process`:
+#   * called once per file, in deterministic (sorted) directory order;
+#   * receives the full cwd-relative path, never a bare name;
+#   * for the engine loaders, missing/undecodable files return an empty value
+#     (Image/AudioClip with a 0 handle, ObjMesh with no indices) rather than
+#     failing the scan.  Callbacks should follow the same convention;
+#   * function values are named top-level functions only (no closures).
+#
+# Missing roots, unreadable directories, empty directories, and trailing
+# slashes are handled gracefully: a missing root yields an empty collection,
+# an empty directory contributes an empty `folders` entry, and the root's
+# trailing slashes are ignored.  The listing ABI is
+# `host::list_dir(path) -> str` (runtime fs list format: one name per line,
+# directories suffixed with `/`).
+#
+# Ownership: the collection never frees processed values.  The callback owns
+# its value semantics; aggregate handles stay valid for the process lifetime
+# unless the caller explicitly frees them (see the AssetServer plugin shutdown).
+
+pub AssetCollection<T> <- struct
+    files: map[str, T]
+    folders: map[str, map[str, T]]
+
+pub empty_collection<T> <- () -> AssetCollection<T>:
+    ret AssetCollection<T> {
+        files: map[str, T] {},
+        folders: map[str, map[str, T]] {},
+    }
+
+impl<T> AssetCollection<T>:
+    # Total number of files found below the scan root.
+    pub file_count <- (collection: &AssetCollection<T>) -> i64:
+        ret collection.files.len() as i64
+
+    # Number of directories recorded below the scan root.
+    pub folder_count <- (collection: &AssetCollection<T>) -> i64:
+        ret collection.folders.len() as i64
+
+    # True when `path` (relative to the scan root) was processed.
+    pub has_file <- (collection: &AssetCollection<T>, path: str) -> bool:
+        for (key, value) in collection.files:
+            if key == path:
+                ret true
+        ret false
+
+    # Processed value for a relative path.  Only call this after `has_file`:
+    # the map representation has no nil and a missing entry reads as a zero
+    # slot.  Concrete collections in the AssetServer wrap this with fallbacks.
+    pub file <- (collection: &AssetCollection<T>, path: str) -> T:
+        ret collection.files[path]
+
+    # True when the walk recorded the directory `folder` (relative to root).
+    pub has_folder <- (collection: &AssetCollection<T>, folder: str) -> bool:
+        for (key, value) in collection.folders:
+            if key == folder:
+                ret true
+        ret false
+
+    # Map of paths relative to `folder` -> processed values.  A missing folder
+    # returns an empty map, so callers can iterate or len() unconditionally.
+    pub folder_files <- (collection: &AssetCollection<T>, folder: str) -> map[str, T]:
+        for (key, value) in collection.folders:
+            if key == folder:
+                ret value
+        ret map[str, T] {}
+
+    # Number of files directly inside `folder` (0 for a missing folder).
+    pub folder_file_count <- (collection: &AssetCollection<T>, folder: str) -> i64:
+        files := collection.folder_files(folder)
+        ret files.len() as i64
+
+# ------------------------------------------------------------------- paths ---
+
+# Remove trailing `/` separators from a scan root ("dir//" -> "dir").
+pub trim_trailing_slashes <- (path: str) -> str:
+    length := str::len(path)
+    while length > 0:
+        if path.char_at((length - 1) as usize) != "/":
+            break
+        length = length - 1
+    if length == str::len(path):
+        ret path
+    ret path.slice(0, length as usize)
+
+# Append `name` to `root` with exactly one separator between them.
+pub join_path <- (root: str, name: str) -> str:
+    if str::len(root) == 0:
+        ret name
+    if root.char_at((str::len(root) - 1) as usize) == "/":
+        ret root + name
+    ret root + "/" + name
+
+# Directory entries from `host::list_dir` carry a trailing `/`.
+pub is_directory_entry <- (entry: str) -> bool:
+    length := str::len(entry)
+    if length == 0:
+        ret false
+    ret entry.char_at((length - 1) as usize) == "/"
+
+# Entry name without the directory marker.
+pub entry_name <- (entry: str) -> str:
+    length := str::len(entry)
+    if length > 0 and is_directory_entry(entry):
+        ret entry.slice(0, (length - 1) as usize)
+    ret entry
+
+# --------------------------------------------------------------- recursion ---
+
+pub scan_assets<T> <- (root: str, process: (str) -> T) -> AssetCollection<T>:
+    collection := empty_collection<T>()
+    normalized := trim_trailing_slashes(root)
+    listing := host::list_dir(normalized)
+    for entry in str::lines(listing):
+        name := entry_name(entry)
+        if str::len(name) == 0:
+            cont
+        full := join_path(normalized, name)
+        if not is_directory_entry(entry):
+            collection.files[name] = process(full)
+            cont
+        child := scan_assets<T>(full, process)
+        # Direct files of this subfolder, keyed relative to the subfolder.
+        collection.folders[name] = child.files
+        # Descendant folders, keyed relative to this scan root.
+        for (folder, files) in child.folders:
+            collection.folders[join_path(name, folder)] = files
+        # Files from the whole subtree, keyed relative to this scan root.
+        for (path, value) in child.files:
+            collection.files[join_path(name, path)] = value
+    ret collection

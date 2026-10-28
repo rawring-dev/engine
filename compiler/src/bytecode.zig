@@ -154,6 +154,10 @@ pub const RuntimeFunction = enum(u8) {
     test_assert_f32_near,
     test_assert_str_eq,
     test_assert_fail,
+    // SDL/Vulkan-free host directory listing (task-20 asset server):
+    // cwd-relative listing in the runtime fs list format.  Reached from e7 via
+    // the `host::list_dir` native method.
+    engine_list_dir,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -184,6 +188,7 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_despawn => "e7_ecs_commands_despawn",
             .engine_time_now_ms => "e7_engine_time_now_ms",
             .engine_read_shader => "e7_engine_read_shader",
+            .engine_list_dir => "e7_engine_list_dir",
             .host_headless => "e7_host_headless",
             .host_should_close => "e7_host_should_close",
             .host_note_frame => "e7_host_note_frame",
@@ -305,6 +310,7 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_commands_insert_resource, .ecs_commands_row_add => 3,
             .ecs_query_begin => 4,
             .engine_read_shader => 1,
+            .engine_list_dir => 1,
             .engine_time_now_ms,
             .host_headless,
             .host_should_close,

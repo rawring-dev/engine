@@ -392,27 +392,12 @@ pub demo_ui_actions <- sys (
             else:
                 light.intensity = 2.8
 
-# Audio: dynamic SDL3 one-shot playback through `platform::audio`.  Headless
-# runs (tests and frame capture) select SDL's deterministic dummy audio driver;
-# desktop runs use the default playback device and degrade to a silent system
-# when none is available.
-pub AudioPlugin <- plugin
-    audio_plugin_init <- sys (commands: &mut Commands):
-        ready := 0
-        if host::headless() != 0:
-            ready = audio_init("dummy")
-        else:
-            ready = audio_init("")
-        commands.insert_resource(AudioSystem {
-            ready: ready != 0,
-            volume: 1.0,
-            stream: 0,
-        })
-
-@trigger(DeInit)
-pub shutdown_audio <- sys (audio: res &mut AudioSystem):
-    audio.shutdown()
-
+# Audio + asset server: `assets::AssetServerPlugin` scans the asset tree and
+# owns the CPU-side image/mesh/audio caches plus the SDL audio subsystem
+# lifecycle.  Headless runs (tests and frame capture) select SDL's deterministic
+# dummy audio driver; desktop runs use the default playback device and degrade
+# to a silent system when none is available.  The plugin also inserts the
+# `AudioSystem` resource used for one-shot playback.
 
 pub main <- async () -> i32:
     commands := await query &mut Commands
@@ -425,8 +410,8 @@ pub main <- async () -> i32:
     commands.add_plugin(physics::broadphase::BroadphasePlugin)
     commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
     commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(assets::AssetServerPlugin)
     commands.add_plugin(assets::AssetsPlugin)
-    commands.add_plugin(AudioPlugin)
     commands.add_plugin(DemoPlugin)
     commands.add_plugin(ui::Ui)
     disown commands
