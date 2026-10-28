@@ -23,5 +23,11 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run compiler tests");
     const tests = b.addTest(.{ .root_module = compiler });
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    // A plain Run inherits stdio and keeps the full per-test transcript (and
+    // stderr notes such as the intrinsic audit) visible without the listen
+    // protocol's spurious failure marker after a test writes to stderr.
+    const run_tests = std.Build.Step.Run.create(b, "run compiler tests");
+    run_tests.addArtifactArg(tests);
+    run_tests.has_side_effects = true;
+    test_step.dependOn(&run_tests.step);
 }

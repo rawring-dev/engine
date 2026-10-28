@@ -1728,3 +1728,200 @@ test "lowers inherent method calls with the receiver as the first argument" {
     };
     try std.testing.expect(saw_bump and saw_bump_by);
 }
+
+test "lowers f32 native methods to the math intrinsics" {
+    var result = try compile(
+        std.testing.allocator,
+        \\probe <- (text: str, x: f32) -> f32:
+        \\    parsed := f32::parse(text)
+        \\    s := f32::sin(x)
+        \\    c := f32::cos(x)
+        \\    q := f32::sqrt(x)
+        \\    a := f32::abs(x)
+        \\    cl := f32::clamp(x, 0.0, 1.0)
+        \\    milli := f32::to_milli(s)
+        \\    back := f32::from_milli(milli)
+        \\    as_int := f32::to_i64(c)
+        \\    as_float := f32::from_i64(as_int)
+        \\    ret parsed + s + c + q + a + cl + back + as_float
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const function = result.functionNamed("probe").?;
+    var saw = [_]bool{false} ** 10;
+    const wanted = [_]bytecode.RuntimeFunction{
+        .parse_f32,   .float_sin,      .float_cos,        .float_sqrt,   .float_abs,
+        .float_clamp, .float_to_milli, .float_from_milli, .float_to_i64, .float_from_i64,
+    };
+    for (function.code) |op| switch (op) {
+        .runtime_call => |call| for (wanted, 0..) |intrinsic, index| {
+            if (call.function == intrinsic) saw[index] = true;
+        },
+        else => {},
+    };
+    for (saw) |found| try std.testing.expect(found);
+}
+
+test "lowers typed raw pointer access and pointer native methods" {
+    var result = try compile(
+        std.testing.allocator,
+        \\probe <- () -> i64:
+        \\    base := ptr::alloc(64)
+        \\    unsafe:
+        \\        *base = 7
+        \\        base[1] = 9
+        \\        u32p := base as *raw u32
+        \\        f32p := base as *raw f32
+        \\        *u32p = 12
+        \\        *f32p = 1.5
+        \\        x := *base
+        \\        y := base[1]
+        \\        w := *u32p
+        \\        z := *f32p
+        \\        i32p := base as *raw i32
+        \\        signed := *i32p
+        \\        q := ptr::offset(base, 8)
+        \\        q[0] = 3
+        \\        ptr::store_u16(ptr::offset(base, 16), 5)
+        \\        v := ptr::load_u16(ptr::offset(base, 16))
+        \\        ptr::copy(base, base, 8)
+        \\        ptr::free(base)
+        \\        ret (x as i64) + (y as i64) + (w as i64) + f32::to_i64(z) + (q[0] as i64) + (v as i64) + (signed as i64)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const function = result.functionNamed("probe").?;
+    var saw_alloc = false;
+    var saw_free = false;
+    var saw_copy = false;
+    var saw_store_u8 = false;
+    var saw_store_u16 = false;
+    var saw_store_u32 = false;
+    var saw_store_f32 = false;
+    var saw_load_u8 = false;
+    var saw_load_u16 = false;
+    var saw_load_u32 = false;
+    var saw_load_f32 = false;
+    for (function.code) |op| switch (op) {
+        .runtime_call => |call| switch (call.function) {
+            .alloc_bytes => saw_alloc = true,
+            .free_ptr => saw_free = true,
+            .memcpy => saw_copy = true,
+            .store_u8 => saw_store_u8 = true,
+            .store_u16 => saw_store_u16 = true,
+            .store_u32 => saw_store_u32 = true,
+            .store_f32 => saw_store_f32 = true,
+            .load_u8 => saw_load_u8 = true,
+            .load_u16 => saw_load_u16 = true,
+            .load_u32 => saw_load_u32 = true,
+            .load_f32 => saw_load_f32 = true,
+            else => {},
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_alloc and saw_free and saw_copy);
+    try std.testing.expect(saw_store_u8 and saw_store_u16 and saw_store_u32 and saw_store_f32);
+    try std.testing.expect(saw_load_u8 and saw_load_u16 and saw_load_u32 and saw_load_f32);
+}
+
+test "lowers scalar, pointer, and handle casts" {
+    var result = try compile(
+        std.testing.allocator,
+        \\probe <- (x: f32, i: i64, u: u64, p: *raw u8) -> u64:
+        \\    a := x as i64
+        \\    b := x as u64
+        \\    c := i as f32
+        \\    d := u as i64
+        \\    e := i as u64
+        \\    f := u as *raw u8
+        \\    g := p as u64
+        \\    h := p as *raw u32
+        \\    ret a as u64 + b + (c as u64) + d as u64 + e + (f as u64) + g + (h as u64)
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+    _ = result.functionNamed("probe").?;
+}
+
+test "lowers ffi, str, vec, host, and image native methods" {
+    var result = try compile(
+        std.testing.allocator,
+        \\probe <- (lib: str, sym: str, text: str, path: str) -> i64:
+        \\    fn0 := ffi::bind(lib, sym)
+        \\    a := ffi::call0(fn0)
+        \\    b := ffi::call1(fn0, 1)
+        \\    c := ffi::call2(fn0, 1, 2)
+        \\    d := ffi::call3(fn0, 1, 2, 3)
+        \\    e := ffi::call4(fn0, 1, 2, 3, 4)
+        \\    f := ffi::call_f32_2(fn0, 1, 1.5)
+        \\    bytes_ptr := str::data(text)
+        \\    z := str::cstr(text)
+        \\    n := str::len(text)
+        \\    rebuilt := str::from_bytes(bytes_ptr, n)
+        \\    lines := str::lines(rebuilt)
+        \\    fields := str::fields(rebuilt)
+        \\    parts := str::split(rebuilt, "/")
+        \\    num := i64::parse(text)
+        \\    values := vec::push([1, 2], 3)
+        \\    handle := ffi::handle(z)
+        \\    shader := host::read_shader(path)
+        \\    now := host::time_now_ms()
+        \\    headless := host::headless()
+        \\    closing := host::should_close()
+        \\    host::note_frame()
+        \\    img := image::load(path)
+        \\    w := image::width(img)
+        \\    h := image::height(img)
+        \\    px := image::pixels(img)
+        \\    image::free(img)
+        \\    argb := image::from_argb(bytes_ptr, 1, 1, 4)
+        \\    image::free(argb)
+        \\    l64 := ptr::load_i64(bytes_ptr)
+        \\    ptr::store_usize(bytes_ptr, l64 as usize)
+        \\    captured := host::capture(bytes_ptr, 1, 1)
+        \\    ptr::free(z)
+        \\    ret (a as i64) + (b as i64) + (c as i64) + (d as i64) + (e as i64) + (f as i64) + n + num + (handle as i64) + str::len(shader) + now + headless + closing + w + h + str::len(px) + (values.len() as i64) + (lines.len() as i64) + (fields.len() as i64) + (parts.len() as i64) + l64 + captured
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const function = result.functionNamed("probe").?;
+    var saw = [_]bool{false} ** 10;
+    const wanted = [_]bytecode.RuntimeFunction{
+        .cffi_bind, .ffi_call0, .ffi_call1, .ffi_call_f32_2, .str_data,
+        .cstr,      .str_len,   .str_new,   .handle,         .image_load,
+    };
+    for (function.code) |op| switch (op) {
+        .runtime_call => |call| for (wanted, 0..) |intrinsic, index| {
+            if (call.function == intrinsic) saw[index] = true;
+        },
+        else => {},
+    };
+    for (saw) |found| try std.testing.expect(found);
+}
+
+test "rejects casts to non-scalar targets" {
+    try std.testing.expectError(error.SemanticFailed, compile(
+        std.testing.allocator,
+        \\S <- struct
+        \\    n: i32
+        \\f <- (s: S) -> i32:
+        \\    ret s as i32
+    ,
+        .{},
+    ));
+}

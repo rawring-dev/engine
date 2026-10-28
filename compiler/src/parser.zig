@@ -2816,6 +2816,29 @@ test "parses borrow, mutable borrow, and deref expressions" {
     try std.testing.expect(block.entries[2].stmt.*.expr.*.unary.op == .deref);
 }
 
+test "parses native method namespaces and typed raw pointer access" {
+    const source =
+        \\f <- (p: *raw u32, x: f32) -> u32:
+        \\    q := p as *raw u8
+        \\    v := p[0]
+        \\    *p = 1
+        \\    f32::sin(x)
+    ;
+    var tree = try expectAst(source);
+    defer tree.deinit();
+    const block = tree.module.items[0].kind.function.body.block;
+    try std.testing.expect(block.entries[0].stmt.*.binding.value.* == .cast);
+    try std.testing.expect(block.entries[0].stmt.*.binding.value.*.cast.ty.* == .raw_pointer);
+    try std.testing.expect(block.entries[1].stmt.*.binding.value.* == .index);
+    try std.testing.expect(block.entries[2].stmt.* == .assign);
+    try std.testing.expect(block.entries[2].stmt.*.assign.target.*.unary.op == .deref);
+    try std.testing.expect(block.entries[3].stmt.*.expr.* == .call);
+    const callee = block.entries[3].stmt.*.expr.*.call.callee;
+    try std.testing.expectEqual(@as(usize, 2), callee.path.segments.len);
+    try std.testing.expectEqualStrings("f32", callee.path.segments[0].name);
+    try std.testing.expectEqualStrings("sin", callee.path.segments[1].name);
+}
+
 test "parses async functions, prefix await/spawn, and trigger calls" {
     var tree = try expectAst(
         \\load <- async (path: i32) -> i32 = path + 1
