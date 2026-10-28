@@ -163,6 +163,10 @@ test "JIT executes compiled control flow" {
 test {
     _ = intrinsics;
     _ = @import("jit_tests.zig");
+    // e7-authored test harness self-tests (discovery, pass/fail classification,
+    // include directives) and its native assertion helpers.
+    _ = @import("e7_test.zig");
+    _ = @import("test_support.zig");
 }
 
 test "JIT executes compiled async functions" {

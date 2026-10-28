@@ -121,6 +121,54 @@ Individual packages work standalone as well:
 The first compiler build downloads and pins `zpars` at the commit recorded in
 `compiler/build.zig.zon`.
 
+### Tests written in e7
+
+`zig build test` is still the primary suite (scheduler, compiler, runtime and
+transpiler tests).  On top of it, `zig build test-e7` runs a second suite whose
+tests are authored directly in the e7 language under [`tests/e7/`](tests/e7):
+
+```sh
+zig build test-e7                     # run every test_* function
+zig build test-e7 -- --list           # discover tests without running them
+zig build test-e7 -- --filter string  # run tests matching a name or file
+```
+
+A test is a top-level e7 function named `test_*` with no parameters that
+returns `0` on success; a nonzero return fails the test.  Functions named
+`test_async_*` are declared `async` and the runner awaits their task handle.
+Each test runs with a fresh ECS world and assertion state (one JIT module per
+suite file), and failures print the suite file, test name, recorded assertion
+detail and return code.  A test that crashes the JIT aborts the runner after
+printing the test it was running; isolation is per function call rather than
+per process.
+
+Assertions are e7-callable helpers provided by the runner prelude on top of the
+native `e7_test_*` intrinsics in [`runtime/src/test_support.zig`](runtime/src/test_support.zig):
+
+| helper | meaning |
+| --- | --- |
+| `assert_eq_i64(actual, expected)` | exact integer equality |
+| `assert_eq_bool(actual, expected)` | boolean equality |
+| `assert_i64_near(actual, expected, tolerance)` | integer within tolerance |
+| `assert_f32_near(actual, expected, tolerance)` | float within tolerance |
+| `assert_str_eq(actual, expected)` | string bytes equality |
+| `assert_fail()` | unconditional failure |
+
+A suite file may prepend shared or engine e7 sources with header directives,
+which is how `tests/e7/engine_platform.e7` exercises engine/platform units
+without a display:
+
+```
+# e7-test-source: ../../engine/platform/sdl.e7
+# e7-test-source: ../../engine/platform/vulkan.e7
+# e7-test-source: ../../engine/platform/scene.e7
+```
+
+The runner is [`runtime/src/e7_test.zig`](runtime/src/e7_test.zig); it compiles
+each suite file through the normal parser → semantic → bytecode → LLVM IR →
+ORC JIT pipeline.  Harness self-tests (discovery, pass/fail classification,
+include directives, integer-loop lowering) run inside `zig build test`.
+
 ## Editor support
 
 [`grammar.ebnf`](grammar.ebnf) also drives editor syntax highlighting. The
@@ -566,8 +614,11 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 375 tests: scheduler 8, compiler 206, runtime 135,
-transpiler 26.
+`zig build test` runs 381 tests: scheduler 8, compiler 206, runtime 141,
+transpiler 26.  The runtime count includes six harness self-tests
+(`e7_test.test.*` and `test_support.test.*`); `zig build test-e7` additionally
+runs the 14 e7-authored tests in `tests/e7/` (language 6, collections 4,
+engine/platform 4, 57 assertions) through the JIT.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
   minimization, two-view block recovery, dimension validation;
@@ -604,7 +655,9 @@ transpiler 26.
   loading, symbol resolution, `cos`/`strlen` calls, data-symbol access,
   JIT-callback `qsort`, TCP/UDP loopback,
   HTTP request/response, QUIC client/server handshake and stream exchange, e7
-  platform SDL/Vulkan tests through the generic C FFI, WebRTC
+  e7 test-harness self-tests (discovery, pass/fail classification, include
+  directives, integer-loop lowering), platform SDL/Vulkan tests through the
+  generic C FFI, WebRTC
   offer/answer/data-channel loopback, and JITed IR calling each of those
   intrinsic families.
 

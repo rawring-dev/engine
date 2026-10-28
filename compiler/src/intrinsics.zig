@@ -138,6 +138,15 @@ pub const functions = [_]Function{
     .{ .name = "e7_ffi_call14", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call15", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
     .{ .name = "e7_ffi_call16", .params = &.{ .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_, .any_ }, .result = .u64_ },
+    // e7-authored test assertions (`zig build test-e7`).  The native helpers
+    // live in runtime/src/test_support.zig; the runner registers them with the
+    // JIT and reports any recorded failure with the test's file and name.
+    .{ .name = "e7_test_assert_eq_i64", .params = &.{ .i64_, .i64_ }, .result = .i64_ },
+    .{ .name = "e7_test_assert_eq_bool", .params = &.{ .bool_, .bool_ }, .result = .i64_ },
+    .{ .name = "e7_test_assert_i64_near", .params = &.{ .i64_, .i64_, .i64_ }, .result = .i64_ },
+    .{ .name = "e7_test_assert_f32_near", .params = &.{ .float_, .float_, .float_ }, .result = .i64_ },
+    .{ .name = "e7_test_assert_str_eq", .params = &.{ .str_, .str_ }, .result = .i64_ },
+    .{ .name = "e7_test_assert_fail", .params = &.{}, .result = .i64_ },
 };
 
 pub fn lookup(name: []const u8) ?Function {

@@ -146,6 +146,14 @@ pub const RuntimeFunction = enum(u8) {
     store_u32,
     load_u64,
     store_u64,
+    // e7-authored test assertions; see runtime/src/test_support.zig and
+    // runtime/src/e7_test.zig (`zig build test-e7`).
+    test_assert_eq_i64,
+    test_assert_eq_bool,
+    test_assert_i64_near,
+    test_assert_f32_near,
+    test_assert_str_eq,
+    test_assert_fail,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -253,6 +261,12 @@ pub const RuntimeFunction = enum(u8) {
             .store_u32 => "e7_store_u32",
             .load_u64 => "e7_load_u64",
             .store_u64 => "e7_store_u64",
+            .test_assert_eq_i64 => "e7_test_assert_eq_i64",
+            .test_assert_eq_bool => "e7_test_assert_eq_bool",
+            .test_assert_i64_near => "e7_test_assert_i64_near",
+            .test_assert_f32_near => "e7_test_assert_f32_near",
+            .test_assert_str_eq => "e7_test_assert_str_eq",
+            .test_assert_fail => "e7_test_assert_fail",
         };
     }
 
@@ -333,6 +347,9 @@ pub const RuntimeFunction = enum(u8) {
             .store_f32 => 2,
             .load_i64, .load_u8, .load_u16, .load_u32, .load_f32, .load_u64 => 1,
             .store_i64, .store_u8, .store_u16, .store_u32, .store_u64 => 2,
+            .test_assert_eq_i64, .test_assert_eq_bool, .test_assert_str_eq => 2,
+            .test_assert_i64_near, .test_assert_f32_near => 3,
+            .test_assert_fail => 0,
         };
     }
 

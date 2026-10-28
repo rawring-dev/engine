@@ -35,6 +35,42 @@ pub fn build(b: *std.Build) void {
     addTests(b, test_step, "runtime", runtime);
     addTests(b, test_step, "transpiler", transpiler);
 
+    // e7-authored test harness: `zig build test-e7` compiles tests/e7/*.e7
+    // through the normal compiler/JIT pipeline and runs every `test_*`
+    // function with native assertion helpers.  The Zig suite above stays the
+    // primary `test` step; these tests are additive.
+    const e7_test_module = b.createModule(.{
+        .root_source_file = b.path("runtime/src/e7_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    e7_test_module.addImport("compiler", compiler);
+    e7_test_module.linkSystemLibrary("LLVM-23", .{});
+    // The JIT symbol manifests cover every runtime FFI backend, so the test
+    // host links the same native libraries as the engine host.
+    inline for (.{
+        "lapack",
+        "blas",
+        "curl",
+        "ssl",
+        "crypto",
+        "ngtcp2",
+        "ngtcp2_crypto_ossl",
+        "datachannel",
+        "png",
+        "turbojpeg",
+    }) |library| {
+        e7_test_module.linkSystemLibrary(library, .{});
+    }
+
+    const e7_test_exe = b.addExecutable(.{ .name = "e7-test", .root_module = e7_test_module });
+    const run_e7_tests = b.addRunArtifact(e7_test_exe);
+    if (b.args) |args| run_e7_tests.addArgs(args);
+    run_e7_tests.has_side_effects = true;
+    const test_e7_step = b.step("test-e7", "Run the e7-authored tests in tests/e7");
+    test_e7_step.dependOn(&run_e7_tests.step);
+
     // Shader assets: the canonical sources are e7s files.  `zig build shaders`
     // transpiles them with the e7s CLI and compiles the generated Slang to
     // SPIR-V for both shader sets:
