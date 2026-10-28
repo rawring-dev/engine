@@ -1,12 +1,26 @@
 mod obj
+mod server
 
-# Asset library: images (PNG/JPEG through the low-level runtime loader) and
-# parsed OBJ meshes.  The runtime only decodes files; all loading policy and
+# Asset library: images (PNG/JPEG through the low-level runtime loader), parsed
+# OBJ meshes, WAV audio clips, and the higher-order `AssetServer` that scans the
+# asset directory tree.  The runtime only decodes files; all loading policy and
 # resource ownership lives here.
+#
+# Directory layout (cwd-relative, scanned recursively by AssetServerPlugin):
+#
+#   engine/assets/images/<folder>/<name>.png|jpg
+#   engine/assets/meshes/<folder>/<name>.obj
+#   engine/assets/audio/<folder>/<name>.wav
+#
+# Relative keys are rooted at each category directory (e.g. "cube/cube.png"),
+# so callers use `server.image("cube/cube.png")`.  The legacy flat sample paths
+# (`engine/assets/testdata/cube.png`, `engine/assets/cube.obj`,
+# `engine/assets/testdata/tone.wav`) stay in place as the AssetsPlugin fallback.
 
 use core::ecs::*;
 use core::events::*;
 use gfx::gpu::*;
+use platform::audio::*;
 
 @resource
 pub Image <- struct
@@ -35,18 +49,20 @@ impl Image:
         image::free(image.handle)
         ret
 
+pub empty_image <- () -> Image:
+    ret Image {
+        handle: 0,
+        width: 0,
+        height: 0,
+        pixels: "",
+    }
 
 # Load an image into an e7 `Image`.  Missing/undecodable files produce a
 # zeroed Image (handle 0) instead of failing the plugin.
 pub load_image <- (path: str) -> Image:
     handle := image::load(path)
     if handle == 0:
-        ret Image {
-            handle: 0,
-            width: 0,
-            height: 0,
-            pixels: "",
-        }
+        ret empty_image()
     ret Image {
         handle: handle,
         width: image::width(handle) as i32,
@@ -57,9 +73,134 @@ pub load_image <- (path: str) -> Image:
 pub free_image <- (image: Image) -> nil:
     image.free()
 
-# Load the engine's sample assets.  The renderer keeps its built-in cube; this
-# proves the image/OBJ pipeline end-to-end and gives later rendering work a
-# native mesh resource to consume.
+# --------------------------------------------------------------- collections --
+
+# One processed category of the asset tree.  The generic scan lives in
+# `server.e7`; these wrappers add category-specific lookups and safe fallbacks
+# (a missing path returns an empty Image/ObjMesh/AudioClip instead of a zero
+# pointer).
+pub ImageAssets <- struct
+    images: server::AssetCollection<Image>
+
+pub MeshAssets <- struct
+    meshes: server::AssetCollection<obj::ObjMesh>
+
+pub AudioAssets <- struct
+    clips: server::AssetCollection<AudioClip>
+
+impl ImageAssets:
+    pub count <- (assets: &ImageAssets) -> i64 = assets.images.file_count()
+    pub folder_count <- (assets: &ImageAssets) -> i64 = assets.images.folder_count()
+    pub has_image <- (assets: &ImageAssets, path: str) -> bool = assets.images.has_file(path)
+    pub image <- (assets: &ImageAssets, path: str) -> Image:
+        if assets.images.has_file(path):
+            ret assets.images.files[path]
+        ret empty_image()
+    pub folder_images <- (assets: &ImageAssets, folder: str) -> map[str, Image]:
+        ret assets.images.folder_files(folder)
+
+impl MeshAssets:
+    pub count <- (assets: &MeshAssets) -> i64 = assets.meshes.file_count()
+    pub folder_count <- (assets: &MeshAssets) -> i64 = assets.meshes.folder_count()
+    pub has_mesh <- (assets: &MeshAssets, path: str) -> bool = assets.meshes.has_file(path)
+    pub mesh <- (assets: &MeshAssets, path: str) -> obj::ObjMesh:
+        if assets.meshes.has_file(path):
+            ret assets.meshes.files[path]
+        ret obj::empty_mesh()
+    pub folder_meshes <- (assets: &MeshAssets, folder: str) -> map[str, obj::ObjMesh]:
+        ret assets.meshes.folder_files(folder)
+
+impl AudioAssets:
+    pub count <- (assets: &AudioAssets) -> i64 = assets.clips.file_count()
+    pub folder_count <- (assets: &AudioAssets) -> i64 = assets.clips.folder_count()
+    pub has_audio <- (assets: &AudioAssets, path: str) -> bool = assets.clips.has_file(path)
+    pub audio <- (assets: &AudioAssets, path: str) -> AudioClip:
+        if assets.clips.has_file(path):
+            ret assets.clips.files[path]
+        ret AudioClip { data: 0, length: 0, format: 0, channels: 0, freq: 0 }
+    pub folder_audio <- (assets: &AudioAssets, folder: str) -> map[str, AudioClip]:
+        ret assets.clips.folder_files(folder)
+
+# Category processors: plain function values passed to the higher-order scan.
+# Each loader receives the full cwd-relative path from the scan and returns an
+# empty value for missing/undecodable files.
+image_processor <- (path: str) -> Image = load_image(path)
+
+mesh_processor <- (path: str) -> obj::ObjMesh:
+    ret obj::load_obj(path)
+
+audio_processor <- (path: str) -> AudioClip = audio_load_wav(path)
+
+# --------------------------------------------------------------- asset server --
+
+@resource
+pub AssetServer <- struct
+    images: ImageAssets
+    meshes: MeshAssets
+    audio: AudioAssets
+    # Scan roots, kept for diagnostics/lookup-key documentation.
+    image_root: str
+    mesh_root: str
+    audio_root: str
+
+impl AssetServer:
+    pub image <- (server: &AssetServer, path: str) -> Image:
+        ret server.images.image(path)
+    pub mesh <- (server: &AssetServer, path: str) -> obj::ObjMesh:
+        ret server.meshes.mesh(path)
+    pub audio <- (server: &AssetServer, path: str) -> AudioClip:
+        ret server.audio.audio(path)
+    pub folder_images <- (server: &AssetServer, folder: str) -> map[str, Image]:
+        ret server.images.folder_images(folder)
+    pub folder_meshes <- (server: &AssetServer, folder: str) -> map[str, obj::ObjMesh]:
+        ret server.meshes.folder_meshes(folder)
+    pub folder_audio <- (server: &AssetServer, folder: str) -> map[str, AudioClip]:
+        ret server.audio.folder_audio(folder)
+
+# Owns the CPU-side asset caches and the SDL audio subsystem lifecycle for the
+# engine demo.  Scanning is CPU-only (image decode, OBJ parse, WAV decode); the
+# GPU upload remains in `upload_assets` once the scene exists.
+#
+# Lifetime: images register runtime image handles and WAV clips own
+# SDL_malloc'd PCM buffers.  Both are released by `shutdown_asset_server` on
+# DeInit; CPU OBJ/Image structs are normal e7 aggregates (process lifetime).
+pub AssetServerPlugin <- plugin
+    asset_server_plugin_init <- sys (commands: &mut Commands):
+        ready := 0
+        if host::headless() != 0:
+            ready = audio_init("dummy")
+        else:
+            ready = audio_init("")
+        commands.insert_resource(AudioSystem {
+            ready: ready != 0,
+            volume: 1.0,
+            stream: 0,
+        })
+        image_root := "engine/assets/images"
+        mesh_root := "engine/assets/meshes"
+        audio_root := "engine/assets/audio"
+        commands.insert_resource(AssetServer {
+            images: ImageAssets { images: server::scan_assets<Image>(image_root, image_processor) },
+            meshes: MeshAssets { meshes: server::scan_assets<obj::ObjMesh>(mesh_root, mesh_processor) },
+            audio: AudioAssets { clips: server::scan_assets<AudioClip>(audio_root, audio_processor) },
+            image_root: image_root,
+            mesh_root: mesh_root,
+            audio_root: audio_root,
+        })
+
+@trigger(DeInit)
+pub shutdown_asset_server <- sys (server: res &mut AssetServer, audio: res &mut AudioSystem):
+    for (path, image) in server.images.images.files:
+        image.free()
+    for (path, clip) in server.audio.clips.files:
+        clip.free()
+    audio.shutdown()
+
+# Load the engine's sample assets (fallback path).  The renderer keeps its
+# built-in cube; this proves the image/OBJ pipeline end-to-end even when the
+# AssetServer plugin is not part of the project.  `upload_assets` prefers the
+# scanned AssetServer entries when they exist and falls back to these fixed
+# loads otherwise.
 pub AssetsPlugin <- plugin
     assets_plugin_init <- sys (commands: &mut Commands):
         commands.insert_resource(Assets {
@@ -70,17 +211,28 @@ pub AssetsPlugin <- plugin
         })
 
 # FrameInit runs after the Init trigger created the window/scene, and before
-# Render, so this is the right place to turn CPU assets into GPU resources:
-# the sample image becomes a material texture and cube.obj becomes a mesh.
-# Pickable bodies (the ball and stacked cubes) get the sample texture through
-# their Material component; rows with a MeshRenderer get the uploaded OBJ mesh.
+# Render, so this is the right place to turn CPU assets into GPU resources.
+# Prefer the AssetServer's scanned entries (relative keys) and keep the
+# AssetsPlugin fixed loads as fallback, so the engine renders identically with
+# or without the AssetServer resource being populated.
 @trigger(FrameInit)
 pub upload_assets <- sys (
     gpu: res &mut Gpu,
     assets: res &mut Assets,
+    server: res &AssetServer,
     textured: select &mut Material, &Pickup from Components,
     meshes: select &mut MeshRenderer from Components,
 ):
+    if server.images.has_image("cube/cube.png"):
+        scanned_image := server.image("cube/cube.png")
+        if scanned_image.handle != 0:
+            if assets.cube_image.handle != 0:
+                assets.cube_image.free()
+            assets.cube_image = scanned_image
+    if server.meshes.has_mesh("cube/cube.obj"):
+        scanned_mesh := server.mesh("cube/cube.obj")
+        if scanned_mesh.indices.len() > 0:
+            assets.cube_mesh = scanned_mesh
     if gpu.scene == 0:
         ret
     if assets.cube_texture == 0 and assets.cube_image.handle != 0:

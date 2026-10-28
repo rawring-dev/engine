@@ -15,7 +15,8 @@
 //!   ptr::load_u32(p)        ptr::store_u64(p, value)  ptr::copy(dst, src, n)
 //!   str::from_bytes(p, n)   str::data(s)              str::cstr(s)   str::len(s)
 //!   ffi::bind(lib, symbol)  ffi::call4(fn, a, b, c, d)  ffi::handle(value)
-//!   host::time_now_ms()     host::read_shader(path)   host::capture(pixels, w, h)
+//!   host::time_now_ms()     host::read_shader(path)   host::read_asset(path)
+//!   host::list_dir(path)    host::capture(pixels, w, h)
 //!   image::load(path)       image::width(handle)      image::free(handle)
 //!
 //! The namespace names are ordinary identifiers in the grammar (`f32::sin` is
@@ -160,6 +161,12 @@ const ffi_methods = [_]Method{
 const host_methods = [_]Method{
     .{ .name = "time_now_ms", .params = &.{}, .result = i64_, .runtime = .engine_time_now_ms },
     .{ .name = "read_shader", .params = &.{str_}, .result = str_, .runtime = .engine_read_shader },
+    // Alias for asset text reads (OBJ files, build metadata): the host reader
+    // is the same cwd-relative file helper as shader reads.
+    .{ .name = "read_asset", .params = &.{str_}, .result = str_, .runtime = .engine_read_shader },
+    // Recursive asset scans list one directory level at a time.  The result is
+    // the runtime fs list format: one name per line, directories end with `/`.
+    .{ .name = "list_dir", .params = &.{str_}, .result = str_, .runtime = .engine_list_dir },
     .{ .name = "headless", .params = &.{}, .result = i64_, .runtime = .host_headless },
     .{ .name = "should_close", .params = &.{}, .result = i64_, .runtime = .host_should_close },
     .{ .name = "note_frame", .params = &.{}, .result = unit_, .runtime = .host_note_frame },

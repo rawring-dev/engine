@@ -19,6 +19,7 @@ pub const float = @import("float.zig");
 pub const json = @import("json.zig");
 pub const image = @import("image.zig");
 pub const intrinsics = @import("intrinsics.zig");
+const host_engine = @import("host_engine.zig");
 
 pub const filesystem = @import("ffi/fs.zig");
 pub const net = @import("ffi/net.zig");
@@ -1689,6 +1690,7 @@ const gfx_module_specs = [_]RepoModule{
 const asset_module_specs = [_]RepoModule{
     .{ .name = "assets", .path = "engine/assets/main.e7" },
     .{ .name = "obj", .path = "engine/assets/obj.e7" },
+    .{ .name = "server", .path = "engine/assets/server.e7" },
 };
 
 const engine_physics_module_specs =
@@ -1868,6 +1870,151 @@ test "JIT runs the AssetsPlugin and loads the checked-in image and OBJ" {
     try std.testing.expectEqual(@as(i64, 24), aggregate.e7_vec_len(positions)); // 8 positions * 3
     try std.testing.expectEqual(@as(i64, 36), aggregate.e7_vec_len(indices)); // 6 quads -> 12 triangles
     try std.testing.expectEqual(@as(i64, 288), aggregate.e7_vec_len(vertices)); // 36 vertices * 8 floats
+}
+
+fn makeTestString(text: []const u8) i64 {
+    return aggregate.e7_str_new(@intCast(@intFromPtr(text.ptr)), @intCast(text.len));
+}
+
+fn mapFindString(map: i64, key: []const u8) ?i64 {
+    const count = aggregate.e7_map_len(map);
+    var index: i64 = 0;
+    while (index < count) : (index += 1) {
+        const key_handle = aggregate.e7_map_key_at(map, index);
+        const key_len = aggregate.e7_str_len(key_handle);
+        if (key_len != key.len) continue;
+        const key_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(key_handle + 8)));
+        if (std.mem.eql(u8, key_ptr[0..@intCast(key_len)], key)) {
+            return aggregate.e7_map_value_at(map, index);
+        }
+    }
+    return null;
+}
+
+test "host list_dir lists cwd-relative directories in the fs list format" {
+    const candidates = [_][]const u8{ "engine/assets", "../engine/assets", "../../engine/assets" };
+    var listing: ?[]const u8 = null;
+    for (candidates) |candidate| {
+        const handle = host_engine.e7_engine_list_dir(makeTestString(candidate));
+        if (handle == 0) continue;
+        const length = aggregate.e7_str_len(handle);
+        const ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(handle + 8)));
+        listing = ptr[0..@intCast(length)];
+        break;
+    }
+    const text = listing orelse return error.SkipZigTest;
+    // Directories carry a trailing '/', files do not, one entry per line.
+    try std.testing.expect(std.mem.indexOf(u8, text, "audio/\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "images/\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "meshes/\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "testdata/\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "main.e7\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "server.e7\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "cube.obj\n") != null);
+    // Missing directories report failure to e7 (0), which scans treat as empty.
+    try std.testing.expectEqual(@as(i64, 0), host_engine.e7_engine_list_dir(makeTestString("engine/assets/does-not-exist")));
+}
+
+test "JIT runs the AssetServer plugin and scans nested asset folders" {
+    var modules = try loadRepoModules(std.testing.allocator, &engine_asset_module_specs);
+    defer modules.deinit();
+
+    const root_source =
+        \\mod platform
+        \\mod core
+        \\mod gfx
+        \\mod assets
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(assets::AssetServerPlugin)
+        \\    commands.add_plugin(assets::AssetsPlugin)
+        \\    disown commands
+        \\    await Init()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        modules.sources,
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("asset server semantic: {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+
+    host.setHeadless(true);
+    defer host.reset();
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "asset-server");
+    const Load = *const fn () callconv(.c) i64;
+    const load = try jit.get(Load, "main");
+    const task_handle = load();
+    try std.testing.expect(task_handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(task_handle));
+
+    const server_info = compiled.analysis.resource("assets::AssetServer") orelse return error.TestUnexpectedResult;
+    const server_ptr = ecs.e7_ecs_resource(server_info.id);
+    try std.testing.expect(server_ptr != 0);
+
+    // Field order: images, meshes, audio, image_root, mesh_root, audio_root.
+    // ImageAssets -> AssetCollection<Image> -> [files map, folders map].
+    const images_assets = aggregate.e7_load_i64(server_ptr);
+    const images_collection = aggregate.e7_load_i64(images_assets);
+    const image_files = aggregate.e7_load_i64(images_collection);
+    const image_folders = aggregate.e7_load_i64(images_collection + 8);
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(image_files));
+    const image_ptr = mapFindString(image_files, "cube/cube.png") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(mapFindString(image_files, "engine/assets/images/cube/cube.png") == null);
+    try std.testing.expect(aggregate.e7_load_i64(image_ptr) != 0); // runtime image handle
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(image_ptr + 8));
+    try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(image_ptr + 16));
+    try std.testing.expectEqual(@as(i64, 16), aggregate.e7_str_len(aggregate.e7_load_i64(image_ptr + 24)));
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(image_folders));
+    const cube_folder = mapFindString(image_folders, "cube") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(cube_folder));
+    try std.testing.expectEqual(image_ptr, mapFindString(cube_folder, "cube.png").?);
+
+    // MeshAssets: one nested OBJ parsed into the same 36-index cube mesh.
+    const meshes_assets = aggregate.e7_load_i64(server_ptr + 8);
+    const meshes_collection = aggregate.e7_load_i64(meshes_assets);
+    const mesh_files = aggregate.e7_load_i64(meshes_collection);
+    const mesh_folders = aggregate.e7_load_i64(meshes_collection + 8);
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(mesh_files));
+    const mesh_ptr = mapFindString(mesh_files, "cube/cube.obj") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 36), aggregate.e7_vec_len(aggregate.e7_load_i64(mesh_ptr + 32)));
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(mesh_folders));
+    try std.testing.expect(mapFindString(mesh_folders, "cube") != null);
+
+    // AudioAssets: the nested WAV decodes to the 100 ms 440 Hz mono fixture.
+    const audio_assets = aggregate.e7_load_i64(server_ptr + 16);
+    const audio_collection = aggregate.e7_load_i64(audio_assets);
+    const audio_files = aggregate.e7_load_i64(audio_collection);
+    const audio_folders = aggregate.e7_load_i64(audio_collection + 8);
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(audio_files));
+    const clip_ptr = mapFindString(audio_files, "sfx/tone.wav") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(aggregate.e7_load_i64(clip_ptr) != 0); // PCM data
+    try std.testing.expectEqual(@as(i64, 8820), aggregate.e7_load_i64(clip_ptr + 8));
+    try std.testing.expectEqual(@as(i64, 1), aggregate.e7_map_len(audio_folders));
+    try std.testing.expect(mapFindString(audio_folders, "sfx") != null);
+
+    // Legacy AssetsPlugin fallback still populates the fixed sample assets.
+    const assets_info = compiled.analysis.resource("assets::Assets") orelse return error.TestUnexpectedResult;
+    const assets_ptr = ecs.e7_ecs_resource(assets_info.id);
+    try std.testing.expect(assets_ptr != 0);
+    try std.testing.expect(aggregate.e7_load_i64(assets_ptr) != 0); // Image pointer
+    try std.testing.expect(aggregate.e7_load_i64(assets_ptr + 8) != 0); // ObjMesh pointer
+
+    // The plugin owns the audio subsystem so one-shot playback has a system.
+    const audio_system_info = compiled.analysis.resource("platform::audio::AudioSystem") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_has_resource(audio_system_info.id));
 }
 
 test "JIT executes broadphase aggregation and narrowphase helpers" {

@@ -1582,6 +1582,10 @@ test "compiles the engine OBJ and asset libraries from sources" {
     defer std.testing.allocator.free(obj_source);
     const assets_source = readRepoText("engine/assets/main.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(assets_source);
+    const server_source = readRepoText("engine/assets/server.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(server_source);
+    const audio_source = readRepoText("engine/platform/audio.e7") orelse return error.SkipZigTest;
+    defer std.testing.allocator.free(audio_source);
     const ecs_source = readRepoText("engine/core/ecs.e7") orelse return error.SkipZigTest;
     defer std.testing.allocator.free(ecs_source);
     const gfx_source = readRepoText("engine/gfx/gpu.e7") orelse return error.SkipZigTest;
@@ -1623,8 +1627,10 @@ test "compiles the engine OBJ and asset libraries from sources" {
             .{ .name = "gfx", .source = "mod gpu\n" },
             .{ .name = "gpu", .source = gfx_source },
             .{ .name = "obj", .source = obj_source },
+            .{ .name = "server", .source = server_source },
             .{ .name = "assets", .source = assets_source },
-            .{ .name = "platform", .source = "mod sdl\nmod vulkan\nmod scene\nmod engine_window\nmod engine_scene\n" },
+            .{ .name = "platform", .source = "mod sdl\nmod vulkan\nmod scene\nmod engine_window\nmod engine_scene\nmod audio\n" },
+            .{ .name = "audio", .source = audio_source },
             .{ .name = "sdl", .source = sdl_source },
             .{ .name = "vulkan", .source = vulkan_source },
             .{ .name = "scene", .source = scene_source },
@@ -1652,6 +1658,13 @@ test "compiles the engine OBJ and asset libraries from sources" {
     try std.testing.expect(result.functionNamed("assets::obj::parse_obj") != null);
     try std.testing.expect(result.functionNamed("assets::obj::load_obj") != null);
     try std.testing.expect(result.functionNamed("assets::load_image") != null);
+    try std.testing.expect(result.analysis.resource("assets::AssetServer") != null);
+    try std.testing.expect(result.analysis.resource("assets::Image") != null);
+    var found_asset_server_plugin = false;
+    for (result.analysis.plugins) |plugin| {
+        if (std.mem.eql(u8, plugin.name, "assets::AssetServerPlugin")) found_asset_server_plugin = true;
+    }
+    try std.testing.expect(found_asset_server_plugin);
 
     var found_assets_plugin = false;
     for (result.analysis.plugins) |plugin| {
