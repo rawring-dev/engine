@@ -1449,30 +1449,30 @@ test "JIT runs the complete JSON API from e7 source" {
         \\    text := json::encode(make_box())
         \\    copy := json::decode::<Box>(text)
         \\    total := copy.vector[2] as i64
-        \\    total = total + e7_f32_to_milli(copy.grid[1, 0])
+        \\    total = total + f32::to_milli(copy.grid[1, 0])
         \\    total = total + (copy.lookup["a"] as i64) + (copy.lookup["bb"] as i64)
         \\    total = total + (copy.name.len() as i64)
-        \\    total = total + (copy.points.len() as i64) + e7_f32_to_milli(copy.points[0].x)
+        \\    total = total + (copy.points.len() as i64) + f32::to_milli(copy.points[0].x)
         \\    total = total + shade_value(copy.shade)
         \\    total = total + (copy.colors.len() as i64)
         \\    total
         \\unknown_fields <- () -> i64:
         \\    p := json::decode::<Point>("{\"extra\": true, \"tag\": \"ab\", \"x\": 2.5}")
-        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\    f32::to_milli(p.x) + (p.tag.len() as i64)
         \\missing_field <- () -> i64:
         \\    p := json::decode::<Point>("{\"x\": 1.0}")
-        \\    if e7_handle(p) == 0:
+        \\    if ffi::handle(p) == 0:
         \\        ret 1
         \\    ret 0
         \\malformed <- () -> i64:
         \\    p := json::decode::<Point>("{oops}")
-        \\    if e7_handle(p) == 0:
+        \\    if ffi::handle(p) == 0:
         \\        ret 1
         \\    ret 0
         \\unicode_roundtrip <- () -> i64:
         \\    text := json::encode(Point { x: 2.5, tag: "héllo 😀" })
         \\    p := json::decode::<Point>(text)
-        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\    f32::to_milli(p.x) + (p.tag.len() as i64)
         \\encode_primitive <- () -> str:
         \\    json::encode(42)
         \\encode_vector <- () -> str:
