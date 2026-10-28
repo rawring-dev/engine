@@ -1,0 +1,52 @@
+# Higher-order function values (task-18), authored in e7.
+#
+# A bare top-level function name is a first-class value of its function type:
+# it can be passed as a callback, stored in structs/maps, returned from another
+# function, and called through a parameter.  Closures/captures are not part of
+# the language; only named top-level/module functions are function values.
+
+double <- (x: i64) -> i64 = x * 2
+plus_one <- (x: i64) -> i64 = x + 1
+
+apply <- (value: i64, f: (i64) -> i64) -> i64:
+    ret f(value)
+
+str_len_callback <- (text: str) -> i64 = str::len(text)
+
+apply_str <- (text: str, f: (str) -> i64) -> i64:
+    ret f(text)
+
+Ops <- struct
+    f: (i64) -> i64
+
+pick <- (which: i64) -> (i64) -> i64:
+    if which == 0:
+        ret double
+    ret plus_one
+
+test_hof_apply_callback <- () -> i64:
+    assert_eq_i64(apply(21, double), 42)
+    assert_eq_i64(apply(41, plus_one), 42)
+    0
+
+test_hof_struct_function_field <- () -> i64:
+    ops := Ops { f: double }
+    assert_eq_i64(ops.f(5), 10)
+    0
+
+test_hof_map_function_values <- () -> i64:
+    dispatch := map[str, (i64) -> i64] { "double": double, "inc": plus_one }
+    chosen := dispatch["double"]
+    assert_eq_i64(chosen(4), 8)
+    0
+
+test_hof_returned_function <- () -> i64:
+    first := pick(0)
+    second := pick(1)
+    assert_eq_i64(first(3), 6)
+    assert_eq_i64(second(3), 4)
+    0
+
+test_hof_string_callback <- () -> i64:
+    assert_eq_i64(apply_str("hello", str_len_callback), 5)
+    0

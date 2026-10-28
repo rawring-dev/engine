@@ -616,6 +616,44 @@ test "JIT executes compiled ECS setup, Commands, and plugin activation" {
     try std.testing.expectEqual(@as(i64, 1), ecs.e7_ecs_plugin_active(0));
 }
 
+test "JIT executes higher-order functions through indirect calls" {
+    var compiled = try compiler.pipeline.compile(
+        std.testing.allocator,
+        \\double <- (x: i64) -> i64 = x * 2
+        \\plus_one <- (x: i64) -> i64 = x + 1
+        \\apply <- (value: i64, f: (i64) -> i64) -> i64:
+        \\    ret f(value)
+        \\classify <- (text: str) -> i64 = str::len(text)
+        \\apply_str <- (text: str, f: (str) -> i64) -> i64:
+        \\    ret f(text)
+        \\Ops <- struct
+        \\    f: (i64) -> i64
+        \\pick <- (which: i64) -> (i64) -> i64:
+        \\    if which == 0:
+        \\        ret double
+        \\    ret plus_one
+        \\run <- () -> i64:
+        \\    ops := Ops { f: plus_one }
+        \\    dispatch := map[str, (i64) -> i64] { "double": double, "inc": plus_one }
+        \\    chosen := dispatch["double"]
+        \\    picked := pick(1)
+        \\    ret apply(20, double) + apply(1, ops.f) + chosen(4) + picked(3) + apply_str("hello", classify)
+    ,
+        .{},
+    );
+    defer compiled.deinit();
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "higher-order");
+    const Run = *const fn () callconv(.c) i64;
+    const run = try jit.get(Run, "run");
+    // 40 + 2 + 8 + 4 + len("hello") = 59
+    try std.testing.expectEqual(@as(i64, 59), run());
+}
+
 test "JITed IR loads a shared library and calls cos through the FFI trampoline" {
     const library_path = mathLibraryPath() orelse return error.SkipZigTest;
     if (!canResolve(library_path, "cos")) {

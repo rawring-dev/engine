@@ -413,6 +413,11 @@ pub const Op = union(enum) {
     jump: u32,
     jump_if_false: u32,
     call: Call,
+    /// Push a stable bytecode function index as a first-class function value.
+    function_ref: u16,
+    /// Pop a function index plus `argc` arguments and call that function.
+    /// The callee index is resolved through the uniform `i64(i64, ...)` ABI.
+    call_indirect: u16,
     /// Call a runtime C-ABI intrinsic; arguments are popped like `call` and one
     /// `i64` result is pushed (the backend ignores results it does not use).
     runtime_call: RuntimeCall,
@@ -689,6 +694,16 @@ fn verifyFunction(allocator: std.mem.Allocator, module: *const Module, function:
                 if (call.argc != module.functions[call.function].params) return error.InvalidBytecode;
                 if (height < call.argc) return error.InvalidBytecode;
                 next_height = height - @as(i32, call.argc) + 1;
+                fallthrough = index + 1;
+            },
+            .function_ref => |callee| {
+                if (callee >= module.functions.len) return error.InvalidBytecode;
+                next_height += 1;
+                fallthrough = index + 1;
+            },
+            .call_indirect => |argc| {
+                if (height < @as(i32, argc) + 1) return error.InvalidBytecode;
+                next_height = height - @as(i32, argc);
                 fallthrough = index + 1;
             },
             .runtime_call => |call| {
@@ -981,6 +996,8 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
         .vec_set2 => 57,
         .vec_set_row => 58,
         .runtime_call => 59,
+        .function_ref => 60,
+        .call_indirect => 61,
     };
     try out.append(allocator, tag);
     switch (op) {
@@ -998,6 +1015,8 @@ fn encodeOp(out: *std.ArrayList(u8), allocator: std.mem.Allocator, op: Op) Error
             try writeU16(out, allocator, call.function);
             try writeU16(out, allocator, call.argc);
         },
+        .function_ref => |callee| try writeU16(out, allocator, callee),
+        .call_indirect => |argc| try writeU16(out, allocator, argc),
         .runtime_call => |call| {
             try out.append(allocator, @intFromEnum(call.function));
             try writeU16(out, allocator, call.argc);
@@ -1087,6 +1106,8 @@ fn decodeOp(cursor: *Cursor) Error!Op {
             if (argc != function.arity()) return error.InvalidBytecode;
             break :blk .{ .runtime_call = .{ .function = function, .argc = argc } };
         },
+        60 => .{ .function_ref = cursor.readU16() orelse return error.InvalidBytecode },
+        61 => .{ .call_indirect = cursor.readU16() orelse return error.InvalidBytecode },
         else => error.InvalidBytecode,
     };
 }
@@ -1192,6 +1213,51 @@ test "bytecode round-trips matrix indexing ops" {
     try std.testing.expect(decoded.functions[0].code[3] == .vec_get2);
     try std.testing.expect(decoded.functions[0].code[7] == .vec_set2);
     try std.testing.expect(decoded.functions[0].code[11] == .vec_set_row);
+}
+
+test "bytecode round-trips function references and indirect calls" {
+    const target_code = try std.testing.allocator.alloc(Op, 2);
+    target_code[0] = .{ .load_local = 0 };
+    target_code[1] = .ret;
+    const caller_code = try std.testing.allocator.alloc(Op, 4);
+    caller_code[0] = .{ .function_ref = 0 };
+    caller_code[1] = .{ .push_i64 = 7 };
+    caller_code[2] = .{ .call_indirect = 1 };
+    caller_code[3] = .ret;
+    const functions = try std.testing.allocator.alloc(Function, 2);
+    functions[0] = .{
+        .name = try std.testing.allocator.dupe(u8, "identity"),
+        .params = 1,
+        .locals = 1,
+        .max_stack = 16,
+        .code = target_code,
+    };
+    functions[1] = .{
+        .name = try std.testing.allocator.dupe(u8, "caller"),
+        .params = 0,
+        .locals = 0,
+        .max_stack = 16,
+        .code = caller_code,
+    };
+    var module = Module{
+        .allocator = std.testing.allocator,
+        .functions = functions,
+        .entry = 1,
+    };
+    defer module.deinit();
+    try verify(std.testing.allocator, &module);
+    const bytes = try encode(std.testing.allocator, &module);
+    defer std.testing.allocator.free(bytes);
+    var decoded = try decode(std.testing.allocator, bytes);
+    defer decoded.deinit();
+    try verify(std.testing.allocator, &decoded);
+    try std.testing.expect(decoded.functions[1].code[0].function_ref == 0);
+    try std.testing.expectEqual(@as(u16, 1), decoded.functions[1].code[2].call_indirect);
+
+    // Out-of-range function references and empty call-indirect stacks are
+    // rejected by the verifier.
+    decoded.functions[1].code[0] = .{ .function_ref = 9 };
+    try std.testing.expectError(error.InvalidBytecode, verify(std.testing.allocator, &decoded));
 }
 
 test "bytecode round-trips runtime calls" {

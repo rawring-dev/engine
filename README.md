@@ -468,6 +468,44 @@ file and is report-only by default; run
 the boundary then fail the audit test). The engine and e7 test suites are
 migrated, so the strict audit currently reports zero calls.
 
+### First-class function values
+
+A bare top-level or module-level function name is a value of its function
+type, so callbacks and higher-order helpers do not need closures or special
+syntax:
+
+```text
+double <- (x: i64) -> i64 = x * 2
+
+apply <- (value: i64, f: (i64) -> i64) -> i64:
+    ret f(value)
+
+run <- () -> i64:
+    ret apply(21, double)                  # 42
+```
+
+- Function types are the normal `(A, B) -> R` type syntax; they are accepted
+  in parameters, locals, struct/table fields, vectors, maps, and return types.
+  `pick <- (which: i64) -> (i64) -> i64:` returns a function value.
+- A function value stores the stable bytecode function index.  Bytecode has
+  two additional ops: `function_ref <index>` (push the index) and
+  `call_indirect <argc>` (pop the index and arguments, then call).  Direct
+  calls to known functions remain ordinary `call` ops, and `run`/`apply`
+  examples above use both the direct call and the indirect callback path.
+- The runtime lowers `call_indirect` to a per-arity dispatch switch
+  (`e7_hof_dispatch_<argc>`) over every compiled function with that parameter
+  count; all e7 functions share the uniform `i64 @name(i64, ...)` ABI, so
+  dispatch is a direct call to the selected symbol and call/return/stack
+  discipline matches a direct call.
+- Function values pass across module boundaries (the index is module-wide for
+  one compiled project), through struct fields and maps (`map[str, (i64) -> i64]`
+  works), and can be returned from functions.
+- Limitations: no closures or captures — only named top-level/module functions
+  are values; `async`, `sys`, plugin, trigger, and `impl`-method functions are
+  not usable as values (call them directly); calling a function value with the
+  wrong argument count or incompatible parameter/result types is a semantic
+  error; indirect calls have no compile-time devirtualization.
+
 ### Aggregates, iteration, and references
 
 - Matrices support `m[i]` row reads, `m[i, j]` element reads/writes, and
