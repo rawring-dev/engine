@@ -189,11 +189,12 @@ window_handle_event <- (state: u64, event: u64) -> nil:
     if kind == 256 or kind == 528:
         e7_store_u32(state + 8, 1)
     if kind == 1024:
-        # SDL3 SDL_MouseMotionEvent: x@40, y@44, xrel@48, yrel@52 (floats).
-        e7_store_u32(state + 12, e7_load_u32(event + 40))
-        e7_store_u32(state + 16, e7_load_u32(event + 44))
-        dx := e7_load_f32(state + 20) + e7_load_f32(event + 48)
-        dy := e7_load_f32(state + 24) + e7_load_f32(event + 52)
+        # SDL3 SDL_MouseMotionEvent: x@28, y@32, xrel@36, yrel@40 (floats;
+        # windowID/which/state are 32-bit, so no 8-byte padding before x).
+        e7_store_u32(state + 12, e7_load_u32(event + 28))
+        e7_store_u32(state + 16, e7_load_u32(event + 32))
+        dx := e7_load_f32(state + 20) + e7_load_f32(event + 36)
+        dy := e7_load_f32(state + 24) + e7_load_f32(event + 40)
         e7_store_f32(state + 20, dx)
         e7_store_f32(state + 24, dy)
     if kind == 526:
