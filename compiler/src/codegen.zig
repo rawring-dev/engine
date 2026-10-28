@@ -2568,6 +2568,17 @@ const Builder = struct {
         for (end_jumps.items) |index| try self.patch(index);
     }
 
+    /// Look up an enum declaration by type name.  Project modules may carry a
+    /// qualified name (`scene::document::ShapeKind`); the declaration tables are
+    /// keyed by the unqualified identifier.
+    fn enumDeclFor(self: *Builder, name: []const u8) ?*const ast.EnumDecl {
+        if (self.enums.get(name)) |def| return def;
+        if (std.mem.lastIndexOf(u8, name, "::")) |index| {
+            if (self.enums.get(name[index + 2 ..])) |def| return def;
+        }
+        return null;
+    }
+
     fn enumTag(def: *const ast.EnumDecl, name: []const u8) ?usize {
         for (def.variants, 0..) |variant, i| {
             if (std.mem.eql(u8, variant.name, name)) return i;
@@ -2671,7 +2682,7 @@ const Builder = struct {
         const scrutinee_ty = self.exprType(match_expr.scrutinee);
         if (scrutinee_ty) |ty| {
             if (self.namedBase(ty)) |named| {
-                if (self.enums.get(named.name)) |def| {
+                if (self.enumDeclFor(named.name)) |def| {
                     const temp = try self.allocLocal("<match>");
                     try self.lowerExpr(match_expr.scrutinee);
                     try self.emit(.{ .store_local = temp });

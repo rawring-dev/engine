@@ -1,0 +1,2 @@
+# Scene document library: editor file format plus ECS <-> document helpers.
+mod document

@@ -3187,3 +3187,117 @@ test "JIT calls inherent impl methods with receiver-first lowering" {
     // aggregate receivers alias the object pointer) = 13.
     try std.testing.expectEqual(@as(i32, 13), run());
 }
+
+test "host asset write/read round-trip and reload request flag" {
+    const path = ".zig-cache/e7-host-asset-roundtrip.json";
+    const payload = "{\"editor\":true}\n";
+    const path_handle = makeTestString(path);
+    const text_handle = makeTestString(payload);
+    try std.testing.expectEqual(@as(i64, 0), host_engine.e7_engine_write_asset(path_handle, text_handle));
+    const read = host_engine.e7_engine_read_shader(path_handle);
+    try std.testing.expect(read != 0);
+    const length = aggregate.e7_str_len(read);
+    const ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(read + 8)));
+    try std.testing.expectEqualStrings(payload, ptr[0..@intCast(length)]);
+    // Missing parent directory is reported as failure, not a panic.
+    try std.testing.expectEqual(
+        @as(i64, -1),
+        host_engine.e7_engine_write_asset(makeTestString(".zig-cache/no-such-dir/x.json"), text_handle),
+    );
+
+    host.reset();
+    defer host.reset();
+    try std.testing.expect(!host.takeReloadRequest());
+    host.requestReload();
+    try std.testing.expect(host.takeReloadRequest());
+    try std.testing.expect(!host.takeReloadRequest());
+}
+
+test "JIT runs the e7 editor project, swaps code, and captures a frame" {
+    host.reset();
+    defer host.reset();
+    host.setHeadless(true);
+    host.setMaxFrames(2);
+    host.setCaptureEnabled(true);
+
+    const candidates = [_][]const u8{
+        "engine/editor_main.e7",
+        "../engine/editor_main.e7",
+        "../../engine/editor_main.e7",
+    };
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    var root_path: []const u8 = "";
+    for (candidates) |candidate| {
+        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
+        probe.close(std.testing.io);
+        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
+        @memcpy(path_buffer[0..absolute.len], absolute);
+        root_path = path_buffer[0..absolute.len];
+        std.testing.allocator.free(absolute);
+        break;
+    }
+    if (root_path.len == 0) return error.SkipZigTest;
+
+    // Generation 0 requests a code swap (host requests it before the first
+    // frame); generation 1 is a fresh compile + fresh JIT of the same project.
+    var reloads: usize = 0;
+    for (0..2) |generation| {
+        var compiled = compiler.pipeline.compileProject(std.testing.allocator, root_path, .{}) catch |err| {
+            std.debug.print("editor project compile failed: {s}\n", .{@errorName(err)});
+            return error.TestUnexpectedResult;
+        };
+        defer compiled.deinit();
+        if (!compiled.analysis.ok()) {
+            for (compiled.analysis.diagnostics) |diagnostic| {
+                std.debug.print("editor project semantic: {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+            }
+            return error.TestUnexpectedResult;
+        }
+
+        ecs.e7_ecs_reset();
+        defer ecs.e7_ecs_reset();
+        for (compiled.analysis.resources) |resource| {
+            if (resource.plugin_id != null) continue;
+            try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_resource(resource.id, @intCast(resource.slots)));
+        }
+        for (compiled.analysis.components) |component| {
+            try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_component(component.id, @intCast(component.slots)));
+        }
+
+        const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+        defer std.testing.allocator.free(bytes);
+        var jit = try orc.Jit.init(std.testing.allocator);
+        defer jit.deinit();
+        try jit.addBytecodeBytes(bytes, "editor-project");
+
+        const SetInline = *const fn (i64) callconv(.c) void;
+        const set_inline = try jit.get(SetInline, "e7_task_set_inline");
+        set_inline(1);
+        // Inline execution is process-global; restore it so later task
+        // scheduling tests do not inherit synchronous execution.
+        defer set_inline(0);
+
+        if (generation == 0) host.requestReload();
+        const MainCtor = *const fn () callconv(.c) i64;
+        const main_ctor = try jit.get(MainCtor, "main");
+        const handle = main_ctor();
+        try std.testing.expect(handle != 0);
+        const result = task.e7_task_await(handle);
+        if (generation == 0) {
+            // Editor `main` returns 42 to request a host code swap.
+            try std.testing.expectEqual(@as(i64, 42), result);
+            reloads += 1;
+        } else {
+            try std.testing.expectEqual(@as(i64, 0), result);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), reloads);
+    try std.testing.expect(host.frames() >= 2);
+
+    var capture = host.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expectEqual(@as(u32, 960), capture.width);
+    try std.testing.expectEqual(@as(u32, 540), capture.height);
+    try std.testing.expectEqual(@as(usize, 960 * 540 * 4), capture.pixels.len);
+    try std.testing.expect(host.captureHasContent(capture));
+}

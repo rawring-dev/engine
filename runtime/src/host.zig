@@ -29,6 +29,9 @@ const State = struct {
     capture_enabled: bool = false,
     frames: i64 = 0,
     quit: bool = false,
+    /// Editor/hot-reload request: e7 asks the host loop to recompile and swap
+    /// the running project code at the next safe point.
+    reload_requested: bool = false,
     capture: ?Capture = null,
 };
 
@@ -48,6 +51,25 @@ pub fn reset() void {
     state.capture_enabled = false;
     state.frames = 0;
     state.quit = false;
+    state.reload_requested = false;
+}
+
+/// Ask the containing host loop to recompile and swap the project code.
+pub fn requestReload() void {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    state.reload_requested = true;
+}
+
+/// Consume a pending reload request.  The e7 loop calls this once per frame;
+/// a nonzero result means "shut the current code down and return the reload
+/// marker to the host" (see `editor-run`).
+pub fn takeReloadRequest() bool {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (!state.reload_requested) return false;
+    state.reload_requested = false;
+    return true;
 }
 
 pub fn setHeadless(enabled: bool) void {
@@ -128,6 +150,14 @@ pub export fn e7_host_capture(pixels: i64, width: i64, height: i64) callconv(.c)
     return storeCapture(pixels, width, height);
 }
 
+pub export fn e7_host_request_reload() callconv(.c) void {
+    requestReload();
+}
+
+pub export fn e7_host_take_reload_request() callconv(.c) i64 {
+    return @intFromBool(takeReloadRequest());
+}
+
 pub fn writePpm(io: std.Io, path: []const u8, capture: Capture) !void {
     var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
     defer file.close(io);
@@ -159,11 +189,13 @@ pub fn captureHasContent(capture: Capture) bool {
     return false;
 }
 
-pub fn symbols() [4]Symbol {
+pub fn symbols() [6]Symbol {
     return .{
         .{ .name = "e7_host_headless", .address = @intFromPtr(&e7_host_headless) },
         .{ .name = "e7_host_should_close", .address = @intFromPtr(&e7_host_should_close) },
         .{ .name = "e7_host_note_frame", .address = @intFromPtr(&e7_host_note_frame) },
         .{ .name = "e7_host_capture", .address = @intFromPtr(&e7_host_capture) },
+        .{ .name = "e7_host_request_reload", .address = @intFromPtr(&e7_host_request_reload) },
+        .{ .name = "e7_host_take_reload_request", .address = @intFromPtr(&e7_host_take_reload_request) },
     };
 }

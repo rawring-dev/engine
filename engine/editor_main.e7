@@ -1,0 +1,77 @@
+# e7 project editor entry point.  `editor-run` compiles this project through
+# the normal compiler/JIT pipeline (same host bridge as `engine-run`) and can
+# recompile it in place when the editor requests a code reload.
+#
+# The editor reuses the engine's core/gfx/ui modules and the scene document
+# library; project-specific editor policy lives in engine/editor/main.e7.
+mod platform
+mod core
+mod gfx
+mod ui
+mod scene
+mod editor
+
+use core::ecs::*;
+use core::events::*;
+use core::window::*;
+use ui::*;
+use editor::*;
+
+# Host entry point: `editor-run` looks up the project-level `main`.  The loop
+# lives at the project root so the compiled project exposes exactly one `main`;
+# the reusable editor module owns the plugin, systems, and scene document
+# editing logic.
+
+# ------------------------------------------------------------- main loop -----
+
+pub main <- async () -> i32:
+    commands := await query &mut Commands
+    commands.add_plugin(core::window::WindowPlugin)
+    commands.add_plugin(core::input::InputPlugin)
+    commands.add_plugin(core::time::TimePlugin)
+    commands.add_plugin(gfx::gpu::GfxPlugin)
+    commands.add_plugin(core::camera::CameraPlugin)
+    commands.add_plugin(ui::Ui)
+    commands.add_plugin(editor::Editor)
+    disown commands
+
+    window := await query &Window
+    await Init()
+    if window.handle == 0:
+        await DeInit()
+        ret 1
+
+    # Spawn the initial scene rows from the loaded document.
+    await EditorRefresh()
+    state := await query &mut EditorState
+    state.dirty = false
+
+    while not window.quit_requested:
+        await FrameInit()
+        await PreUpdate()
+
+        ui_state := await query &mut UIState
+        if ui_state.clicked_action != 0:
+            ui_state.action = ui_state.clicked_action
+            ui_state.clicked_action = 0
+            await UIButtonPressed()
+            ui_state.action = 0
+
+        await Update()
+        editor := await query &mut EditorState
+        if editor.dirty:
+            await EditorRefresh()
+            editor.dirty = false
+
+        await PostUpdate()
+        await Render()
+
+        # Code hot-swap request: the host recompiles and starts a fresh JIT for
+        # the same project.  Shut the current code down first so window/audio
+        # resources are released; the editor document was saved by the action.
+        if host::take_reload_request() != 0:
+            await DeInit()
+            ret 42
+
+    await DeInit()
+    ret 0

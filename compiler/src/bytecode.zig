@@ -158,6 +158,10 @@ pub const RuntimeFunction = enum(u8) {
     // cwd-relative listing in the runtime fs list format.  Reached from e7 via
     // the `host::list_dir` native method.
     engine_list_dir,
+    // Editor host bridge: cwd-relative asset writes and in-process code reload.
+    engine_write_asset,
+    host_request_reload,
+    host_take_reload_request,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -189,6 +193,9 @@ pub const RuntimeFunction = enum(u8) {
             .engine_time_now_ms => "e7_engine_time_now_ms",
             .engine_read_shader => "e7_engine_read_shader",
             .engine_list_dir => "e7_engine_list_dir",
+            .engine_write_asset => "e7_engine_write_asset",
+            .host_request_reload => "e7_host_request_reload",
+            .host_take_reload_request => "e7_host_take_reload_request",
             .host_headless => "e7_host_headless",
             .host_should_close => "e7_host_should_close",
             .host_note_frame => "e7_host_note_frame",
@@ -311,10 +318,13 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_query_begin => 4,
             .engine_read_shader => 1,
             .engine_list_dir => 1,
+            .engine_write_asset => 2,
             .engine_time_now_ms,
             .host_headless,
             .host_should_close,
             .host_note_frame,
+            .host_request_reload,
+            .host_take_reload_request,
             => 0,
             .host_capture => 3,
             .float_add, .float_sub, .float_mul, .float_div => 2,
@@ -364,7 +374,7 @@ pub const RuntimeFunction = enum(u8) {
     /// `void`, so callers that ignore the result stay simple.
     pub fn returnKind(self: RuntimeFunction) ReturnKind {
         return switch (self) {
-            .ecs_reset, .host_note_frame => .void_,
+            .ecs_reset, .host_note_frame, .host_request_reload => .void_,
             .ecs_register_resource,
             .ecs_register_component,
             .ecs_commands_insert_resource,

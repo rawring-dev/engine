@@ -16,7 +16,9 @@
 //!   str::from_bytes(p, n)   str::data(s)              str::cstr(s)   str::len(s)
 //!   ffi::bind(lib, symbol)  ffi::call4(fn, a, b, c, d)  ffi::handle(value)
 //!   host::time_now_ms()     host::read_shader(path)   host::read_asset(path)
-//!   host::list_dir(path)    host::capture(pixels, w, h)
+//!   host::list_dir(path)    host::write_asset(path, text)
+//!   host::capture(pixels, w, h)
+//!   host::request_reload()  host::take_reload_request()
 //!   image::load(path)       image::width(handle)      image::free(handle)
 //!
 //! The namespace names are ordinary identifiers in the grammar (`f32::sin` is
@@ -167,6 +169,12 @@ const host_methods = [_]Method{
     // Recursive asset scans list one directory level at a time.  The result is
     // the runtime fs list format: one name per line, directories end with `/`.
     .{ .name = "list_dir", .params = &.{str_}, .result = str_, .runtime = .engine_list_dir },
+    // Editor/document saves: create or truncate a cwd-relative file.
+    .{ .name = "write_asset", .params = &.{ str_, str_ }, .result = i64_, .runtime = .engine_write_asset },
+    // Hot reload: ask the host loop to recompile/swap the project code, and
+    // consume that request from the e7 main loop at a safe shutdown point.
+    .{ .name = "request_reload", .params = &.{}, .result = unit_, .runtime = .host_request_reload },
+    .{ .name = "take_reload_request", .params = &.{}, .result = i64_, .runtime = .host_take_reload_request },
     .{ .name = "headless", .params = &.{}, .result = i64_, .runtime = .host_headless },
     .{ .name = "should_close", .params = &.{}, .result = i64_, .runtime = .host_should_close },
     .{ .name = "note_frame", .params = &.{}, .result = unit_, .runtime = .host_note_frame },

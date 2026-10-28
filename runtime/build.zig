@@ -80,6 +80,38 @@ pub fn build(b: *std.Build) void {
     const run_engine_step = b.step("run-engine", "Build and run the e7 engine project");
     run_engine_step.dependOn(&run_engine.step);
 
+    // `editor-run`: the executable host for the e7 project editor.  It shares
+    // the engine host's native stack and adds the recompile/JIT swap loop for
+    // runtime code reloads (e7 main returns 42 to request a swap).
+    const editor_run = b.addExecutable(.{
+        .name = "editor-run",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/editor_run.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    editor_run.root_module.addImport("compiler", compiler);
+    editor_run.root_module.linkSystemLibrary("LLVM-23", .{});
+    editor_run.root_module.linkSystemLibrary("lapack", .{});
+    editor_run.root_module.linkSystemLibrary("blas", .{});
+    editor_run.root_module.linkSystemLibrary("curl", .{});
+    editor_run.root_module.linkSystemLibrary("ssl", .{});
+    editor_run.root_module.linkSystemLibrary("crypto", .{});
+    editor_run.root_module.linkSystemLibrary("ngtcp2", .{});
+    editor_run.root_module.linkSystemLibrary("ngtcp2_crypto_ossl", .{});
+    editor_run.root_module.linkSystemLibrary("datachannel", .{});
+    editor_run.root_module.linkSystemLibrary("png", .{});
+    editor_run.root_module.linkSystemLibrary("turbojpeg", .{});
+    b.installArtifact(editor_run);
+
+    const run_editor = b.addRunArtifact(editor_run);
+    if (b.args) |args| run_editor.addArgs(args);
+    run_editor.has_side_effects = true;
+    const run_editor_step = b.step("run-editor", "Build and run the e7 project editor");
+    run_editor_step.dependOn(&run_editor.step);
+
     const test_step = b.step("test", "Run runtime tests");
     const tests = b.addTest(.{ .root_module = runtime });
     // A plain Run inherits stdio and prints the full per-test transcript.  The
