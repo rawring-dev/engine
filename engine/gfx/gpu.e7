@@ -112,6 +112,56 @@ impl Gpu:
         )
         ret
 
+    # Physics-driven procedural renderable: the rotation is a unit quaternion
+    # (x, y, z, w) read straight from the physics orientation component.  No
+    # Euler-angle intermediate is involved on this path.
+    pub draw_renderable_quat <- (
+        gpu: &Gpu,
+        kind: i32,
+        px: i64,
+        py: i64,
+        pz: i64,
+        sx: i64,
+        sy: i64,
+        sz: i64,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        tr: i64,
+        tg: i64,
+        tb: i64,
+        texture: u64,
+    ) -> nil:
+        e7_engine_scene_draw_shape_quat(
+            gpu.scene, kind, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb, texture,
+        )
+        ret
+
+    # Physics-driven uploaded-mesh draw (quaternion rotation, no Euler path).
+    pub draw_custom_quat <- (
+        gpu: &Gpu,
+        mesh: u64,
+        px: i64,
+        py: i64,
+        pz: i64,
+        sx: i64,
+        sy: i64,
+        sz: i64,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        tr: i64,
+        tg: i64,
+        tb: i64,
+        texture: u64,
+    ) -> nil:
+        e7_engine_scene_draw_custom_quat(
+            gpu.scene, mesh, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb, texture,
+        )
+        ret
+
     # Uploaded custom mesh draw (same transform/material layout as above).
     pub draw_custom <- (
         gpu: &Gpu,

@@ -417,6 +417,9 @@ pub asin_approx <- (x: f32) -> f32:
     root := e7_f32_sqrt(1.0 - clamped * clamped)
     ret atan2_approx(clamped, root)
 
+# Euler decomposition helper for tooling/tests only.  The simulation and the
+# render path never call it: BodyOrientation is published and rendered as the
+# quaternion directly.
 pub quat_to_euler <- (q: Quat) -> Vec3:
     # Inverse of quat_from_euler for R = Rz(yaw) * Ry(pitch) * Rx(roll).
     # Standard active (right-handed) XYZ Euler decomposition.
