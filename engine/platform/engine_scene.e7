@@ -5,13 +5,13 @@
 # the runtime manifest is removed.
 
 e7_engine_scene_create <- (window: u64, vertex_shader: str, fragment_shader: str) -> u64:
-    width_out := e7_alloc_bytes(4)
-    height_out := e7_alloc_bytes(4)
+    width_out := ptr::alloc(4) as u64
+    height_out := ptr::alloc(4) as u64
     window_size(window, width_out, height_out)
-    width := e7_load_u32(width_out)
-    height := e7_load_u32(height_out)
-    e7_free_ptr(width_out)
-    e7_free_ptr(height_out)
+    width := ptr::load_u32(width_out)
+    height := ptr::load_u32(height_out)
+    ptr::free(width_out)
+    ptr::free(height_out)
     if width == 0 or height == 0:
         ret 0
     ret scene_create(window, width as i64, height as i64)
@@ -176,10 +176,10 @@ e7_engine_scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], lay
 e7_engine_scene_end_frame <- (scene: u64) -> nil:
     if scene == 0:
         ret
-    pixels_out := e7_alloc_bytes(8)
-    size_out := e7_alloc_bytes(8)
+    pixels_out := ptr::alloc(8) as u64
+    size_out := ptr::alloc(8) as u64
     drew := 0
-    if e7_host_headless() != 0:
+    if host::headless() != 0:
         drew = scene_draw(scene, pixels_out, size_out)
     else:
         # Desktop presentation: capture the frame and present the swapchain
@@ -187,12 +187,12 @@ e7_engine_scene_end_frame <- (scene: u64) -> nil:
         # as before and never touches the present queue.
         drew = scene_draw_present(scene, pixels_out, size_out)
     if drew != 0:
-        pixels := e7_load_u64(pixels_out)
+        pixels := ptr::load_u64(pixels_out)
         width := scene_width(scene)
         height := scene_height(scene)
-        e7_host_capture(pixels as u64, width, height)
-        e7_free_ptr(pixels)
-    e7_free_ptr(pixels_out)
-    e7_free_ptr(size_out)
-    e7_host_note_frame()
+        host::capture(pixels as u64, width, height)
+        ptr::free(pixels)
+    ptr::free(pixels_out)
+    ptr::free(size_out)
+    host::note_frame()
 

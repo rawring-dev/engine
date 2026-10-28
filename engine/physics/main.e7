@@ -202,7 +202,7 @@ pub ray_sphere <- (ray: Ray, center: Vec3, radius: f32) -> RayHit:
     disc := b * b - c
     if disc < 0.0:
         ret RayHit { hit: false, distance: 0.0, point: ray.origin }
-    root := e7_f32_sqrt(disc)
+    root := f32::sqrt(disc)
     t := 0.0 - b - root
     if t < 0.0:
         t = 0.0 - b + root
@@ -244,7 +244,7 @@ shape_extent_along <- (
     orientation: Quat,
     normal: Vec3,
 ) -> f32:
-    length := e7_f32_sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    length := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
     if length < 0.000001:
         ret 0.0
     nx := normal.x / length
@@ -254,16 +254,16 @@ shape_extent_along <- (
         ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
         ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
         az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
-        ex := e7_f32_abs(nx * ax.x + ny * ax.y + nz * ax.z) * half.x
-        ey := e7_f32_abs(nx * ay.x + ny * ay.y + nz * ay.z) * half.y
-        ez := e7_f32_abs(nx * az.x + ny * az.y + nz * az.z) * half.z
+        ex := f32::abs(nx * ax.x + ny * ax.y + nz * ax.z) * half.x
+        ey := f32::abs(nx * ay.x + ny * ay.y + nz * ay.z) * half.y
+        ez := f32::abs(nx * az.x + ny * az.y + nz * az.z) * half.z
         ret ex + ey + ez
     if shape == 2:
         axis := quat_rotate(
             Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w },
             Vec3 { x: 0.0, y: 1.0, z: 0.0 },
         )
-        ret radius + half_height * e7_f32_abs(nx * axis.x + ny * axis.y + nz * axis.z)
+        ret radius + half_height * f32::abs(nx * axis.x + ny * axis.y + nz * axis.z)
     ret radius
 
 # Contact manifold for two bodies, used by the main collision pass and by the
@@ -586,9 +586,9 @@ pub physics_step <- sys (
                         body.velocity[1] = result.vy
                         body.velocity[2] = result.vz
                         if not body.rotation_locked:
-                            body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
-                            body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
-                            body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                            body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
+                            body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
+                            body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
                         else:
                             body.angular_velocity[0] = 0.0
                             body.angular_velocity[1] = 0.0
@@ -630,9 +630,9 @@ pub physics_step <- sys (
                     body.velocity[1] = result.vy
                     body.velocity[2] = result.vz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
-                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
-                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                        body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
+                        body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
+                        body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
                     else:
                         body.angular_velocity[0] = 0.0
                         body.angular_velocity[1] = 0.0
@@ -647,7 +647,7 @@ pub physics_step <- sys (
                     ground,
                 )
                 if ground_push.x != 0.0 or ground_push.y != 0.0 or ground_push.z != 0.0:
-                    push_distance := e7_f32_sqrt(ground_push.x * ground_push.x + ground_push.y * ground_push.y + ground_push.z * ground_push.z)
+                    push_distance := f32::sqrt(ground_push.x * ground_push.x + ground_push.y * ground_push.y + ground_push.z * ground_push.z)
                     transform.translation[0] = transform.translation[0] + normal.x * push_distance * 0.9
                     transform.translation[1] = transform.translation[1] + normal.y * push_distance * 0.9
                     transform.translation[2] = transform.translation[2] + normal.z * push_distance * 0.9
@@ -675,9 +675,9 @@ pub physics_step <- sys (
                     body.velocity[1] = result.vy
                     body.velocity[2] = result.vz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(result.wx, -12.0, 12.0)
-                        body.angular_velocity[1] = e7_f32_clamp(result.wy, -12.0, 12.0)
-                        body.angular_velocity[2] = e7_f32_clamp(result.wz, -12.0, 12.0)
+                        body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
+                        body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
+                        body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
                     else:
                         body.angular_velocity[0] = 0.0
                         body.angular_velocity[1] = 0.0
@@ -695,8 +695,8 @@ pub physics_step <- sys (
 
             if flags.is_player:
                 yaw := world.camera_yaw
-                sin_yaw := e7_f32_sin(yaw)
-                cos_yaw := e7_f32_cos(yaw)
+                sin_yaw := f32::sin(yaw)
+                cos_yaw := f32::cos(yaw)
                 forward_x := sin_yaw
                 forward_z := 0.0 - cos_yaw
                 right_x := cos_yaw
@@ -715,7 +715,7 @@ pub physics_step <- sys (
                 if captured and input.move_left:
                     wish_x = wish_x - right_x
                     wish_z = wish_z - right_z
-                length := e7_f32_sqrt(wish_x * wish_x + wish_z * wish_z)
+                length := f32::sqrt(wish_x * wish_x + wish_z * wish_z)
                 speed := world.move_speed
                 if captured and input.sprint:
                     speed = speed * 2.5
@@ -835,9 +835,9 @@ pub physics_step <- sys (
                         Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
                     )
                 if points.len() == 0:
-                    points = e7_vec_push(points, contact.contact.x)
-                    points = e7_vec_push(points, contact.contact.y)
-                    points = e7_vec_push(points, contact.contact.z)
+                    points = vec::push(points, contact.contact.x)
+                    points = vec::push(points, contact.contact.y)
+                    points = vec::push(points, contact.contact.z)
                 transform.translation[0] = transform.translation[0] + contact.normal.x * contact.penetration * 0.85
                 transform.translation[1] = transform.translation[1] + contact.normal.y * contact.penetration * 0.85
                 transform.translation[2] = transform.translation[2] + contact.normal.z * contact.penetration * 0.85
@@ -931,9 +931,9 @@ pub physics_step <- sys (
                     body.velocity[1] = result.avy
                     body.velocity[2] = result.avz
                     if not body.rotation_locked:
-                        body.angular_velocity[0] = e7_f32_clamp(result.awx, -12.0, 12.0)
-                        body.angular_velocity[1] = e7_f32_clamp(result.awy, -12.0, 12.0)
-                        body.angular_velocity[2] = e7_f32_clamp(result.awz, -12.0, 12.0)
+                        body.angular_velocity[0] = f32::clamp(result.awx, -12.0, 12.0)
+                        body.angular_velocity[1] = f32::clamp(result.awy, -12.0, 12.0)
+                        body.angular_velocity[2] = f32::clamp(result.awz, -12.0, 12.0)
                     else:
                         body.angular_velocity[0] = 0.0
                         body.angular_velocity[1] = 0.0
@@ -956,23 +956,23 @@ pub physics_step <- sys (
             # Contact is inelastic: no residual normal velocity while
             # supported.  This removes the discrete-contact bouncing cycle.
             body.velocity[1] = 0.0
-            horizontal_speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[2])
+            horizontal_speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[2])
             if horizontal_speed < 0.75:
                 body.velocity[0] = body.velocity[0] * 0.5
                 body.velocity[2] = body.velocity[2] * 0.5
                 body.angular_velocity[0] = body.angular_velocity[0] * 0.35
                 body.angular_velocity[1] = body.angular_velocity[1] * 0.35
                 body.angular_velocity[2] = body.angular_velocity[2] * 0.35
-                if e7_f32_abs(body.angular_velocity[0]) < 0.02:
+                if f32::abs(body.angular_velocity[0]) < 0.02:
                     body.angular_velocity[0] = 0.0
-                if e7_f32_abs(body.angular_velocity[1]) < 0.02:
+                if f32::abs(body.angular_velocity[1]) < 0.02:
                     body.angular_velocity[1] = 0.0
-                if e7_f32_abs(body.angular_velocity[2]) < 0.02:
+                if f32::abs(body.angular_velocity[2]) < 0.02:
                     body.angular_velocity[2] = 0.0
 
         if not body.is_static and not sleeping and not flags.is_player:
-            linear_speed := e7_f32_abs(body.velocity[0]) + e7_f32_abs(body.velocity[1]) + e7_f32_abs(body.velocity[2])
-            angular_speed := e7_f32_abs(body.angular_velocity[0]) + e7_f32_abs(body.angular_velocity[1]) + e7_f32_abs(body.angular_velocity[2])
+            linear_speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
+            angular_speed := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
             if supported and linear_speed < 0.2 and angular_speed < 0.4:
                 sleep_timer = sleep_timer + dt
                 # Resting face contacts: bleed residual spin quickly instead of
@@ -1009,38 +1009,38 @@ pub physics_step <- sys (
             flags.half_height,
             Quat { x: q.x, y: q.y, z: q.z, w: q.w },
         )
-        ids = e7_vec_push(ids, id)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.x)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.y)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.min.z)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.x)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.y)
-        stored_bounds = e7_vec_push(stored_bounds, final_aabb.max.z)
-        stored_shapes = e7_vec_push(stored_shapes, flags.shape)
-        stored_radius = e7_vec_push(stored_radius, flags.radius)
-        stored_half_height = e7_vec_push(stored_half_height, flags.half_height)
-        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[0])
-        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[1])
-        stored_half = e7_vec_push(stored_half, body_bounds.half_extents[2])
-        stored_quats = e7_vec_push(stored_quats, q.x)
-        stored_quats = e7_vec_push(stored_quats, q.y)
-        stored_quats = e7_vec_push(stored_quats, q.z)
-        stored_quats = e7_vec_push(stored_quats, q.w)
-        stored_vel = e7_vec_push(stored_vel, body.velocity[0])
-        stored_vel = e7_vec_push(stored_vel, body.velocity[1])
-        stored_vel = e7_vec_push(stored_vel, body.velocity[2])
-        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[0])
-        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[1])
-        stored_ang = e7_vec_push(stored_ang, body.angular_velocity[2])
-        stored_inv_mass = e7_vec_push(stored_inv_mass, body.inv_mass)
+        ids = vec::push(ids, id)
+        stored_bounds = vec::push(stored_bounds, final_aabb.min.x)
+        stored_bounds = vec::push(stored_bounds, final_aabb.min.y)
+        stored_bounds = vec::push(stored_bounds, final_aabb.min.z)
+        stored_bounds = vec::push(stored_bounds, final_aabb.max.x)
+        stored_bounds = vec::push(stored_bounds, final_aabb.max.y)
+        stored_bounds = vec::push(stored_bounds, final_aabb.max.z)
+        stored_shapes = vec::push(stored_shapes, flags.shape)
+        stored_radius = vec::push(stored_radius, flags.radius)
+        stored_half_height = vec::push(stored_half_height, flags.half_height)
+        stored_half = vec::push(stored_half, body_bounds.half_extents[0])
+        stored_half = vec::push(stored_half, body_bounds.half_extents[1])
+        stored_half = vec::push(stored_half, body_bounds.half_extents[2])
+        stored_quats = vec::push(stored_quats, q.x)
+        stored_quats = vec::push(stored_quats, q.y)
+        stored_quats = vec::push(stored_quats, q.z)
+        stored_quats = vec::push(stored_quats, q.w)
+        stored_vel = vec::push(stored_vel, body.velocity[0])
+        stored_vel = vec::push(stored_vel, body.velocity[1])
+        stored_vel = vec::push(stored_vel, body.velocity[2])
+        stored_ang = vec::push(stored_ang, body.angular_velocity[0])
+        stored_ang = vec::push(stored_ang, body.angular_velocity[1])
+        stored_ang = vec::push(stored_ang, body.angular_velocity[2])
+        stored_inv_mass = vec::push(stored_inv_mass, body.inv_mass)
         locked_value := 0
         if body.rotation_locked:
             locked_value = 1
-        stored_locked = e7_vec_push(stored_locked, locked_value)
+        stored_locked = vec::push(stored_locked, locked_value)
         sleeping_value := 0
         if sleeping:
             sleeping_value = 1
-        stored_sleeping = e7_vec_push(stored_sleeping, sleeping_value)
+        stored_sleeping = vec::push(stored_sleeping, sleeping_value)
         body_count = body_count + 1
         broadphase_insert(
             &mut cells,
@@ -1062,7 +1062,7 @@ pub physics_step <- sys (
     # clear its sleep timer when nothing supports it.  Only sleeping bodies are
     # tested, so stable stacks keep sleeping; cheap vertical early-outs keep the
     # narrowphase tests limited to plausible supporting pairs.
-    plane_length := e7_f32_sqrt(plane_x * plane_x + plane_y * plane_y + plane_z * plane_z)
+    plane_length := f32::sqrt(plane_x * plane_x + plane_y * plane_y + plane_z * plane_z)
     support_nx := plane_x
     support_ny := plane_y
     support_nz := plane_z
@@ -1151,7 +1151,7 @@ pub physics_step <- sys (
                                 # Only a body whose top is near the sleeper's
                                 # bottom can support it; the narrowphase test
                                 # below confirms actual contact.
-                                if e7_f32_abs(other_top - sleeper_bottom) <= 1.0:
+                                if f32::abs(other_top - sleeper_bottom) <= 1.0:
                                     contact := pair_manifold(
                                         sleeper_shape,
                                         Vec3 { x: sleeper_x, y: sleeper_y, z: sleeper_z },
@@ -1200,15 +1200,15 @@ pub physics_step <- sys (
                 distance := dx * dx + dy * dy + dz * dz
                 if distance > 6.76:
                     cont
-                tie := e7_f32_abs(distance - best_distance) <= 0.000001
+                tie := f32::abs(distance - best_distance) <= 0.000001
                 if best_id == 0 or distance < best_distance - 0.000001 or (tie and flags.target_id < best_id):
                     best_id = flags.target_id
                     best_distance = distance
             pickup_state.held_id = best_id
 
     hold_yaw := world.camera_yaw
-    forward_x := e7_f32_sin(hold_yaw)
-    forward_z := 0.0 - e7_f32_cos(hold_yaw)
+    forward_x := f32::sin(hold_yaw)
+    forward_z := 0.0 - f32::cos(hold_yaw)
     pending_map := world.pending_impulses
     for (transform, body, flags) in hold_bodies:
         pending := pending_map[flags.target_id]
@@ -1218,9 +1218,9 @@ pub physics_step <- sys (
             body.velocity[1] = body.velocity[1] + pending[1]
             body.velocity[2] = body.velocity[2] + pending[2]
             if not body.rotation_locked:
-                body.angular_velocity[0] = e7_f32_clamp(body.angular_velocity[0] + pending[3], -12.0, 12.0)
-                body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + pending[4], -12.0, 12.0)
-                body.angular_velocity[2] = e7_f32_clamp(body.angular_velocity[2] + pending[5], -12.0, 12.0)
+                body.angular_velocity[0] = f32::clamp(body.angular_velocity[0] + pending[3], -12.0, 12.0)
+                body.angular_velocity[1] = f32::clamp(body.angular_velocity[1] + pending[4], -12.0, 12.0)
+                body.angular_velocity[2] = f32::clamp(body.angular_velocity[2] + pending[5], -12.0, 12.0)
         if not flags.is_pickup:
             cont
         if flags.target_id == pickup_state.held_id:
@@ -1238,7 +1238,7 @@ pub physics_step <- sys (
         else:
             flags.held_by = 0
         if released and flags.target_id == released_id and not body.rotation_locked:
-            body.angular_velocity[1] = e7_f32_clamp(body.angular_velocity[1] + 1.6, -10.0, 10.0)
+            body.angular_velocity[1] = f32::clamp(body.angular_velocity[1] + 1.6, -10.0, 10.0)
     world.pending_impulses = map[i64, [f32]] {}
 
     # ------------------------------------------- camera look + follow (same step)
@@ -1257,7 +1257,7 @@ pub physics_step <- sys (
                 camera.pitch = camera.pitch + keyboard_look
             if input.look_down:
                 camera.pitch = camera.pitch - keyboard_look
-        camera.pitch = e7_f32_clamp(camera.pitch, -1.5533430343, 1.5533430343)
+        camera.pitch = f32::clamp(camera.pitch, -1.5533430343, 1.5533430343)
         camera.position[0] = world.player_x
         camera.position[1] = world.player_y + 1.55
         camera.position[2] = world.player_z
@@ -1286,12 +1286,12 @@ pub physics_raycast <- sys (
     colliders: select &Transform, &BoxCollider from Components,
 ):
     for camera in cameras:
-        sin_yaw := e7_f32_sin(camera.yaw)
-        cos_yaw := e7_f32_cos(camera.yaw)
-        cos_pitch := e7_f32_cos(camera.pitch)
+        sin_yaw := f32::sin(camera.yaw)
+        cos_yaw := f32::cos(camera.yaw)
+        cos_pitch := f32::cos(camera.pitch)
         direction := Vec3 {
             x: sin_yaw * cos_pitch,
-            y: e7_f32_sin(camera.pitch),
+            y: f32::sin(camera.pitch),
             z: 0.0 - cos_yaw * cos_pitch,
         }
         origin := Vec3 {

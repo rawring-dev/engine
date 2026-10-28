@@ -462,10 +462,11 @@ The table lives in [`compiler/src/native_methods.zig`](compiler/src/native_metho
 Direct `e7_*` calls remain the documented escape hatch for intrinsics without a
 native-method spelling; the explicit boundary list in
 [`compiler/src/intrinsic_audit.zig`](compiler/src/intrinsic_audit.zig) records
-which ones may stay. That audit scans every `engine/**.e7` file and is
-report-only by default while the engine migration is in progress; run
+which ones may stay. The audit scans every `engine/**.e7` and `tests/e7/**.e7`
+file and is report-only by default; run
 `E7_INTRINSIC_AUDIT=strict zig build test` to enforce it (direct calls outside
-the boundary then fail the audit test).
+the boundary then fail the audit test). The engine and e7 test suites are
+migrated, so the strict audit currently reports zero calls.
 
 ### Aggregates, iteration, and references
 

@@ -59,11 +59,11 @@ test_boolean_logic <- () -> i64:
 test_float_math <- () -> i64:
     half := 1.0 / 2.0
     assert_f32_near(half, 0.5, 0.000001)
-    assert_f32_near(e7_f32_sqrt(9.0), 3.0, 0.000001)
-    assert_f32_near(e7_f32_sin(0.0), 0.0, 0.000001)
-    assert_f32_near(e7_f32_cos(0.0), 1.0, 0.000001)
-    assert_f32_near(e7_f32_abs(0.0 - 2.5), 2.5, 0.000001)
-    assert_i64_near(e7_f32_to_milli(half), 500, 1)
+    assert_f32_near(f32::sqrt(9.0), 3.0, 0.000001)
+    assert_f32_near(f32::sin(0.0), 0.0, 0.000001)
+    assert_f32_near(f32::cos(0.0), 1.0, 0.000001)
+    assert_f32_near(f32::abs(0.0 - 2.5), 2.5, 0.000001)
+    assert_i64_near(f32::to_milli(half), 500, 1)
     ret 0
 
 test_recursion_and_loops <- () -> i64:

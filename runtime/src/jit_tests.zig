@@ -825,31 +825,31 @@ test "e7 host frame limit and capture intrinsics" {
 
     const source =
         \\host_probe <- () -> i64:
-        \\    if e7_host_headless() == 0:
+        \\    if host::headless() == 0:
         \\        ret -1
-        \\    pixels := e7_alloc_bytes(64)
-        \\    e7_store_u32(pixels + 0, 4294967295)
-        \\    e7_store_u32(pixels + 4, 4294967295)
-        \\    e7_store_u32(pixels + 8, 4294967295)
-        \\    e7_store_u32(pixels + 12, 4294967295)
-        \\    e7_store_u32(pixels + 16, 4294967295)
-        \\    e7_store_u32(pixels + 20, 4294967295)
-        \\    e7_store_u32(pixels + 24, 4294967295)
-        \\    e7_store_u32(pixels + 28, 4294967295)
-        \\    e7_store_u32(pixels + 32, 4294967295)
-        \\    e7_store_u32(pixels + 36, 4294967295)
-        \\    e7_store_u32(pixels + 40, 4294967295)
-        \\    e7_store_u32(pixels + 44, 4294967295)
-        \\    e7_store_u32(pixels + 48, 4294967295)
-        \\    e7_store_u32(pixels + 52, 4294967295)
-        \\    e7_store_u32(pixels + 56, 4294967295)
-        \\    e7_store_u32(pixels + 60, 4294967295)
-        \\    captured := e7_host_capture(pixels as u64, 4, 4)
-        \\    e7_free_ptr(pixels)
+        \\    pixels := ptr::alloc(64) as u64
+        \\    ptr::store_u32(pixels + 0, 4294967295)
+        \\    ptr::store_u32(pixels + 4, 4294967295)
+        \\    ptr::store_u32(pixels + 8, 4294967295)
+        \\    ptr::store_u32(pixels + 12, 4294967295)
+        \\    ptr::store_u32(pixels + 16, 4294967295)
+        \\    ptr::store_u32(pixels + 20, 4294967295)
+        \\    ptr::store_u32(pixels + 24, 4294967295)
+        \\    ptr::store_u32(pixels + 28, 4294967295)
+        \\    ptr::store_u32(pixels + 32, 4294967295)
+        \\    ptr::store_u32(pixels + 36, 4294967295)
+        \\    ptr::store_u32(pixels + 40, 4294967295)
+        \\    ptr::store_u32(pixels + 44, 4294967295)
+        \\    ptr::store_u32(pixels + 48, 4294967295)
+        \\    ptr::store_u32(pixels + 52, 4294967295)
+        \\    ptr::store_u32(pixels + 56, 4294967295)
+        \\    ptr::store_u32(pixels + 60, 4294967295)
+        \\    captured := host::capture(pixels as u64, 4, 4)
+        \\    ptr::free(pixels)
         \\    if captured != 0:
         \\        ret -2
-        \\    e7_host_note_frame()
-        \\    if e7_host_should_close() == 0:
+        \\    host::note_frame()
+        \\    if host::should_close() == 0:
         \\        ret -3
         \\    ret 0
     ;
@@ -878,8 +878,8 @@ test "e7 source binds and calls libc strlen through the generic C FFI" {
     const source = try std.fmt.allocPrint(
         std.testing.allocator,
         \\strlen_len <- () -> u64:
-        \\    addr := e7_cffi_bind("{s}", "strlen")
-        \\    ret e7_ffi_call1(addr, e7_str_data("hello"))
+        \\    addr := ffi::bind("{s}", "strlen")
+        \\    ret ffi::call1(addr, str::data("hello") as u64)
     ,
         .{library_path},
     );
@@ -923,26 +923,26 @@ test "e7 source creates an SDL window through the C FFI" {
 
     const source =
         \\window_probe <- () -> u64:
-        \\    driver_key := e7_cstr("SDL_VIDEODRIVER")
-        \\    driver_value := e7_cstr("dummy")
-        \\    set_hint := e7_cffi_bind("SDL3", "SDL_SetHint")
-        \\    e7_ffi_call2(set_hint, driver_key, driver_value)
-        \\    init := e7_cffi_bind("SDL3", "SDL_InitSubSystem")
-        \\    rc := e7_ffi_call1(init, 32)
+        \\    driver_key := str::cstr("SDL_VIDEODRIVER") as u64
+        \\    driver_value := str::cstr("dummy") as u64
+        \\    set_hint := ffi::bind("SDL3", "SDL_SetHint")
+        \\    ffi::call2(set_hint, driver_key, driver_value)
+        \\    init := ffi::bind("SDL3", "SDL_InitSubSystem")
+        \\    rc := ffi::call1(init, 32)
         \\    if rc == 0:
-        \\        e7_free_ptr(driver_key)
-        \\        e7_free_ptr(driver_value)
+        \\        ptr::free(driver_key)
+        \\        ptr::free(driver_value)
         \\        ret 0
-        \\    title := e7_cstr("e7 SDL window")
-        \\    create := e7_cffi_bind("SDL3", "SDL_CreateWindow")
-        \\    win := e7_ffi_call4(create, title, 64, 48, 8)
-        \\    destroy := e7_cffi_bind("SDL3", "SDL_DestroyWindow")
-        \\    quit := e7_cffi_bind("SDL3", "SDL_QuitSubSystem")
-        \\    e7_ffi_call1(destroy, win)
-        \\    e7_ffi_call1(quit, 32)
-        \\    e7_free_ptr(title)
-        \\    e7_free_ptr(driver_key)
-        \\    e7_free_ptr(driver_value)
+        \\    title := str::cstr("e7 SDL window") as u64
+        \\    create := ffi::bind("SDL3", "SDL_CreateWindow")
+        \\    win := ffi::call4(create, title, 64, 48, 8)
+        \\    destroy := ffi::bind("SDL3", "SDL_DestroyWindow")
+        \\    quit := ffi::bind("SDL3", "SDL_QuitSubSystem")
+        \\    ffi::call1(destroy, win)
+        \\    ffi::call1(quit, 32)
+        \\    ptr::free(title)
+        \\    ptr::free(driver_key)
+        \\    ptr::free(driver_value)
         \\    if win == 0:
         \\        ret 0
         \\    ret 1
@@ -973,43 +973,43 @@ test "e7 source creates a Vulkan instance and enumerates devices through the C F
 
     const source =
         \\vulkan_probe <- () -> i64:
-        \\    create := e7_cffi_bind("vulkan", "vkCreateInstance")
+        \\    create := ffi::bind("vulkan", "vkCreateInstance")
         \\    if create == 0:
         \\        ret -3
-        \\    app_name := e7_cstr("engine7-e7")
-        \\    engine_name := e7_cstr("engine7")
-        \\    app := e7_alloc_bytes(48)
-        \\    e7_store_u32(app, 0)
-        \\    e7_store_u32(app + 24, 1)
-        \\    e7_store_u64(app + 16, app_name)
-        \\    e7_store_u32(app + 24, 1)
-        \\    e7_store_u64(app + 32, engine_name)
-        \\    e7_store_u32(app + 40, 1)
-        \\    e7_store_u32(app + 44, 4198400)
-        \\    info := e7_alloc_bytes(64)
-        \\    e7_store_u32(info, 1)
-        \\    e7_store_u64(info + 24, app)
-        \\    instance_out := e7_alloc_bytes(8)
-        \\    result := e7_ffi_call3(create, info, 0, instance_out)
-        \\    e7_free_ptr(app_name)
-        \\    e7_free_ptr(engine_name)
+        \\    app_name := str::cstr("engine7-e7") as u64
+        \\    engine_name := str::cstr("engine7") as u64
+        \\    app := ptr::alloc(48) as u64
+        \\    ptr::store_u32(app, 0)
+        \\    ptr::store_u32(app + 24, 1)
+        \\    ptr::store_u64(app + 16, app_name)
+        \\    ptr::store_u32(app + 24, 1)
+        \\    ptr::store_u64(app + 32, engine_name)
+        \\    ptr::store_u32(app + 40, 1)
+        \\    ptr::store_u32(app + 44, 4198400)
+        \\    info := ptr::alloc(64) as u64
+        \\    ptr::store_u32(info, 1)
+        \\    ptr::store_u64(info + 24, app)
+        \\    instance_out := ptr::alloc(8) as u64
+        \\    result := ffi::call3(create, info, 0, instance_out)
+        \\    ptr::free(app_name)
+        \\    ptr::free(engine_name)
         \\    if result != 0:
-        \\        e7_free_ptr(app)
-        \\        e7_free_ptr(info)
-        \\        e7_free_ptr(instance_out)
+        \\        ptr::free(app)
+        \\        ptr::free(info)
+        \\        ptr::free(instance_out)
         \\        ret -2
-        \\    instance := e7_load_u64(instance_out)
-        \\    enumerate := e7_cffi_bind("vulkan", "vkEnumeratePhysicalDevices")
-        \\    count_out := e7_alloc_bytes(8)
-        \\    e7_store_u32(count_out, 0)
-        \\    enum_result := e7_ffi_call3(enumerate, instance, count_out, 0)
-        \\    count := e7_load_u32(count_out)
-        \\    destroy := e7_cffi_bind("vulkan", "vkDestroyInstance")
-        \\    e7_ffi_call2(destroy, instance, 0)
-        \\    e7_free_ptr(app)
-        \\    e7_free_ptr(info)
-        \\    e7_free_ptr(instance_out)
-        \\    e7_free_ptr(count_out)
+        \\    instance := ptr::load_u64(instance_out)
+        \\    enumerate := ffi::bind("vulkan", "vkEnumeratePhysicalDevices")
+        \\    count_out := ptr::alloc(8) as u64
+        \\    ptr::store_u32(count_out, 0)
+        \\    enum_result := ffi::call3(enumerate, instance, count_out, 0)
+        \\    count := ptr::load_u32(count_out)
+        \\    destroy := ffi::bind("vulkan", "vkDestroyInstance")
+        \\    ffi::call2(destroy, instance, 0)
+        \\    ptr::free(app)
+        \\    ptr::free(info)
+        \\    ptr::free(instance_out)
+        \\    ptr::free(count_out)
         \\    if enum_result != 0:
         \\        ret 0
         \\    ret count
@@ -1045,18 +1045,18 @@ test "e7 SDL platform module initializes video, creates, sizes, pumps, and destr
         \\    if win == 0:
         \\        video_quit()
         \\        ret -2
-        \\    out_w := e7_alloc_bytes(4)
-        \\    out_h := e7_alloc_bytes(4)
+        \\    out_w := ptr::alloc(4) as u64
+        \\    out_h := ptr::alloc(4) as u64
         \\    window_size(win, out_w, out_h)
-        \\    width := e7_load_u32(out_w)
-        \\    height := e7_load_u32(out_h)
+        \\    width := ptr::load_u32(out_w)
+        \\    height := ptr::load_u32(out_h)
         \\    key := key_down(win, 4)
         \\    buttons := mouse_buttons(win)
         \\    mouse := mouse_x(win) + mouse_y(win) + mouse_dx(win) + mouse_dy(win)
         \\    pump_result := window_pump(win)
         \\    window_destroy(win)
-        \\    e7_free_ptr(out_w)
-        \\    e7_free_ptr(out_h)
+        \\    ptr::free(out_w)
+        \\    ptr::free(out_h)
         \\    video_quit()
         \\    if width <= 0:
         \\        ret -3
@@ -1119,27 +1119,27 @@ test "e7 SDL platform decodes SDL3 mouse motion fields and accumulates deltas" {
         \\    if win == 0:
         \\        video_quit()
         \\        ret -2
-        \\    ev := e7_alloc_bytes(128)
-        \\    e7_store_u32(ev, 1024)
-        \\    e7_store_f32(ev + 28, 100.0)
-        \\    e7_store_f32(ev + 32, 200.0)
-        \\    e7_store_f32(ev + 36, 5.0)
-        \\    e7_store_f32(ev + 40, -7.0)
+        \\    ev := ptr::alloc(128) as u64
+        \\    ptr::store_u32(ev, 1024)
+        \\    ptr::store_f32(ev + 28, 100.0)
+        \\    ptr::store_f32(ev + 32, 200.0)
+        \\    ptr::store_f32(ev + 36, 5.0)
+        \\    ptr::store_f32(ev + 40, -7.0)
         \\    window_handle_event(win, ev)
         \\    x1 := mouse_x(win)
         \\    y1 := mouse_y(win)
         \\    dx1 := mouse_dx(win)
         \\    dy1 := mouse_dy(win)
-        \\    e7_store_f32(ev + 28, 110.0)
-        \\    e7_store_f32(ev + 32, 220.0)
-        \\    e7_store_f32(ev + 36, 7.0)
-        \\    e7_store_f32(ev + 40, -3.0)
+        \\    ptr::store_f32(ev + 28, 110.0)
+        \\    ptr::store_f32(ev + 32, 220.0)
+        \\    ptr::store_f32(ev + 36, 7.0)
+        \\    ptr::store_f32(ev + 40, -3.0)
         \\    window_handle_event(win, ev)
         \\    x2 := mouse_x(win)
         \\    y2 := mouse_y(win)
         \\    dx2 := mouse_dx(win)
         \\    dy2 := mouse_dy(win)
-        \\    e7_free_ptr(ev)
+        \\    ptr::free(ev)
         \\    window_destroy(win)
         \\    video_quit()
         \\    if x1 != 100 or y1 != 200 or dx1 != 5 or dy1 != -7:
@@ -1200,16 +1200,16 @@ test "e7 SDL platform reports a window resize once" {
         \\        video_quit()
         \\        ret -2
         \\    set_size := bind_sdl("SDL_SetWindowSize")
-        \\    e7_ffi_call3(set_size, e7_load_u64(win), 80, 60)
+        \\    ffi::call3(set_size, ptr::load_u64(win), 80, 60)
         \\    window_sync_size(win)
-        \\    out_w := e7_alloc_bytes(4)
-        \\    out_h := e7_alloc_bytes(4)
+        \\    out_w := ptr::alloc(4) as u64
+        \\    out_h := ptr::alloc(4) as u64
         \\    first := window_take_resize(win, out_w, out_h)
-        \\    width := e7_load_u32(out_w)
-        \\    height := e7_load_u32(out_h)
+        \\    width := ptr::load_u32(out_w)
+        \\    height := ptr::load_u32(out_h)
         \\    second := window_take_resize(win, out_w, out_h)
-        \\    e7_free_ptr(out_w)
-        \\    e7_free_ptr(out_h)
+        \\    ptr::free(out_w)
+        \\    ptr::free(out_h)
         \\    window_destroy(win)
         \\    video_quit()
         \\    if first == 0 or width != 80 or height != 60:
@@ -1267,53 +1267,53 @@ test "e7 SDL+Vulkan platform module creates a window surface" {
         \\    if win == 0:
         \\        video_quit()
         \\        ret 0
-        \\    ext_count := e7_alloc_bytes(4)
-        \\    get_ext := e7_cffi_bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
-        \\    exts := e7_ffi_call1(get_ext, ext_count)
+        \\    ext_count := ptr::alloc(4) as u64
+        \\    get_ext := ffi::bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
+        \\    exts := ffi::call1(get_ext, ext_count)
         \\    if exts == 0:
         \\        window_destroy(win)
-        \\        e7_free_ptr(ext_count)
+        \\        ptr::free(ext_count)
         \\        video_quit()
         \\        ret 0
-        \\    count := e7_load_u32(ext_count)
-        \\    ext_array := e7_alloc_bytes(count * 8)
+        \\    count := ptr::load_u32(ext_count)
+        \\    ext_array := ptr::alloc(count * 8) as u64
         \\    if count > 0:
-        \\        e7_store_u64(ext_array, e7_load_u64(exts))
+        \\        ptr::store_u64(ext_array, ptr::load_u64(exts))
         \\    if count > 1:
-        \\        e7_store_u64(ext_array + 8, e7_load_u64(exts + 8))
+        \\        ptr::store_u64(ext_array + 8, ptr::load_u64(exts + 8))
         \\    if count > 2:
-        \\        e7_store_u64(ext_array + 16, e7_load_u64(exts + 16))
+        \\        ptr::store_u64(ext_array + 16, ptr::load_u64(exts + 16))
         \\    if count > 3:
-        \\        e7_store_u64(ext_array + 24, e7_load_u64(exts + 24))
+        \\        ptr::store_u64(ext_array + 24, ptr::load_u64(exts + 24))
         \\    if count > 4:
-        \\        e7_store_u64(ext_array + 32, e7_load_u64(exts + 32))
+        \\        ptr::store_u64(ext_array + 32, ptr::load_u64(exts + 32))
         \\    if count > 5:
-        \\        e7_store_u64(ext_array + 40, e7_load_u64(exts + 40))
+        \\        ptr::store_u64(ext_array + 40, ptr::load_u64(exts + 40))
         \\    if count > 6:
-        \\        e7_store_u64(ext_array + 48, e7_load_u64(exts + 48))
+        \\        ptr::store_u64(ext_array + 48, ptr::load_u64(exts + 48))
         \\    if count > 7:
-        \\        e7_store_u64(ext_array + 56, e7_load_u64(exts + 56))
-        \\    instance_out := e7_alloc_bytes(8)
+        \\        ptr::store_u64(ext_array + 56, ptr::load_u64(exts + 56))
+        \\    instance_out := ptr::alloc(8) as u64
         \\    created := vulkan_instance_create(ext_array, count, instance_out)
         \\    if created != 0:
         \\        window_destroy(win)
-        \\        e7_free_ptr(ext_count)
-        \\        e7_free_ptr(ext_array)
-        \\        e7_free_ptr(instance_out)
+        \\        ptr::free(ext_count)
+        \\        ptr::free(ext_array)
+        \\        ptr::free(instance_out)
         \\        video_quit()
         \\        ret 0
-        \\    instance := e7_load_u64(instance_out)
-        \\    surface_out := e7_alloc_bytes(8)
+        \\    instance := ptr::load_u64(instance_out)
+        \\    surface_out := ptr::alloc(8) as u64
         \\    created_surface := vulkan_surface_create(win, instance, surface_out)
-        \\    surface := e7_load_u64(surface_out)
+        \\    surface := ptr::load_u64(surface_out)
         \\    if surface != 0:
         \\        vulkan_surface_destroy(instance, surface)
         \\    vulkan_instance_destroy(instance)
         \\    window_destroy(win)
-        \\    e7_free_ptr(ext_count)
-        \\    e7_free_ptr(ext_array)
-        \\    e7_free_ptr(instance_out)
-        \\    e7_free_ptr(surface_out)
+        \\    ptr::free(ext_count)
+        \\    ptr::free(ext_array)
+        \\    ptr::free(instance_out)
+        \\    ptr::free(surface_out)
         \\    video_quit()
         \\    if created_surface == 0:
         \\        ret 0
@@ -1357,142 +1357,142 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\    if win == 0:
         \\        video_quit()
         \\        ret 0
-        \\    ext_count := e7_alloc_bytes(4)
-        \\    get_ext := e7_cffi_bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
-        \\    exts := e7_ffi_call1(get_ext, ext_count)
+        \\    ext_count := ptr::alloc(4) as u64
+        \\    get_ext := ffi::bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
+        \\    exts := ffi::call1(get_ext, ext_count)
         \\    if exts == 0:
         \\        window_destroy(win)
-        \\        e7_free_ptr(ext_count)
+        \\        ptr::free(ext_count)
         \\        video_quit()
         \\        ret 0
-        \\    count := e7_load_u32(ext_count)
-        \\    ext_array := e7_alloc_bytes(count * 8)
+        \\    count := ptr::load_u32(ext_count)
+        \\    ext_array := ptr::alloc(count * 8) as u64
         \\    if count > 0:
-        \\        e7_store_u64(ext_array, e7_load_u64(exts))
+        \\        ptr::store_u64(ext_array, ptr::load_u64(exts))
         \\    if count > 1:
-        \\        e7_store_u64(ext_array + 8, e7_load_u64(exts + 8))
+        \\        ptr::store_u64(ext_array + 8, ptr::load_u64(exts + 8))
         \\    if count > 2:
-        \\        e7_store_u64(ext_array + 16, e7_load_u64(exts + 16))
+        \\        ptr::store_u64(ext_array + 16, ptr::load_u64(exts + 16))
         \\    if count > 3:
-        \\        e7_store_u64(ext_array + 24, e7_load_u64(exts + 24))
-        \\    instance_out := e7_alloc_bytes(8)
+        \\        ptr::store_u64(ext_array + 24, ptr::load_u64(exts + 24))
+        \\    instance_out := ptr::alloc(8) as u64
         \\    created := vulkan_instance_create(ext_array, count, instance_out)
-        \\    instance := e7_load_u64(instance_out)
-        \\    surface_out := e7_alloc_bytes(8)
-        \\    device_out := e7_alloc_bytes(8)
-        \\    queue_out := e7_alloc_bytes(8)
-        \\    family_out := e7_alloc_bytes(4)
-        \\    physical_out := e7_alloc_bytes(8)
+        \\    instance := ptr::load_u64(instance_out)
+        \\    surface_out := ptr::alloc(8) as u64
+        \\    device_out := ptr::alloc(8) as u64
+        \\    queue_out := ptr::alloc(8) as u64
+        \\    family_out := ptr::alloc(4) as u64
+        \\    physical_out := ptr::alloc(8) as u64
         \\    result := 0
         \\    surface := 0
         \\    if created == 0:
         \\        surface_created := vulkan_surface_create(win, instance, surface_out)
-        \\        surface = e7_load_u64(surface_out)
+        \\        surface = ptr::load_u64(surface_out)
         \\        result = vulkan_device_create(instance, surface, device_out, queue_out, family_out, physical_out)
         \\        if result != 0:
-        \\            device := e7_load_u64(device_out)
-        \\            queue := e7_load_u64(queue_out)
-        \\            physical := e7_load_u64(physical_out)
-        \\            family := e7_load_u32(family_out)
+        \\            device := ptr::load_u64(device_out)
+        \\            queue := ptr::load_u64(queue_out)
+        \\            physical := ptr::load_u64(physical_out)
+        \\            family := ptr::load_u32(family_out)
         \\            submit_ok := vulkan_submit_empty(device, queue, family)
-        \\            swapchain_out := e7_alloc_bytes(8)
-        \\            format_out := e7_alloc_bytes(4)
-        \\            width_out := e7_alloc_bytes(4)
-        \\            height_out := e7_alloc_bytes(4)
-        \\            images_out := e7_alloc_bytes(8)
-        \\            image_count_out := e7_alloc_bytes(4)
+        \\            swapchain_out := ptr::alloc(8) as u64
+        \\            format_out := ptr::alloc(4) as u64
+        \\            width_out := ptr::alloc(4) as u64
+        \\            height_out := ptr::alloc(4) as u64
+        \\            images_out := ptr::alloc(8) as u64
+        \\            image_count_out := ptr::alloc(4) as u64
         \\            swapchain_created := vulkan_swapchain_create(device, physical, surface, win, swapchain_out, format_out, width_out, height_out, images_out, image_count_out)
-        \\            images := e7_load_u64(images_out)
+        \\            images := ptr::load_u64(images_out)
         \\            if swapchain_created != 0:
-        \\                swapchain := e7_load_u64(swapchain_out)
-        \\                width := e7_load_u32(width_out)
-        \\                height := e7_load_u32(height_out)
-        \\                image_count := e7_load_u32(image_count_out)
-        \\                image_format := e7_load_u32(format_out)
-        \\                rp_targets := e7_alloc_bytes(8)
-        \\                view_targets := e7_alloc_bytes(8)
-        \\                fb_targets := e7_alloc_bytes(8)
+        \\                swapchain := ptr::load_u64(swapchain_out)
+        \\                width := ptr::load_u32(width_out)
+        \\                height := ptr::load_u32(height_out)
+        \\                image_count := ptr::load_u32(image_count_out)
+        \\                image_format := ptr::load_u32(format_out)
+        \\                rp_targets := ptr::alloc(8) as u64
+        \\                view_targets := ptr::alloc(8) as u64
+        \\                fb_targets := ptr::alloc(8) as u64
         \\                targets_ok := vulkan_render_targets(device, images, image_count, image_format, width, height, 0, rp_targets, view_targets, fb_targets)
-        \\                render_pass_handle := e7_load_u64(rp_targets)
-        \\                views_handle := e7_load_u64(view_targets)
-        \\                framebuffers_handle := e7_load_u64(fb_targets)
-        \\                uniform_layout_out := e7_alloc_bytes(8)
-        \\                uniform_pool_out := e7_alloc_bytes(8)
-        \\                uniform_set_out := e7_alloc_bytes(8)
-        \\                uniform_buffer_out := e7_alloc_bytes(8)
-        \\                uniform_memory_out := e7_alloc_bytes(8)
-        \\                uniform_mapped_out := e7_alloc_bytes(8)
-        \\                uniform_size_out := e7_alloc_bytes(8)
+        \\                render_pass_handle := ptr::load_u64(rp_targets)
+        \\                views_handle := ptr::load_u64(view_targets)
+        \\                framebuffers_handle := ptr::load_u64(fb_targets)
+        \\                uniform_layout_out := ptr::alloc(8) as u64
+        \\                uniform_pool_out := ptr::alloc(8) as u64
+        \\                uniform_set_out := ptr::alloc(8) as u64
+        \\                uniform_buffer_out := ptr::alloc(8) as u64
+        \\                uniform_memory_out := ptr::alloc(8) as u64
+        \\                uniform_mapped_out := ptr::alloc(8) as u64
+        \\                uniform_size_out := ptr::alloc(8) as u64
         \\                uniform_ok := vulkan_uniform_resources(device, physical, 1, uniform_layout_out, uniform_pool_out, uniform_set_out, uniform_buffer_out, uniform_memory_out, uniform_mapped_out, uniform_size_out)
         \\                if uniform_ok != 0:
-        \\                    vulkan_uniform_resources_destroy(device, e7_load_u64(uniform_layout_out), e7_load_u64(uniform_pool_out), e7_load_u64(uniform_buffer_out), e7_load_u64(uniform_memory_out))
-        \\                e7_free_ptr(uniform_layout_out)
-        \\                e7_free_ptr(uniform_pool_out)
-        \\                e7_free_ptr(uniform_set_out)
-        \\                e7_free_ptr(uniform_buffer_out)
-        \\                e7_free_ptr(uniform_memory_out)
-        \\                e7_free_ptr(uniform_mapped_out)
-        \\                e7_free_ptr(uniform_size_out)
+        \\                    vulkan_uniform_resources_destroy(device, ptr::load_u64(uniform_layout_out), ptr::load_u64(uniform_pool_out), ptr::load_u64(uniform_buffer_out), ptr::load_u64(uniform_memory_out))
+        \\                ptr::free(uniform_layout_out)
+        \\                ptr::free(uniform_pool_out)
+        \\                ptr::free(uniform_set_out)
+        \\                ptr::free(uniform_buffer_out)
+        \\                ptr::free(uniform_memory_out)
+        \\                ptr::free(uniform_mapped_out)
+        \\                ptr::free(uniform_size_out)
         \\                if uniform_ok == 0:
         \\                    result = -17
-        \\                vertex_buffer_out := e7_alloc_bytes(8)
-        \\                vertex_memory_out := e7_alloc_bytes(8)
-        \\                vertex_mapped_out := e7_alloc_bytes(8)
+        \\                vertex_buffer_out := ptr::alloc(8) as u64
+        \\                vertex_memory_out := ptr::alloc(8) as u64
+        \\                vertex_mapped_out := ptr::alloc(8) as u64
         \\                vertex_ok := vulkan_vertex_buffer(device, physical, vertex_buffer_out, vertex_memory_out, vertex_mapped_out)
-        \\                mesh_vert := e7_engine_read_shader("engine/platform/shaders/mesh_simple.vert.spv")
-        \\                mesh_frag := e7_engine_read_shader("engine/platform/shaders/mesh_simple.frag.spv")
-        \\                mesh_vert_handle := e7_handle(mesh_vert)
-        \\                mesh_frag_handle := e7_handle(mesh_frag)
-        \\                mesh_pipeline_out := e7_alloc_bytes(8)
-        \\                mesh_layout_out := e7_alloc_bytes(8)
+        \\                mesh_vert := host::read_shader("engine/platform/shaders/mesh_simple.vert.spv")
+        \\                mesh_frag := host::read_shader("engine/platform/shaders/mesh_simple.frag.spv")
+        \\                mesh_vert_handle := ffi::handle(mesh_vert)
+        \\                mesh_frag_handle := ffi::handle(mesh_frag)
+        \\                mesh_pipeline_out := ptr::alloc(8) as u64
+        \\                mesh_layout_out := ptr::alloc(8) as u64
         \\                mesh_ok := 0
         \\                if mesh_vert_handle != 0:
         \\                    if mesh_frag_handle != 0:
-        \\                        mesh_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, mesh_vert_handle, mesh_frag_handle, 0, mesh_pipeline_out, mesh_layout_out)
+        \\                        mesh_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, mesh_vert, mesh_frag, 0, mesh_pipeline_out, mesh_layout_out)
         \\                mesh_green := 0
         \\                if mesh_ok != 0:
         \\                    if vertex_ok != 0:
-        \\                        mesh_pixels_out := e7_alloc_bytes(8)
-        \\                        mesh_size_out := e7_alloc_bytes(8)
-        \\                        mesh_drew := vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, e7_load_u64(mesh_pipeline_out), framebuffers_handle, image_count, width, height, e7_load_u64(vertex_buffer_out), 0, 0, 0, 0, 0, 0, 0, 0, 0, mesh_pixels_out, mesh_size_out)
-        \\                        mesh_pixels := e7_load_u64(mesh_pixels_out)
+        \\                        mesh_pixels_out := ptr::alloc(8) as u64
+        \\                        mesh_size_out := ptr::alloc(8) as u64
+        \\                        mesh_drew := vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, ptr::load_u64(mesh_pipeline_out), framebuffers_handle, image_count, width, height, ptr::load_u64(vertex_buffer_out), 0, 0, 0, 0, 0, 0, 0, 0, 0, mesh_pixels_out, mesh_size_out)
+        \\                        mesh_pixels := ptr::load_u64(mesh_pixels_out)
         \\                        mesh_offset := ((height / 2) * width + width / 2) * 4
-        \\                        mesh_center := e7_load_u32((mesh_pixels as u64) + (mesh_offset as u64))
+        \\                        mesh_center := ptr::load_u32((mesh_pixels as u64) + (mesh_offset as u64))
         \\                        mesh_green = (mesh_center / 256) % 256
-        \\                        e7_free_ptr(mesh_pixels)
-        \\                        e7_free_ptr(mesh_pixels_out)
-        \\                        e7_free_ptr(mesh_size_out)
-        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(mesh_pipeline_out), e7_load_u64(mesh_layout_out))
-        \\                e7_free_ptr(mesh_vert_handle)
-        \\                e7_free_ptr(mesh_frag_handle)
-        \\                e7_free_ptr(mesh_pipeline_out)
-        \\                e7_free_ptr(mesh_layout_out)
+        \\                        ptr::free(mesh_pixels)
+        \\                        ptr::free(mesh_pixels_out)
+        \\                        ptr::free(mesh_size_out)
+        \\                    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(mesh_pipeline_out), ptr::load_u64(mesh_layout_out))
+        \\                ptr::free(mesh_vert_handle)
+        \\                ptr::free(mesh_frag_handle)
+        \\                ptr::free(mesh_pipeline_out)
+        \\                ptr::free(mesh_layout_out)
         \\                if vertex_ok != 0:
-        \\                    vulkan_vertex_buffer_destroy(device, e7_load_u64(vertex_buffer_out), e7_load_u64(vertex_memory_out))
-        \\                e7_free_ptr(vertex_buffer_out)
-        \\                e7_free_ptr(vertex_memory_out)
-        \\                e7_free_ptr(vertex_mapped_out)
-        \\                ubo_layout_out := e7_alloc_bytes(8)
+        \\                    vulkan_vertex_buffer_destroy(device, ptr::load_u64(vertex_buffer_out), ptr::load_u64(vertex_memory_out))
+        \\                ptr::free(vertex_buffer_out)
+        \\                ptr::free(vertex_memory_out)
+        \\                ptr::free(vertex_mapped_out)
+        \\                ubo_layout_out := ptr::alloc(8) as u64
         \\                ubo_layout_ok := vulkan_ubo_set_layout(device, ubo_layout_out)
-        \\                ubo_vert := e7_engine_read_shader("engine/platform/shaders/mesh.vert.spv")
-        \\                ubo_frag := e7_engine_read_shader("engine/platform/shaders/mesh.frag.spv")
-        \\                ubo_vert_handle := e7_handle(ubo_vert)
-        \\                ubo_frag_handle := e7_handle(ubo_frag)
-        \\                ubo_pipeline_out := e7_alloc_bytes(8)
-        \\                ubo_pipeline_layout_out := e7_alloc_bytes(8)
+        \\                ubo_vert := host::read_shader("engine/platform/shaders/mesh.vert.spv")
+        \\                ubo_frag := host::read_shader("engine/platform/shaders/mesh.frag.spv")
+        \\                ubo_vert_handle := ffi::handle(ubo_vert)
+        \\                ubo_frag_handle := ffi::handle(ubo_frag)
+        \\                ubo_pipeline_out := ptr::alloc(8) as u64
+        \\                ubo_pipeline_layout_out := ptr::alloc(8) as u64
         \\                ubo_pipeline_ok := 0
         \\                if ubo_vert_handle != 0:
         \\                    if ubo_frag_handle != 0:
-        \\                        ubo_pipeline_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, ubo_vert_handle, ubo_frag_handle, e7_load_u64(ubo_layout_out), ubo_pipeline_out, ubo_pipeline_layout_out)
+        \\                        ubo_pipeline_ok = vulkan_mesh_pipeline_simple(device, render_pass_handle, ubo_vert, ubo_frag, ptr::load_u64(ubo_layout_out), ubo_pipeline_out, ubo_pipeline_layout_out)
         \\                if ubo_pipeline_ok != 0:
-        \\                    vulkan_graphics_pipeline_destroy(device, e7_load_u64(ubo_pipeline_out), e7_load_u64(ubo_pipeline_layout_out))
-        \\                e7_free_ptr(ubo_vert_handle)
-        \\                e7_free_ptr(ubo_frag_handle)
-        \\                e7_free_ptr(ubo_pipeline_out)
-        \\                e7_free_ptr(ubo_pipeline_layout_out)
+        \\                    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(ubo_pipeline_out), ptr::load_u64(ubo_pipeline_layout_out))
+        \\                ptr::free(ubo_vert_handle)
+        \\                ptr::free(ubo_frag_handle)
+        \\                ptr::free(ubo_pipeline_out)
+        \\                ptr::free(ubo_pipeline_layout_out)
         \\                if ubo_layout_ok != 0:
-        \\                    vulkan_descriptor_set_layout_destroy(device, e7_load_u64(ubo_layout_out))
-        \\                e7_free_ptr(ubo_layout_out)
+        \\                    vulkan_descriptor_set_layout_destroy(device, ptr::load_u64(ubo_layout_out))
+        \\                ptr::free(ubo_layout_out)
         \\                if mesh_ok == 0:
         \\                    result = -18
         \\                if ubo_pipeline_ok == 0:
@@ -1502,36 +1502,36 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                        result = -21
         \\                if vertex_ok == 0:
         \\                    result = -19
-        \\                vert := e7_engine_read_shader("engine/platform/shaders/triangle.vert.spv")
-        \\                frag := e7_engine_read_shader("engine/platform/shaders/triangle.frag.spv")
-        \\                vert_handle := e7_handle(vert)
-        \\                frag_handle := e7_handle(frag)
-        \\                pipeline_out := e7_alloc_bytes(8)
-        \\                layout_out := e7_alloc_bytes(8)
+        \\                vert := host::read_shader("engine/platform/shaders/triangle.vert.spv")
+        \\                frag := host::read_shader("engine/platform/shaders/triangle.frag.spv")
+        \\                vert_handle := ffi::handle(vert)
+        \\                frag_handle := ffi::handle(frag)
+        \\                pipeline_out := ptr::alloc(8) as u64
+        \\                layout_out := ptr::alloc(8) as u64
         \\                pipeline_ok := 0
         \\                if vert_handle != 0:
         \\                    if frag_handle != 0:
-        \\                        pipeline_ok = vulkan_graphics_pipeline(device, render_pass_handle, vert_handle, frag_handle, pipeline_out, layout_out)
-        \\                pipeline_handle := e7_load_u64(pipeline_out)
-        \\                layout_handle := e7_load_u64(layout_out)
+        \\                        pipeline_ok = vulkan_graphics_pipeline(device, render_pass_handle, vert, frag, pipeline_out, layout_out)
+        \\                pipeline_handle := ptr::load_u64(pipeline_out)
+        \\                layout_handle := ptr::load_u64(layout_out)
         \\                drew := 0
         \\                green := 0
         \\                if pipeline_ok != 0:
-        \\                    draw_pixels_out := e7_alloc_bytes(8)
-        \\                    draw_size_out := e7_alloc_bytes(8)
+        \\                    draw_pixels_out := ptr::alloc(8) as u64
+        \\                    draw_size_out := ptr::alloc(8) as u64
         \\                    drew = vulkan_draw_triangle_capture(device, queue, family, physical, swapchain, render_pass_handle, pipeline_handle, framebuffers_handle, image_count, width, height, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, draw_pixels_out, draw_size_out)
-        \\                    draw_pixels := e7_load_u64(draw_pixels_out)
+        \\                    draw_pixels := ptr::load_u64(draw_pixels_out)
         \\                    center_offset := ((height / 2) * width + width / 2) * 4
-        \\                    center := e7_load_u32((draw_pixels as u64) + (center_offset as u64))
+        \\                    center := ptr::load_u32((draw_pixels as u64) + (center_offset as u64))
         \\                    green = (center / 256) % 256
-        \\                    e7_free_ptr(draw_pixels)
-        \\                    e7_free_ptr(draw_pixels_out)
-        \\                    e7_free_ptr(draw_size_out)
+        \\                    ptr::free(draw_pixels)
+        \\                    ptr::free(draw_pixels_out)
+        \\                    ptr::free(draw_size_out)
         \\                    vulkan_graphics_pipeline_destroy(device, pipeline_handle, layout_handle)
-        \\                e7_free_ptr(pipeline_out)
-        \\                e7_free_ptr(layout_out)
-        \\                e7_free_ptr(vert_handle)
-        \\                e7_free_ptr(frag_handle)
+        \\                ptr::free(pipeline_out)
+        \\                ptr::free(layout_out)
+        \\                ptr::free(vert_handle)
+        \\                ptr::free(frag_handle)
         \\                if targets_ok != 0:
         \\                    vulkan_render_targets_destroy(device, render_pass_handle, views_handle, framebuffers_handle, image_count)
         \\                if pipeline_ok == 0:
@@ -1542,25 +1542,25 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\                    else:
         \\                        if green != 255:
         \\                            result = -16
-        \\                e7_free_ptr(rp_targets)
-        \\                e7_free_ptr(view_targets)
-        \\                e7_free_ptr(fb_targets)
+        \\                ptr::free(rp_targets)
+        \\                ptr::free(view_targets)
+        \\                ptr::free(fb_targets)
         \\                if targets_ok == 0:
         \\                    result = -13
-        \\                index_out := e7_alloc_bytes(4)
+        \\                index_out := ptr::alloc(4) as u64
         \\                presented := vulkan_present_clear(device, queue, family, swapchain, index_out)
-        \\                e7_free_ptr(index_out)
-        \\                pixels_out := e7_alloc_bytes(8)
-        \\                size_out := e7_alloc_bytes(8)
+        \\                ptr::free(index_out)
+        \\                pixels_out := ptr::alloc(8) as u64
+        \\                size_out := ptr::alloc(8) as u64
         \\                captured := vulkan_capture_clear(device, queue, family, physical, swapchain, width, height, pixels_out, size_out)
-        \\                pixels := e7_load_u64(pixels_out)
-        \\                pixel_size := e7_load_u64(size_out)
-        \\                pixel := e7_load_u32(pixels)
+        \\                pixels := ptr::load_u64(pixels_out)
+        \\                pixel_size := ptr::load_u64(size_out)
+        \\                pixel := ptr::load_u32(pixels)
         \\                red_bgra := (pixel / 65536) % 256
         \\                red_rgba := pixel % 256
-        \\                e7_free_ptr(pixels)
-        \\                e7_free_ptr(pixels_out)
-        \\                e7_free_ptr(size_out)
+        \\                ptr::free(pixels)
+        \\                ptr::free(pixels_out)
+        \\                ptr::free(size_out)
         \\                vulkan_swapchain_destroy(device, swapchain)
         \\                if width <= 0:
         \\                    result = -6
@@ -1587,28 +1587,28 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
         \\            else:
         \\                result = -5
         \\            if images != 0:
-        \\                e7_free_ptr(images)
+        \\                ptr::free(images)
         \\            if submit_ok == 0:
         \\                result = -9
-        \\            e7_free_ptr(swapchain_out)
-        \\            e7_free_ptr(format_out)
-        \\            e7_free_ptr(width_out)
-        \\            e7_free_ptr(height_out)
-        \\            e7_free_ptr(images_out)
-        \\            e7_free_ptr(image_count_out)
+        \\            ptr::free(swapchain_out)
+        \\            ptr::free(format_out)
+        \\            ptr::free(width_out)
+        \\            ptr::free(height_out)
+        \\            ptr::free(images_out)
+        \\            ptr::free(image_count_out)
         \\            vulkan_device_destroy(device)
         \\        if surface != 0:
         \\            vulkan_surface_destroy(instance, surface)
         \\    vulkan_instance_destroy(instance)
         \\    window_destroy(win)
-        \\    e7_free_ptr(ext_count)
-        \\    e7_free_ptr(ext_array)
-        \\    e7_free_ptr(instance_out)
-        \\    e7_free_ptr(surface_out)
-        \\    e7_free_ptr(device_out)
-        \\    e7_free_ptr(queue_out)
-        \\    e7_free_ptr(family_out)
-        \\    e7_free_ptr(physical_out)
+        \\    ptr::free(ext_count)
+        \\    ptr::free(ext_array)
+        \\    ptr::free(instance_out)
+        \\    ptr::free(surface_out)
+        \\    ptr::free(device_out)
+        \\    ptr::free(queue_out)
+        \\    ptr::free(family_out)
+        \\    ptr::free(physical_out)
         \\    video_quit()
         \\    if result == 0:
         \\        ret 0
@@ -1803,7 +1803,7 @@ test "e7 scene resize recreates the swapchain and capture size" {
         \\        e7_engine_window_destroy(win)
         \\        ret -2
         \\    set_size := bind_sdl("SDL_SetWindowSize")
-        \\    e7_ffi_call3(set_size, e7_load_u64(win), 96, 64)
+        \\    ffi::call3(set_size, ptr::load_u64(win), 96, 64)
         \\    window_pump(win)
         \\    window_pump(win)
         \\    window_sync_size(win)
@@ -1911,16 +1911,16 @@ test "e7 scene renders through separate modules" {
         \\    scene_set_cube_angle(scene, 600)
         \\    scene_begin_frame(scene)
         \\    scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    window_destroy(win)
         \\    if drew == 0:
@@ -1971,13 +1971,13 @@ test "e7 window state returned from a helper is valid" {
         \\    win := create_win("e7 helper window", 64, 48)
         \\    if win == 0:
         \\        ret -2
-        \\    width_out := e7_alloc_bytes(4)
-        \\    height_out := e7_alloc_bytes(4)
+        \\    width_out := ptr::alloc(4) as u64
+        \\    height_out := ptr::alloc(4) as u64
         \\    window_size(win, width_out, height_out)
-        \\    width := e7_load_u32(width_out)
-        \\    height := e7_load_u32(height_out)
-        \\    e7_free_ptr(width_out)
-        \\    e7_free_ptr(height_out)
+        \\    width := ptr::load_u32(width_out)
+        \\    height := ptr::load_u32(height_out)
+        \\    ptr::free(width_out)
+        \\    ptr::free(height_out)
         \\    flags := window_flags(win)
         \\    window_destroy(win)
         \\    ret flags
@@ -2034,16 +2034,16 @@ test "e7 scene renders inside a helper function" {
         \\    scene_set_cube_angle(scene, 600)
         \\    scene_begin_frame(scene)
         \\    scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    if drew == 0:
         \\        ret -3
@@ -2113,16 +2113,16 @@ test "e7 scene renders on a helper-created window after pumping" {
         \\    scene_set_cube_angle(scene, 600)
         \\    scene_begin_frame(scene)
         \\    scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    if drew == 0:
         \\        ret -3
@@ -2173,16 +2173,16 @@ test "e7 scene_draw from a different function than begin/draw" {
         \\use sdl::*;
         \\use scene::*;
         \\draw_helper <- (scene: u64) -> i64:
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    if drew == 0:
         \\        ret -3
         \\    ret center as i64
@@ -2245,16 +2245,16 @@ test "e7 scene_draw called from another module" {
     const driver_source =
         \\use scene::*;
         \\draw_driver <- (scene: u64) -> i64:
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    if drew == 0:
         \\        ret -3
         \\    ret center as i64
@@ -2334,16 +2334,16 @@ test "e7 scene_draw through a method receiver" {
         \\    scene: u64
         \\impl Drawer:
         \\    draw <- (d: &Drawer) -> i64:
-        \\        pixels_out := e7_alloc_bytes(8)
-        \\        size_out := e7_alloc_bytes(8)
+        \\        pixels_out := ptr::alloc(8) as u64
+        \\        size_out := ptr::alloc(8) as u64
         \\        drew := scene_draw(d.scene, pixels_out, size_out)
-        \\        pixels := e7_load_u64(pixels_out)
+        \\        pixels := ptr::load_u64(pixels_out)
         \\        width := scene_width(d.scene)
         \\        height := scene_height(d.scene)
-        \\        center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\        e7_free_ptr(pixels)
-        \\        e7_free_ptr(pixels_out)
-        \\        e7_free_ptr(size_out)
+        \\        center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\        ptr::free(pixels)
+        \\        ptr::free(pixels_out)
+        \\        ptr::free(size_out)
         \\        if drew == 0:
         \\            ret -3
         \\        ret center as i64
@@ -2425,16 +2425,16 @@ test "e7 scene draw inside an inline async task" {
         \\    scene_set_cube_angle(scene, 600)
         \\    scene_begin_frame(scene)
         \\    scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
-        \\    center := e7_load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + ((((height / 2) * width) + (width / 2)) * 4) as u64)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    if drew == 0:
         \\        ret -3
@@ -2534,43 +2534,43 @@ test "e7 engine text input buffers UTF-8 events and clears on read" {
     defer std.testing.allocator.free(sdl_source);
     const probe =
         \\text_input_probe <- () -> i64:
-        \\    state := e7_alloc_bytes(256)
-        \\    event := e7_alloc_bytes(128)
-        \\    first := e7_alloc_bytes(8)
-        \\    e7_store_u8(first, 195)
-        \\    e7_store_u8(first + 1, 169)
-        \\    e7_store_u8(first + 2, 0)
-        \\    e7_store_u32(event, 771)
-        \\    e7_store_u64(event + 24, first)
+        \\    state := ptr::alloc(256) as u64
+        \\    event := ptr::alloc(128) as u64
+        \\    first := ptr::alloc(8) as u64
+        \\    ptr::store_u8(first, 195)
+        \\    ptr::store_u8(first + 1, 169)
+        \\    ptr::store_u8(first + 2, 0)
+        \\    ptr::store_u32(event, 771)
+        \\    ptr::store_u64(event + 24, first)
         \\    window_handle_event(state, event)
-        \\    second := e7_alloc_bytes(8)
-        \\    e7_store_u8(second, 97)
-        \\    e7_store_u8(second + 1, 98)
-        \\    e7_store_u8(second + 2, 0)
-        \\    e7_store_u64(event + 24, second)
+        \\    second := ptr::alloc(8) as u64
+        \\    ptr::store_u8(second, 97)
+        \\    ptr::store_u8(second + 1, 98)
+        \\    ptr::store_u8(second + 2, 0)
+        \\    ptr::store_u64(event + 24, second)
         \\    window_handle_event(state, event)
-        \\    capacity := e7_load_u32(state + 204)
-        \\    pending := e7_load_u32(state + 200)
+        \\    capacity := ptr::load_u32(state + 204)
+        \\    pending := ptr::load_u32(state + 200)
         \\    typed := text_input_pending(state)
-        \\    length := e7_str_len(typed)
-        \\    data := e7_str_data(typed)
-        \\    b0 := e7_load_u8(data)
-        \\    b1 := e7_load_u8(data + 1)
-        \\    b2 := e7_load_u8(data + 2)
-        \\    b3 := e7_load_u8(data + 3)
+        \\    length := str::len(typed)
+        \\    data := str::data(typed) as u64
+        \\    b0 := ptr::load_u8(data)
+        \\    b1 := ptr::load_u8(data + 1)
+        \\    b2 := ptr::load_u8(data + 2)
+        \\    b3 := ptr::load_u8(data + 3)
         \\    again := text_input_pending(state)
-        \\    again_length := e7_str_len(again)
-        \\    e7_free_ptr(typed)
-        \\    e7_free_ptr(again)
+        \\    again_length := str::len(again)
+        \\    ptr::free(typed)
+        \\    ptr::free(again)
         \\    text_input_reset(state)
         \\    cleared := text_input_pending(state)
-        \\    cleared_length := e7_str_len(cleared)
-        \\    e7_free_ptr(cleared)
+        \\    cleared_length := str::len(cleared)
+        \\    ptr::free(cleared)
         \\    free_text_buffer(state)
-        \\    e7_free_ptr(state)
-        \\    e7_free_ptr(event)
-        \\    e7_free_ptr(first)
-        \\    e7_free_ptr(second)
+        \\    ptr::free(state)
+        \\    ptr::free(event)
+        \\    ptr::free(first)
+        \\    ptr::free(second)
         \\    if capacity != 256:
         \\        ret -1
         \\    if pending != 4:
@@ -2721,7 +2721,7 @@ test "e7 engine headless window creation uses hidden dummy mode" {
     defer std.testing.allocator.free(window_source);
     const probe =
         \\headless_window_probe <- () -> i64:
-        \\    if e7_host_headless() == 0:
+        \\    if host::headless() == 0:
         \\        ret -1
         \\    if e7_engine_window_flags(1) != 268435496:
         \\        ret -2
@@ -2734,14 +2734,14 @@ test "e7 engine headless window creation uses hidden dummy mode" {
         \\    hidden := (flags / 8) % 2
         \\    resizable := (flags / 32) % 2
         \\    vulkan := (flags / 268435456) % 2
-        \\    out_w := e7_alloc_bytes(4)
-        \\    out_h := e7_alloc_bytes(4)
+        \\    out_w := ptr::alloc(4) as u64
+        \\    out_h := ptr::alloc(4) as u64
         \\    window_size(win, out_w, out_h)
-        \\    width := e7_load_u32(out_w)
-        \\    height := e7_load_u32(out_h)
+        \\    width := ptr::load_u32(out_w)
+        \\    height := ptr::load_u32(out_h)
         \\    captured := e7_engine_mouse_captured(win)
-        \\    e7_free_ptr(out_w)
-        \\    e7_free_ptr(out_h)
+        \\    ptr::free(out_w)
+        \\    ptr::free(out_h)
         \\    e7_engine_window_destroy(win)
         \\    if hidden != 1:
         \\        ret -4
@@ -2824,17 +2824,17 @@ test "e7 text image uploads through the UI texture path" {
         \\        scene_destroy(scene)
         \\        video_quit()
         \\        ret -4
-        \\    image_width := e7_image_width(image)
-        \\    image_height := e7_image_height(image)
-        \\    image_pixels := e7_image_pixels(image)
-        \\    pixel_ptr := e7_str_data(image_pixels)
+        \\    image_width := image::width(image)
+        \\    image_height := image::height(image)
+        \\    image_pixels := image::pixels(image)
+        \\    pixel_ptr := str::data(image_pixels) as u64
         \\    if scene_set_ui_texture(scene, pixel_ptr as u64, image_width, image_height) == 0:
-        \\        e7_image_free(image)
+        \\        image::free(image)
         \\        e7_font_free(font)
         \\        scene_destroy(scene)
         \\        video_quit()
         \\        ret -5
-        \\    e7_image_free(image)
+        \\    image::free(image)
         \\    e7_font_free(font)
         \\    scene_destroy(scene)
         \\    video_quit()
@@ -2914,17 +2914,17 @@ test "e7 scene module draws an indexed cube and captures it" {
         \\    scene_draw_box(scene, 1600, -1950, 0, 300, 300, 300, 1000, 600, 400, 0)
         \\    scene_draw_box(scene, 1800, -2100, 0, 300, 300, 300, 1000, 600, 400, 0)
         \\    scene_draw_box(scene, 2000, -2250, 0, 300, 300, 300, 1000, 600, 400, 0)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
         \\    offset := ((height / 2) * width + width / 2) * 4
-        \\    center := e7_load_u32((pixels as u64) + (offset as u64))
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    center := ptr::load_u32((pixels as u64) + (offset as u64))
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    window_destroy(win)
         \\    video_quit()
@@ -2997,10 +2997,10 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
         \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
         \\    scene_begin_frame(scene)
         \\    scene_draw_shape_rot(scene, kind as i32, 0, 0, 0, 1000, 1000, 1000, 0, 0, 0, 1000, 1000, 1000, 0 as u64)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out) as u64
+        \\    pixels := ptr::load_u64(pixels_out) as u64
         \\    count := 0
         \\    max_row := 0
         \\    rows := 0
@@ -3010,7 +3010,7 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
         \\        col := 0
         \\        while col < 96:
         \\            offset := ((row * 96 + col) * 4) as u64
-        \\            pixel := e7_load_u32(pixels + offset)
+        \\            pixel := ptr::load_u32(pixels + offset)
         \\            if pixel != 0 and pixel != 4278190080:
         \\                row_count = row_count + 1
         \\            col = col + 1
@@ -3020,9 +3020,9 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
         \\        if row_count > 0:
         \\            rows = rows + 1
         \\        row = row + 1
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    window_destroy(win)
         \\    video_quit()
@@ -3031,9 +3031,9 @@ test "e7 procedural shapes render sphere, capsule, and plane silhouettes" {
         \\    # Round-trip the counters through float helpers: besides checking the
         \\    # float ABI, this keeps the loop-heavy helper under the LLVM
         \\    # InstCombine fixed-point attribute LLVM 23 requires for such IR.
-        \\    count_value := e7_f32_to_i64(e7_f32_from_i64(count))
-        \\    width_value := e7_f32_to_i64(e7_f32_from_i64(max_row))
-        \\    rows_value := e7_f32_to_i64(e7_f32_from_i64(rows))
+        \\    count_value := ((count) as f32) as i64
+        \\    width_value := ((max_row) as f32) as i64
+        \\    rows_value := ((rows) as f32) as i64
         \\    ret count_value * 1000000 + width_value * 1000 + rows_value
     ;
     const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
@@ -3240,10 +3240,10 @@ test "e7 box scale and axis rotation projects match the zig renderer" {
         \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
         \\    scene_begin_frame(scene)
         \\    scene_draw_shape_rot(scene, 0, 0, 0, 0, sx, sy, sz, rx, ry, rz, 1000, 1000, 1000, 0 as u64)
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
-        \\    pixels := e7_load_u64(pixels_out) as u64
+        \\    pixels := ptr::load_u64(pixels_out) as u64
         \\    count := 0
         \\    min_row := 96
         \\    max_row := 0
@@ -3255,7 +3255,7 @@ test "e7 box scale and axis rotation projects match the zig renderer" {
         \\        col := 0
         \\        while col < 96:
         \\            offset := ((row * 96 + col) * 4) as u64
-        \\            pixel := e7_load_u32(pixels + offset)
+        \\            pixel := ptr::load_u32(pixels + offset)
         \\            if pixel != 0 and pixel != 4278190080:
         \\                count = count + 1
         \\                if row < min_row:
@@ -3272,20 +3272,20 @@ test "e7 box scale and axis rotation projects match the zig renderer" {
         \\                    max_col = col
         \\            col = col + 1
         \\        row = row + 1
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    scene_destroy(scene)
         \\    window_destroy(win)
         \\    video_quit()
         \\    if drew == 0:
         \\        ret -4
-        \\    count_value := e7_f32_to_i64(e7_f32_from_i64(count))
-        \\    min_row_value := e7_f32_to_i64(e7_f32_from_i64(min_row))
-        \\    max_row_value := e7_f32_to_i64(e7_f32_from_i64(max_row))
-        \\    min_col_value := e7_f32_to_i64(e7_f32_from_i64(min_col))
-        \\    max_col_value := e7_f32_to_i64(e7_f32_from_i64(max_col))
-        \\    top_value := e7_f32_to_i64(e7_f32_from_i64(top_min_col))
+        \\    count_value := ((count) as f32) as i64
+        \\    min_row_value := ((min_row) as f32) as i64
+        \\    max_row_value := ((max_row) as f32) as i64
+        \\    min_col_value := ((min_col) as f32) as i64
+        \\    max_col_value := ((max_col) as f32) as i64
+        \\    top_value := ((top_min_col) as f32) as i64
         \\    ret (((((count_value * 100 + min_row_value) * 100 + max_row_value) * 100 + min_col_value) * 100 + max_col_value) * 100 + top_value)
     ;
     const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
@@ -3386,8 +3386,8 @@ test "e7 text module loads a font, measures, and rasterizes text" {
         \\    packed := e7_text_measure(font, "Hello")
         \\    width := packed / 4294967296
         \\    image := e7_text_image(font, "Hello", 255, 255, 255)
-        \\    image_width := e7_image_width(image)
-        \\    e7_image_free(image)
+        \\    image_width := image::width(image)
+        \\    image::free(image)
         \\    e7_font_free(font)
         \\    if width <= 0:
         \\        ret -2
@@ -3624,7 +3624,7 @@ test "physics sleeping stack wakes when its support is removed" {
         \\            probe.bottom_a_sleep_before = sleeping
         \\        if id.id == 11:
         \\            probe.top_a_sleep_before = sleeping
-        \\            probe.top_a_y_before = e7_f32_to_milli(transform.translation[1])
+        \\            probe.top_a_y_before = f32::to_milli(transform.translation[1])
         \\        if id.id == 13:
         \\            probe.top_b_sleep_before = sleeping
         \\@trigger(RemoveSupport)
@@ -3664,9 +3664,9 @@ test "physics sleeping stack wakes when its support is removed" {
         \\):
         \\    for (transform, id) in rows:
         \\        if id.id == 11:
-        \\            probe.top_a_y_after = e7_f32_to_milli(transform.translation[1])
+        \\            probe.top_a_y_after = f32::to_milli(transform.translation[1])
         \\        if id.id == 13:
-        \\            probe.top_b_y_after = e7_f32_to_milli(transform.translation[1])
+        \\            probe.top_b_y_after = f32::to_milli(transform.translation[1])
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
@@ -3787,54 +3787,54 @@ test "quaternion model matrix matches the rotation formula" {
 
     const probe =
         \\matrix_probe <- () -> i64:
-        \\    out := e7_alloc_bytes(64) as i64
+        \\    out := ptr::alloc(64) as i64
         \\    score := 0
         \\    # Identity quaternion: R = I, scaled by (1, 1, 1) in metres.
         \\    object_model_matrix_quat(out, 1000, 1000, 1000, 0.0, 0.0, 0.0, 1.0)
-        \\    if e7_f32_abs(e7_load_f32(out) - 1.0) < 0.0005:
+        \\    if f32::abs(ptr::load_f32(out) - 1.0) < 0.0005:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 20) - 1.0) < 0.0005:
+        \\    if f32::abs(ptr::load_f32(out + 20) - 1.0) < 0.0005:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 40) - 1.0) < 0.0005:
+        \\    if f32::abs(ptr::load_f32(out + 40) - 1.0) < 0.0005:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 60) - 1.0) < 0.0001:
+        \\    if f32::abs(ptr::load_f32(out + 60) - 1.0) < 0.0001:
         \\        score = score + 1
         \\    # +90 deg about Y with non-uniform scale (2, 3, 4) metres.
         \\    # R = [[0,0,1],[0,1,0],[-1,0,0]]; columns are (0,0,-2), (0,3,0), (4,0,0).
         \\    object_model_matrix_quat(out, 2000, 3000, 4000, 0.0, 0.7071067811865476, 0.0, 0.7071067811865476)
-        \\    if e7_f32_abs(e7_load_f32(out)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out)) < 1.0:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 4)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out + 4)) < 1.0:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 8) + 2.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 8) + 2.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 16)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out + 16)) < 1.0:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 20) - 3.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 20) - 3.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 24)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out + 24)) < 1.0:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 32) - 4.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 32) - 4.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 36)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out + 36)) < 1.0:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 40)) < 1.0:
+        \\    if f32::abs(ptr::load_f32(out + 40)) < 1.0:
         \\        score = score + 1
         \\    # A non-unit quaternion normalises to the same rotation.
         \\    object_model_matrix_quat(out, 2000, 3000, 4000, 0.0, 2.0, 0.0, 2.0)
-        \\    if e7_f32_abs(e7_load_f32(out + 8) + 2.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 8) + 2.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 32) - 4.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 32) - 4.0) < 0.001:
         \\        score = score + 1
         \\    # +90 deg about X: R = [[1,0,0],[0,0,-1],[0,1,0]]; columns (1,0,0),(0,0,1),(0,-1,0).
         \\    object_model_matrix_quat(out, 1000, 1000, 1000, 0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
-        \\    if e7_f32_abs(e7_load_f32(out) - 1.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out) - 1.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 24) - 1.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 24) - 1.0) < 0.001:
         \\        score = score + 1
-        \\    if e7_f32_abs(e7_load_f32(out + 36) + 1.0) < 0.001:
+        \\    if f32::abs(ptr::load_f32(out + 36) + 1.0) < 0.001:
         \\        score = score + 1
-        \\    e7_free_ptr(out)
+        \\    ptr::free(out)
         \\    ret score
     ;
     const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
@@ -3861,14 +3861,14 @@ test "quaternion draw uses the physics orientation for procedural meshes" {
 
     const probe =
         \\bright_width <- (scene: u64) -> i64:
-        \\    pixels_out := e7_alloc_bytes(8)
-        \\    size_out := e7_alloc_bytes(8)
+        \\    pixels_out := ptr::alloc(8) as u64
+        \\    size_out := ptr::alloc(8) as u64
         \\    drew := scene_draw(scene, pixels_out, size_out)
         \\    if drew == 0:
-        \\        e7_free_ptr(pixels_out)
-        \\        e7_free_ptr(size_out)
+        \\        ptr::free(pixels_out)
+        \\        ptr::free(size_out)
         \\        ret -1
-        \\    pixels := e7_load_u64(pixels_out)
+        \\    pixels := ptr::load_u64(pixels_out)
         \\    width := scene_width(scene)
         \\    height := scene_height(scene)
         \\    min_x := width
@@ -3877,7 +3877,7 @@ test "quaternion draw uses the physics orientation for procedural meshes" {
         \\    while y < height:
         \\        x := 0
         \\        while x < width:
-        \\            pixel := e7_load_u32(pixels + (y * width + x) * 4)
+        \\            pixel := ptr::load_u32(pixels + (y * width + x) * 4)
         \\            # Ignore the alpha byte: only background RGB is zero.
         \\            if pixel % 16777216 != 0:
         \\                if x < min_x:
@@ -3886,13 +3886,13 @@ test "quaternion draw uses the physics orientation for procedural meshes" {
         \\                    max_x = x
         \\            x = x + 1
         \\        y = y + 1
-        \\    e7_free_ptr(pixels)
-        \\    e7_free_ptr(pixels_out)
-        \\    e7_free_ptr(size_out)
+        \\    ptr::free(pixels)
+        \\    ptr::free(pixels_out)
+        \\    ptr::free(size_out)
         \\    if max_x < 0:
         \\        ret 0
         \\    span := max_x - min_x + 1
-        \\    ret e7_f32_to_i64(e7_f32_from_i64(span))
+        \\    ret ((span) as f32) as i64
         \\render_probe <- () -> i64:
         \\    if video_init("dummy") == 0:
         \\        ret 0
@@ -3911,7 +3911,7 @@ test "quaternion draw uses the physics orientation for procedural meshes" {
         \\    identity_width := bright_width(scene)
         \\    # +90 deg yaw from a quaternion: the same box now shows its 2 m side.
         \\    scene_begin_frame(scene)
-        \\    sin_half := e7_f32_sqrt(0.5)
+        \\    sin_half := f32::sqrt(0.5)
         \\    scene_draw_shape_quat(scene, 0, 0, 0, 0, 2000, 1000, 1000, 0.0, sin_half, 0.0, sin_half, 1000, 1000, 1000, 0 as u64)
         \\    rotated_width := bright_width(scene)
         \\    scene_destroy(scene)
@@ -4063,28 +4063,28 @@ test "physics publishes the integrated quaternion with no Euler round-trip" {
         \\):
         \\    for (orientation, id) in orientations:
         \\        if id.id == 7:
-        \\            probe.qx = e7_f32_to_i64(orientation.x * 1000000.0)
-        \\            probe.qy = e7_f32_to_i64(orientation.y * 1000000.0)
-        \\            probe.qz = e7_f32_to_i64(orientation.z * 1000000.0)
-        \\            probe.qw = e7_f32_to_i64(orientation.w * 1000000.0)
-        \\            out := e7_alloc_bytes(64) as i64
+        \\            probe.qx = (orientation.x * 1000000.0) as i64
+        \\            probe.qy = (orientation.y * 1000000.0) as i64
+        \\            probe.qz = (orientation.z * 1000000.0) as i64
+        \\            probe.qw = (orientation.w * 1000000.0) as i64
+        \\            out := ptr::alloc(64) as i64
         \\            object_model_matrix_quat(out, 1000, 1000, 1000, orientation.x, orientation.y, orientation.z, orientation.w)
-        \\            probe.m00 = e7_f32_to_i64(e7_load_f32(out) * 1000000.0)
-        \\            probe.m02 = e7_f32_to_i64(e7_load_f32(out + 8) * 1000000.0)
-        \\            probe.m20 = e7_f32_to_i64(e7_load_f32(out + 32) * 1000000.0)
-        \\            probe.m22 = e7_f32_to_i64(e7_load_f32(out + 40) * 1000000.0)
-        \\            e7_free_ptr(out)
+        \\            probe.m00 = (ptr::load_f32(out) * 1000000.0) as i64
+        \\            probe.m02 = (ptr::load_f32(out + 8) * 1000000.0) as i64
+        \\            probe.m20 = (ptr::load_f32(out + 32) * 1000000.0) as i64
+        \\            probe.m22 = (ptr::load_f32(out + 40) * 1000000.0) as i64
+        \\            ptr::free(out)
         \\            qv := world.quaternions[id.id]
         \\            if qv.len() >= 4:
-        \\                probe.map_qx = e7_f32_to_i64(qv[0] * 1000000.0)
-        \\                probe.map_qy = e7_f32_to_i64(qv[1] * 1000000.0)
-        \\                probe.map_qz = e7_f32_to_i64(qv[2] * 1000000.0)
-        \\                probe.map_qw = e7_f32_to_i64(qv[3] * 1000000.0)
+        \\                probe.map_qx = (qv[0] * 1000000.0) as i64
+        \\                probe.map_qy = (qv[1] * 1000000.0) as i64
+        \\                probe.map_qz = (qv[2] * 1000000.0) as i64
+        \\                probe.map_qw = (qv[3] * 1000000.0) as i64
         \\    for (transform, id) in bodies:
         \\        if id.id == 7:
-        \\            probe.rot_x = e7_f32_to_i64(transform.rotation[0] * 1000000.0)
-        \\            probe.rot_y = e7_f32_to_i64(transform.rotation[1] * 1000000.0)
-        \\            probe.rot_z = e7_f32_to_i64(transform.rotation[2] * 1000000.0)
+        \\            probe.rot_x = (transform.rotation[0] * 1000000.0) as i64
+        \\            probe.rot_y = (transform.rotation[1] * 1000000.0) as i64
+        \\            probe.rot_z = (transform.rotation[2] * 1000000.0) as i64
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
@@ -4366,31 +4366,31 @@ test "quaternion stack contacts keep render orientation consistent" {
         \\):
         \\    for (orientation, id) in orientations:
         \\        if id.id == 11:
-        \\            probe.up_qx = e7_f32_to_i64(orientation.x * 1000000.0)
-        \\            probe.up_qy = e7_f32_to_i64(orientation.y * 1000000.0)
-        \\            probe.up_qz = e7_f32_to_i64(orientation.z * 1000000.0)
-        \\            probe.up_qw = e7_f32_to_i64(orientation.w * 1000000.0)
-        \\            out := e7_alloc_bytes(64) as i64
+        \\            probe.up_qx = (orientation.x * 1000000.0) as i64
+        \\            probe.up_qy = (orientation.y * 1000000.0) as i64
+        \\            probe.up_qz = (orientation.z * 1000000.0) as i64
+        \\            probe.up_qw = (orientation.w * 1000000.0) as i64
+        \\            out := ptr::alloc(64) as i64
         \\            object_model_matrix_quat(out, 1000, 1000, 1000, orientation.x, orientation.y, orientation.z, orientation.w)
-        \\            probe.m00 = e7_f32_to_i64(e7_load_f32(out) * 1000000.0)
-        \\            probe.m02 = e7_f32_to_i64(e7_load_f32(out + 8) * 1000000.0)
-        \\            probe.m20 = e7_f32_to_i64(e7_load_f32(out + 32) * 1000000.0)
-        \\            probe.m22 = e7_f32_to_i64(e7_load_f32(out + 40) * 1000000.0)
-        \\            e7_free_ptr(out)
+        \\            probe.m00 = (ptr::load_f32(out) * 1000000.0) as i64
+        \\            probe.m02 = (ptr::load_f32(out + 8) * 1000000.0) as i64
+        \\            probe.m20 = (ptr::load_f32(out + 32) * 1000000.0) as i64
+        \\            probe.m22 = (ptr::load_f32(out + 40) * 1000000.0) as i64
+        \\            ptr::free(out)
         \\            qv := world.quaternions[id.id]
         \\            if qv.len() >= 4:
-        \\                probe.map_qx = e7_f32_to_i64(qv[0] * 1000000.0)
-        \\                probe.map_qy = e7_f32_to_i64(qv[1] * 1000000.0)
-        \\                probe.map_qz = e7_f32_to_i64(qv[2] * 1000000.0)
-        \\                probe.map_qw = e7_f32_to_i64(qv[3] * 1000000.0)
+        \\                probe.map_qx = (qv[0] * 1000000.0) as i64
+        \\                probe.map_qy = (qv[1] * 1000000.0) as i64
+        \\                probe.map_qz = (qv[2] * 1000000.0) as i64
+        \\                probe.map_qw = (qv[3] * 1000000.0) as i64
         \\    for (transform, id) in bodies:
         \\        if id.id == 10:
-        \\            probe.low_y = e7_f32_to_milli(transform.translation[1])
+        \\            probe.low_y = f32::to_milli(transform.translation[1])
         \\        if id.id == 11:
-        \\            probe.up_y = e7_f32_to_milli(transform.translation[1])
-        \\            probe.rot_x = e7_f32_to_i64(transform.rotation[0] * 1000000.0)
-        \\            probe.rot_y = e7_f32_to_i64(transform.rotation[1] * 1000000.0)
-        \\            probe.rot_z = e7_f32_to_i64(transform.rotation[2] * 1000000.0)
+        \\            probe.up_y = f32::to_milli(transform.translation[1])
+        \\            probe.rot_x = (transform.rotation[0] * 1000000.0) as i64
+        \\            probe.rot_y = (transform.rotation[1] * 1000000.0) as i64
+        \\            probe.rot_z = (transform.rotation[2] * 1000000.0) as i64
         \\main <- async () -> i32:
         \\    commands := await query &mut Commands
         \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)

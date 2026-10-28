@@ -18,54 +18,54 @@ test_scene_milli_decode <- () -> i64:
 test_scene_plane_geometry <- () -> i64:
     # Flat XZ quad: 4 vertices of 32 bytes, 6 u16 indices.  The shader-side
     # meshes are unit-radius (half extent 1.0) and the scene scales them.
-    vertices := e7_alloc_bytes(4 * 32)
-    indices := e7_alloc_bytes(6 * 2)
+    vertices := ptr::alloc(4 * 32) as u64
+    indices := ptr::alloc(6 * 2) as u64
     shape_generate_plane(vertices, indices, 0, 0)
-    assert_f32_near(e7_load_f32(vertices), 0.0 - 1.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + 4), 0.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + 8), 0.0 - 1.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + 32), 1.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + 32 + 8), 0.0 - 1.0, 0.000001)
-    assert_eq_i64(e7_load_u16(indices), 0)
-    assert_eq_i64(e7_load_u16(indices + 2), 1)
-    assert_eq_i64(e7_load_u16(indices + 4), 2)
-    assert_eq_i64(e7_load_u16(indices + 10), 3)
-    e7_free_ptr(vertices)
-    e7_free_ptr(indices)
+    assert_f32_near(ptr::load_f32(vertices), 0.0 - 1.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 4), 0.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 8), 0.0 - 1.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 32), 1.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 32 + 8), 0.0 - 1.0, 0.000001)
+    assert_eq_i64(ptr::load_u16(indices), 0)
+    assert_eq_i64(ptr::load_u16(indices + 2), 1)
+    assert_eq_i64(ptr::load_u16(indices + 4), 2)
+    assert_eq_i64(ptr::load_u16(indices + 10), 3)
+    ptr::free(vertices)
+    ptr::free(indices)
     ret 0
 
 test_scene_sphere_geometry <- () -> i64:
     # 16 stacks x 24 slices: 425 vertices and 2304 indices.
-    vertices := e7_alloc_bytes(425 * 32)
-    indices := e7_alloc_bytes(2304 * 2)
+    vertices := ptr::alloc(425 * 32) as u64
+    indices := ptr::alloc(2304 * 2) as u64
     shape_generate_sphere(vertices, indices)
     # Vertex 0 is the +Y pole; vertex 8 * 25 is the equator ring.
-    assert_f32_near(e7_load_f32(vertices), 0.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + 4), 1.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices), 0.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 4), 1.0, 0.000001)
     equator := 8 * 25
-    assert_f32_near(e7_load_f32(vertices + equator * 32), 1.0, 0.000001)
-    assert_f32_near(e7_load_f32(vertices + equator * 32 + 4), 0.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + equator * 32), 1.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + equator * 32 + 4), 0.0, 0.000001)
     last := 2304 - 1
-    assert_eq_bool(e7_load_u16(indices + last * 2) < 425, true)
-    e7_free_ptr(vertices)
-    e7_free_ptr(indices)
+    assert_eq_bool(ptr::load_u16(indices + last * 2) < 425, true)
+    ptr::free(vertices)
+    ptr::free(indices)
     ret 0
 
 test_scene_capsule_geometry <- () -> i64:
     # 2 * 9 rows * 25 slices = 450 vertices and (2 * 8 + 1) * 24 * 6 = 2448 indices.
-    vertices := e7_alloc_bytes(450 * 32)
-    indices := e7_alloc_bytes(2448 * 2)
+    vertices := ptr::alloc(450 * 32) as u64
+    indices := ptr::alloc(2448 * 2) as u64
     shape_generate_capsule(vertices, indices, 0, 0)
     # Top pole y=+2; bottom cap starts at row 9 and its pole is y=-2.
-    assert_f32_near(e7_load_f32(vertices + 4), 2.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + 4), 2.0, 0.000001)
     bottom_pole := 9 * 25
-    assert_f32_near(e7_load_f32(vertices + bottom_pole * 32 + 4), 0.0 - 2.0, 0.000001)
+    assert_f32_near(ptr::load_f32(vertices + bottom_pole * 32 + 4), 0.0 - 2.0, 0.000001)
     # The closed cylinder band starts after both caps at index 2304 and joins
     # the top cap ring (vertex 8 * 25 = 200) to the bottom cap ring (vertex 425).
-    assert_eq_i64(e7_load_u16(indices + 2304 * 2), 200)
-    assert_eq_i64(e7_load_u16(indices + 2304 * 2 + 2), 425)
+    assert_eq_i64(ptr::load_u16(indices + 2304 * 2), 200)
+    assert_eq_i64(ptr::load_u16(indices + 2304 * 2 + 2), 425)
     band_last := 2304 + (2448 - 2304) * 2 - 2
-    assert_eq_bool(e7_load_u16(indices + band_last) < 450, true)
-    e7_free_ptr(vertices)
-    e7_free_ptr(indices)
+    assert_eq_bool(ptr::load_u16(indices + band_last) < 450, true)
+    ptr::free(vertices)
+    ptr::free(indices)
     ret 0

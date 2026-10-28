@@ -8,9 +8,9 @@ use ui::*;
 pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
     angle := time.elapsed * 0.7 + 0.8
     for light in lights:
-        light.position[0] = 2.8 * e7_f32_cos(angle)
+        light.position[0] = 2.8 * f32::cos(angle)
         light.position[1] = 3.0
-        light.position[2] = 2.8 * e7_f32_sin(angle)
+        light.position[2] = 2.8 * f32::sin(angle)
 
 
 @trigger(Render)
@@ -35,22 +35,22 @@ pub render_scene <- sys (
         yaw_degrees := camera.yaw * 57.2957795
         pitch_degrees := camera.pitch * 57.2957795
         gpu.set_camera(
-            e7_f32_to_milli(camera.position[0]),
-            e7_f32_to_milli(camera.position[1]),
-            e7_f32_to_milli(camera.position[2]),
-            e7_f32_to_milli(yaw_degrees),
-            e7_f32_to_milli(pitch_degrees),
+            f32::to_milli(camera.position[0]),
+            f32::to_milli(camera.position[1]),
+            f32::to_milli(camera.position[2]),
+            f32::to_milli(yaw_degrees),
+            f32::to_milli(pitch_degrees),
         )
 
     for light_row in lights:
         gpu.set_light(
-            e7_f32_to_milli(light_row.position[0]),
-            e7_f32_to_milli(light_row.position[1]),
-            e7_f32_to_milli(light_row.position[2]),
-            e7_f32_to_milli(light_row.colour[0]),
-            e7_f32_to_milli(light_row.colour[1]),
-            e7_f32_to_milli(light_row.colour[2]),
-            e7_f32_to_milli(light_row.intensity),
+            f32::to_milli(light_row.position[0]),
+            f32::to_milli(light_row.position[1]),
+            f32::to_milli(light_row.position[2]),
+            f32::to_milli(light_row.colour[0]),
+            f32::to_milli(light_row.colour[1]),
+            f32::to_milli(light_row.colour[2]),
+            f32::to_milli(light_row.intensity),
         )
 
     # Frame submission is e7 policy: configure camera/light, begin the frame,
@@ -92,19 +92,19 @@ pub render_scene <- sys (
         # for dynamic bodies.
         gpu.draw_renderable_quat(
             renderable.kind,
-            e7_f32_to_milli(transform.translation[0]),
-            e7_f32_to_milli(transform.translation[1]),
-            e7_f32_to_milli(transform.translation[2]),
-            e7_f32_to_milli(sx),
-            e7_f32_to_milli(sy),
-            e7_f32_to_milli(sz),
+            f32::to_milli(transform.translation[0]),
+            f32::to_milli(transform.translation[1]),
+            f32::to_milli(transform.translation[2]),
+            f32::to_milli(sx),
+            f32::to_milli(sy),
+            f32::to_milli(sz),
             orientation.x,
             orientation.y,
             orientation.z,
             orientation.w,
-            e7_f32_to_milli(material.tint[0]),
-            e7_f32_to_milli(material.tint[1]),
-            e7_f32_to_milli(material.tint[2]),
+            f32::to_milli(material.tint[0]),
+            f32::to_milli(material.tint[1]),
+            f32::to_milli(material.tint[2]),
             material.texture,
         )
     # Custom OBJ meshes uploaded by AssetsPlugin.  `mesh` is assigned at
@@ -114,19 +114,19 @@ pub render_scene <- sys (
             cont
         gpu.draw_custom_quat(
             mesh_renderer.mesh,
-            e7_f32_to_milli(mesh_transform.translation[0]),
-            e7_f32_to_milli(mesh_transform.translation[1]),
-            e7_f32_to_milli(mesh_transform.translation[2]),
-            e7_f32_to_milli(mesh_transform.scale[0]),
-            e7_f32_to_milli(mesh_transform.scale[1]),
-            e7_f32_to_milli(mesh_transform.scale[2]),
+            f32::to_milli(mesh_transform.translation[0]),
+            f32::to_milli(mesh_transform.translation[1]),
+            f32::to_milli(mesh_transform.translation[2]),
+            f32::to_milli(mesh_transform.scale[0]),
+            f32::to_milli(mesh_transform.scale[1]),
+            f32::to_milli(mesh_transform.scale[2]),
             mesh_orientation.x,
             mesh_orientation.y,
             mesh_orientation.z,
             mesh_orientation.w,
-            e7_f32_to_milli(mesh_material.tint[0]),
-            e7_f32_to_milli(mesh_material.tint[1]),
-            e7_f32_to_milli(mesh_material.tint[2]),
+            f32::to_milli(mesh_material.tint[0]),
+            f32::to_milli(mesh_material.tint[1]),
+            f32::to_milli(mesh_material.tint[2]),
             mesh_material.texture,
         )
     # UI hook: screen-space panels/buttons/text after the 3D world and before

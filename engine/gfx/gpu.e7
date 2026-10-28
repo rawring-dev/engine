@@ -30,7 +30,7 @@ pub Gpu <- struct
 # `gpu.set_camera(...)`, `gpu.begin_frame()`, `gpu.draw_renderable(...)`.
 impl Gpu:
     pub read_shader <- (gpu: &Gpu, path: str) -> str:
-        ret e7_engine_read_shader(path)
+        ret host::read_shader(path)
 
     pub create_scene <- (gpu: &mut Gpu, window: &Window, vert: str, frag: str) -> nil:
         gpu.scene = e7_engine_scene_create(window.handle, vert, frag)
@@ -221,7 +221,7 @@ impl Gpu:
 
 # Asset text reader wrapper (OBJ/shader text).  Raw intrinsic stays here.
 pub read_asset <- (path: str) -> str:
-    ret e7_engine_read_shader(path)
+    ret host::read_shader(path)
 
 
 pub GfxPlugin <- plugin
