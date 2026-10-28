@@ -474,9 +474,13 @@ keeps only the SDL/Vulkan-free `e7_engine_read_shader` and
 `window`, `input`, `camera`, `scene`, `physics`, `bootstrap`, `ui`), with each
 exposing a plugin; `main.e7` is the demo-specific composition point.
 
-`@derive(Serialize, Deserialize)` is supported on ECS/engine structs and
-`json_encode(value)` / `json_decode::<T>(text)` round-trip primitives, strings,
-nested derived structs, and vectors through a compiler-generated schema.
+`@derive(Serialize, Deserialize)` is supported on structs and enums.
+`json::encode(value)` / `json::decode::<T>(text)` (aliases: `json_encode` /
+`json_decode::<T>`) round-trip primitives, strings, optionals, vectors,
+fixed-size arrays, matrices, maps, tagged enums, and nested derived structs
+through a compiler-generated schema.  See
+[`notes/design/json.md`](notes/design/json.md) for the wire format and
+limitations.
 
 The engine libraries now also include an `obj.e7` Wavefront parser,
 PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a

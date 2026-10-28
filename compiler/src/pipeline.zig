@@ -1451,6 +1451,73 @@ test "lowers derived JSON encode/decode to schema-driven runtime calls" {
     }
 }
 
+test "lowers JSON namespace aliases and rich schemas" {
+    var result = try compile(
+        std.testing.allocator,
+        \\@derive(Serialize, Deserialize)
+        \\Color <- enum
+        \\    Red
+        \\    Rgb(i64, i64, i64)
+        \\@derive(Serialize, Deserialize)
+        \\Sample <- struct
+        \\    fixed: [i32; 2]
+        \\    grid: [f64; 2, 2]
+        \\    lookup: map[str, i32]
+        \\    maybe: ?i64
+        \\    shade: Color
+        \\encode_sample <- () -> str:
+        \\    s := Sample {
+        \\        fixed: [1, 2],
+        \\        grid: [[1.0, 2.0], [3.0, 4.0]],
+        \\        lookup: map[str, i32] { "a": 1 },
+        \\        maybe: nil,
+        \\        shade: Color::Rgb(1, 2, 3),
+        \\    }
+        \\    json::encode(s)
+        \\decode_sample <- () -> Sample:
+        \\    json::decode::<Sample>("{}")
+        \\encode_int <- () -> str = json::encode(7)
+        \\decode_ints <- () -> [i64]:
+        \\    json::decode::<[i64]>("[1,2]")
+    ,
+        .{},
+    );
+    defer result.deinit();
+    try std.testing.expect(result.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &result.bytecode);
+
+    const sample_schema = "{fixed=A2:i;grid=M2:2:f;lookup=<s,i>;maybe=?i;shade=E{Red=u;Rgb=(i,i,i)}}";
+    try std.testing.expectEqualStrings("E{Red=u;Rgb=(i,i,i)}", result.analysis.derive("Color").?.schema.?);
+    try std.testing.expectEqualStrings(sample_schema, result.analysis.derive("Sample").?.schema.?);
+
+    const expectations = [_]struct {
+        function: []const u8,
+        intrinsic: bytecode.RuntimeFunction,
+        schema: []const u8,
+    }{
+        .{ .function = "encode_sample", .intrinsic = .json_encode, .schema = sample_schema },
+        .{ .function = "decode_sample", .intrinsic = .json_decode, .schema = sample_schema },
+        .{ .function = "encode_int", .intrinsic = .json_encode, .schema = "i" },
+        .{ .function = "decode_ints", .intrinsic = .json_decode, .schema = "[i]" },
+    };
+    for (expectations) |expectation| {
+        const function = result.functionNamed(expectation.function).?;
+        var found_call = false;
+        var found_schema = false;
+        for (function.code) |op| switch (op) {
+            .runtime_call => |call| {
+                if (call.function == expectation.intrinsic) found_call = true;
+            },
+            .string_lit => |literal| {
+                if (std.mem.eql(u8, literal, expectation.schema)) found_schema = true;
+            },
+            else => {},
+        };
+        try std.testing.expect(found_call);
+        try std.testing.expect(found_schema);
+    }
+}
+
 fn readRepoText(comptime relative: []const u8) ?[]u8 {
     const candidates = [_][]const u8{
         relative,

@@ -1668,11 +1668,15 @@ test "checks @derive(Serialize, Deserialize) and JSON builtins" {
         \\P <- struct
         \\    x: i32
     , "unknown derive trait");
-    try expectDiagnostic(
-        \\@derive(Serialize)
-        \\E <- enum
-        \\    A
-    , "only supported on structs");
+    try expectClean(
+        \\@derive(Serialize, Deserialize)
+        \\Shape <- enum
+        \\    Empty
+        \\    Circle(f32)
+        \\    Pair(i64, i64)
+        \\encode_shape <- () -> str = json_encode(Shape::Circle(1.5))
+        \\decode_shape <- () -> Shape = json_decode::<Shape>("{\"Circle\": 1.5}")
+    );
     try expectDiagnostic(
         \\P <- struct
         \\    x: i32
@@ -1694,8 +1698,8 @@ test "checks @derive(Serialize, Deserialize) and JSON builtins" {
         \\@derive(Serialize, Deserialize)
         \\P <- struct
         \\    x: i32
-        \\    fixed: [f32; 3]
-    , "fixed-size arrays are not supported");
+        \\    callback: () -> i32
+    , "is not supported by @derive(Serialize, Deserialize)");
     try expectDiagnostic(
         \\Inner <- struct
         \\    x: i32
@@ -1703,6 +1707,46 @@ test "checks @derive(Serialize, Deserialize) and JSON builtins" {
         \\Outer <- struct
         \\    inner: Inner
     , "must also derive Serialize");
+}
+
+test "accepts JSON schemas for collections, enums, and the json namespace" {
+    try expectClean(
+        \\@derive(Serialize, Deserialize)
+        \\Color <- enum
+        \\    Red
+        \\    Rgb(i64, i64, i64)
+        \\@derive(Serialize, Deserialize)
+        \\Sample <- struct
+        \\    index: i32
+        \\    vector: [i32; 4]
+        \\    matrix: [f64; 2, 2]
+        \\    lookup: map[str, i32]
+        \\    maybe: ?i64
+        \\    tags: [str]
+        \\    colors: [Color]
+        \\    shade: Color
+        \\encode_sample <- () -> str:
+        \\    s := Sample {
+        \\        index: 1,
+        \\        vector: [1, 2, 3, 4],
+        \\        matrix: [[1.0, 2.0], [3.0, 4.0]],
+        \\        lookup: map[str, i32] {},
+        \\        maybe: nil,
+        \\        tags: ["a"],
+        \\        colors: [Color::Red, Color::Rgb(1, 2, 3)],
+        \\        shade: Color::Red,
+        \\    }
+        \\    json::encode(s)
+        \\decode_sample <- () -> Sample:
+        \\    json::decode::<Sample>("{}")
+        \\encode_primitive <- () -> str = json::encode(42)
+        \\decode_primitive <- () -> i64 = json::decode::<i64>("42")
+        \\encode_vector <- () -> str:
+        \\    values := [1.5, 2.5]
+        \\    json::encode(values)
+        \\decode_optional <- () -> i64:
+        \\    json::decode::<?i64>("null")?
+    );
 }
 
 test "checks ECS component removal, re-add, and despawn Commands methods" {

@@ -2738,33 +2738,43 @@ const Builder = struct {
         return self.analysis.jsonSchema(named.name);
     }
 
-    /// `json_encode(value)` / `json_decode::<T>(text)`: compiler-generated
-    /// schema string + a runtime call.  The runtime walks the aggregate layout
-    /// described by the schema.
+    /// `json_encode(value)` / `json_decode::<T>(text)` and the
+    /// `json::encode` / `json::decode::<T>` namespace aliases: the analyzer
+    /// generated a schema string for the call expression; codegen embeds it and
+    /// emits a runtime call.  The runtime walks the aggregate layout described
+    /// by the schema.
     fn lowerJsonCall(self: *Builder, call: ast.Call, expr: *ast.Expr) Error!bool {
-        if (call.callee.* != .path or call.callee.path.segments.len != 1) return false;
-        const name = call.callee.path.segments[0].name;
-        const is_encode = std.mem.eql(u8, name, "json_encode");
-        const is_decode = std.mem.eql(u8, name, "json_decode");
-        if (!is_encode and !is_decode) return false;
-        // User functions/bindings shadow the builtin.
-        if (self.name_map.get(name) != null) return false;
-        if (is_encode) {
-            if (call.args.len != 1) return error.UnsupportedFeature;
-            const value_expr = call.args[0];
-            const value_ty = self.exprType(value_expr) orelse return error.UnsupportedFeature;
-            const schema = self.jsonSchemaForType(value_ty) orelse return error.UnsupportedFeature;
-            try self.emit(.{ .string_lit = schema });
-            try self.lowerExpr(value_expr);
-            try self.runtimeCall(.json_encode, 2);
-            return true;
+        if (call.callee.* != .path) return false;
+        const path = call.callee.path;
+        if (path.segments.len == 0) return false;
+        const last_segment = path.segments[path.segments.len - 1];
+        var is_encode = false;
+        var is_decode = false;
+        if (path.segments.len == 1) {
+            is_encode = std.mem.eql(u8, last_segment.name, "json_encode");
+            is_decode = std.mem.eql(u8, last_segment.name, "json_decode");
+            if (!is_encode and !is_decode) return false;
+            // User functions/bindings shadow the builtin.
+            if (self.name_map.get(last_segment.name) != null) return false;
+        } else if (path.segments.len == 2) {
+            if (!std.mem.eql(u8, path.segments[0].name, "json")) return false;
+            is_encode = std.mem.eql(u8, last_segment.name, "encode");
+            is_decode = std.mem.eql(u8, last_segment.name, "decode");
+            if (!is_encode and !is_decode) return false;
+        } else {
+            return false;
         }
         if (call.args.len != 1) return error.UnsupportedFeature;
-        const result_ty = self.exprType(expr) orelse return error.UnsupportedFeature;
-        const schema = self.jsonSchemaForType(result_ty) orelse return error.UnsupportedFeature;
+        const schema = self.analysis.jsonCallSchema(@intFromPtr(expr)) orelse blk: {
+            // Fallback for bytecode produced before per-call schemas existed:
+            // the type must be a derived struct/enum with a cached schema.
+            const target = if (is_encode) call.args[0] else expr;
+            const target_ty = self.exprType(target) orelse return error.UnsupportedFeature;
+            break :blk self.jsonSchemaForType(target_ty) orelse return error.UnsupportedFeature;
+        };
         try self.emit(.{ .string_lit = schema });
         try self.lowerExpr(call.args[0]);
-        try self.runtimeCall(.json_decode, 2);
+        try self.runtimeCall(if (is_encode) .json_encode else .json_decode, 2);
         return true;
     }
 

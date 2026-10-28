@@ -1403,6 +1403,168 @@ test "JIT round-trips JSON for derived structs" {
     try std.testing.expectEqual(@as(i64, 4518), roundtrip_line());
 }
 
+test "JIT runs the complete JSON API from e7 source" {
+    const source =
+        \\@derive(Serialize, Deserialize)
+        \\Color <- enum
+        \\    Red
+        \\    Rgb(i64, i64, i64)
+        \\@derive(Serialize, Deserialize)
+        \\Point <- struct
+        \\    x: f32
+        \\    tag: str
+        \\@derive(Serialize, Deserialize)
+        \\Box <- struct
+        \\    name: str
+        \\    vector: [i32; 4]
+        \\    grid: [f64; 2, 2]
+        \\    lookup: map[str, i32]
+        \\    colors: [Color]
+        \\    shade: Color
+        \\    label: ?i64
+        \\    points: [Point]
+        \\make_box <- () -> Box:
+        \\    box := Box {
+        \\        name: "box",
+        \\        vector: [1, 2, 3, 4],
+        \\        grid: [[1.0, 2.0], [3.0, 4.0]],
+        \\        lookup: map[str, i32] { "a": 1, "bb": 2 },
+        \\        colors: [Color::Red, Color::Rgb(1, 2, 3)],
+        \\        shade: Color::Rgb(4, 5, 6),
+        \\        label: nil,
+        \\        points: [Point { x: 1.5, tag: "p" }],
+        \\    }
+        \\    box
+        \\shade_value <- (color: Color) -> i64:
+        \\    match color:
+        \\        Red: 1
+        \\        Rgb(r, g, b): r + g + b
+        \\encode_box <- () -> str:
+        \\    json::encode(make_box())
+        \\roundtrip <- () -> i64:
+        \\    text := json::encode(make_box())
+        \\    copy := json::decode::<Box>(text)
+        \\    total := copy.vector[2] as i64
+        \\    total = total + e7_f32_to_milli(copy.grid[1, 0])
+        \\    total = total + (copy.lookup["a"] as i64) + (copy.lookup["bb"] as i64)
+        \\    total = total + (copy.name.len() as i64)
+        \\    total = total + (copy.points.len() as i64) + e7_f32_to_milli(copy.points[0].x)
+        \\    total = total + shade_value(copy.shade)
+        \\    total = total + (copy.colors.len() as i64)
+        \\    total
+        \\unknown_fields <- () -> i64:
+        \\    p := json::decode::<Point>("{\"extra\": true, \"tag\": \"ab\", \"x\": 2.5}")
+        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\missing_field <- () -> i64:
+        \\    p := json::decode::<Point>("{\"x\": 1.0}")
+        \\    if e7_handle(p) == 0:
+        \\        ret 1
+        \\    ret 0
+        \\malformed <- () -> i64:
+        \\    p := json::decode::<Point>("{oops}")
+        \\    if e7_handle(p) == 0:
+        \\        ret 1
+        \\    ret 0
+        \\unicode_roundtrip <- () -> i64:
+        \\    text := json::encode(Point { x: 2.5, tag: "héllo 😀" })
+        \\    p := json::decode::<Point>(text)
+        \\    e7_f32_to_milli(p.x) + (p.tag.len() as i64)
+        \\encode_primitive <- () -> str:
+        \\    json::encode(42)
+        \\encode_vector <- () -> str:
+        \\    json::encode([1.5, 2.5])
+        \\encode_string <- () -> str:
+        \\    json::encode("hi")
+        \\decode_string <- () -> i64:
+        \\    text := json::decode::<str>("\"ab\"")
+        \\    text.len() as i64
+    ;
+    var compiled = compiler.pipeline.compile(std.testing.allocator, source, .{}) catch |err| {
+        if (compiler.parser.parse(std.testing.allocator, source)) |parsed_result| {
+            switch (parsed_result) {
+                .ast => |tree_value| {
+                    var tree = tree_value;
+                    defer tree.deinit();
+                    if (compiler.semantic.analyze(std.testing.allocator, tree.module)) |analysis_value| {
+                        var analysis = analysis_value;
+                        defer analysis.deinit();
+                        for (analysis.diagnostics) |diagnostic| {
+                            std.debug.print("json e7 semantic {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+                        }
+                    } else |_| {}
+                },
+                .diagnostic => |diagnostic| std.debug.print("json e7 parse: {s}\n", .{diagnostic.message}),
+            }
+        } else |_| {}
+        return err;
+    };
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    try std.testing.expectEqualStrings("E{Red=u;Rgb=(i,i,i)}", compiled.analysis.derive("Color").?.schema.?);
+    try std.testing.expectEqualStrings(
+        "{name=s;vector=A4:i;grid=M2:2:f;lookup=<s,i>;colors=[E{Red=u;Rgb=(i,i,i)}];shade=E{Red=u;Rgb=(i,i,i)};label=?i;points=[{x=f;tag=s}]}",
+        compiled.analysis.derive("Box").?.schema.?,
+    );
+
+    const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
+    defer std.testing.allocator.free(bytes);
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecodeBytes(bytes, "json-complete");
+
+    const I64 = *const fn () callconv(.c) i64;
+    const Str = *const fn () callconv(.c) i64;
+
+    const encode_box = try jit.get(Str, "encode_box");
+    const encoded = encode_box();
+    try std.testing.expect(encoded != 0);
+    const encoded_len = aggregate.e7_str_len(encoded);
+    try std.testing.expect(encoded_len > 0);
+    const encoded_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(encoded + 8)));
+    const encoded_text = encoded_ptr[0..@intCast(encoded_len)];
+    try std.testing.expect(std.mem.indexOf(u8, encoded_text, "\"grid\":[[1,2],[3,4]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded_text, "\"lookup\":{\"a\":1,\"bb\":2}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded_text, "\"shade\":{\"Rgb\":[4,5,6]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded_text, "\"label\":null") != null);
+
+    const roundtrip = try jit.get(I64, "roundtrip");
+    // vector[2]=3 + grid[1,0]=3000 + lookup 1+2 + name len 3
+    // + points len 1 + points[0].x 1500 + Rgb(4,5,6)=15 + colors len 2
+    try std.testing.expectEqual(@as(i64, 4527), roundtrip());
+
+    const unknown_fields = try jit.get(I64, "unknown_fields");
+    try std.testing.expectEqual(@as(i64, 2502), unknown_fields());
+    const missing_field = try jit.get(I64, "missing_field");
+    try std.testing.expectEqual(@as(i64, 1), missing_field());
+    const malformed = try jit.get(I64, "malformed");
+    try std.testing.expectEqual(@as(i64, 1), malformed());
+    const unicode_roundtrip = try jit.get(I64, "unicode_roundtrip");
+    try std.testing.expectEqual(@as(i64, 2500 + 11), unicode_roundtrip());
+
+    const encode_primitive = try jit.get(Str, "encode_primitive");
+    const primitive = encode_primitive();
+    try std.testing.expect(primitive != 0);
+    const primitive_bytes = aggregate.e7_str_len(primitive);
+    try std.testing.expectEqual(@as(i64, 2), primitive_bytes);
+
+    const decode_string = try jit.get(I64, "decode_string");
+    try std.testing.expectEqual(@as(i64, 2), decode_string());
+
+    const encode_vector = try jit.get(Str, "encode_vector");
+    const vector_text = encode_vector();
+    try std.testing.expect(vector_text != 0);
+    const vector_len = aggregate.e7_str_len(vector_text);
+    const vector_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(vector_text + 8)));
+    try std.testing.expectEqualStrings("[1.5,2.5]", vector_ptr[0..@intCast(vector_len)]);
+
+    const encode_string = try jit.get(Str, "encode_string");
+    const string_text = encode_string();
+    try std.testing.expect(string_text != 0);
+    const string_len = aggregate.e7_str_len(string_text);
+    const string_ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(string_text + 8)));
+    try std.testing.expectEqualStrings("\"hi\"", string_ptr[0..@intCast(string_len)]);
+}
+
 fn readRepoTextRuntime(allocator: std.mem.Allocator, relative: []const u8) ?[]u8 {
     const prefixes = [_][]const u8{ "", "../", "../../" };
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
