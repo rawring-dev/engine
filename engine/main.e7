@@ -118,6 +118,9 @@ pub DemoPlugin <- plugin
         }
         plane_renderable := Renderable { kind: 3, colour: [0.42, 0.48, 0.42] }
         plane_material := Material { texture: 0, tint: [0.42, 0.48, 0.42] }
+        # Render orientation is a quaternion; the physics step publishes the
+        # authoritative orientation and the renderer builds the matrix from it.
+        plane_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
         commands.add_row(Components, {
             plane_transform,
             plane_id,
@@ -127,6 +130,7 @@ pub DemoPlugin <- plugin
             plane_flags,
             plane_renderable,
             plane_material,
+            plane_orientation,
         })
 
         # Pickable dynamic ball (unlocked rotation; collisions impart spin).
@@ -160,6 +164,7 @@ pub DemoPlugin <- plugin
         ball_pickup := Pickup { body_id: 3 }
         ball_renderable := Renderable { kind: 1, colour: [1.0, 0.55, 0.22] }
         ball_material := Material { texture: 0, tint: [1.0, 0.55, 0.22] }
+        ball_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
         commands.add_row(Components, {
             ball_transform,
             ball_id,
@@ -170,6 +175,7 @@ pub DemoPlugin <- plugin
             ball_pickup,
             ball_renderable,
             ball_material,
+            ball_orientation,
         })
 
         # Three dynamic cubes stacked vertically (unlocked rotation).
@@ -209,6 +215,7 @@ pub DemoPlugin <- plugin
             cube_renderable := Renderable { kind: 0, colour: cube_colour }
             cube_material := Material { texture: 0, tint: cube_colour }
             cube_pickup := Pickup { body_id: 4 + stack_index }
+            cube_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
             commands.add_row(Components, {
                 cube_transform,
                 cube_id,
@@ -219,6 +226,7 @@ pub DemoPlugin <- plugin
                 cube_renderable,
                 cube_pickup,
                 cube_material,
+                cube_orientation,
             })
             cube_y = cube_y + 1.0
             stack_index = stack_index + 1
@@ -283,7 +291,10 @@ pub DemoPlugin <- plugin
             colour: [1.0, 1.0, 1.0, 1.0],
         }
         obj_material := Material { texture: 0, tint: [0.85, 0.9, 1.0] }
-        commands.add_row(Components, { obj_transform, obj_renderer, obj_material })
+        # Static mesh: its authored Y rotation is converted to this quaternion
+        # once by the physics Init hook, then rendered without Euler angles.
+        obj_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        commands.add_row(Components, { obj_transform, obj_renderer, obj_material, obj_orientation })
 
 
         # ---------------------------------------------------------------- UI
@@ -361,18 +372,16 @@ pub demo_ui_actions <- sys (
             transform.translation[0] = -2.0
             transform.translation[1] = 0.5 + e7_f32_from_i64(index)
             transform.translation[2] = 0.0
-            transform.rotation[0] = 0.0
-            transform.rotation[1] = 0.0
-            transform.rotation[2] = 0.0
+            # Orientation is quaternion-only: reset the authoritative physics
+            # quaternion and let physics_publish_orientation refresh the render
+            # component.  Transform.rotation and the legacy RigidBody.orientation
+            # Euler mirror are not part of the rotation path.
             body.velocity[0] = 0.0
             body.velocity[1] = 0.0
             body.velocity[2] = 0.0
             body.angular_velocity[0] = 0.0
             body.angular_velocity[1] = 0.0
             body.angular_velocity[2] = 0.0
-            body.orientation[0] = 0.0
-            body.orientation[1] = 0.0
-            body.orientation[2] = 0.0
             world.quaternions[id.id] = [0.0, 0.0, 0.0, 1.0]
             world.sleep_state[id.id] = [0.0, 0.0]
     elif ui.action == 2:

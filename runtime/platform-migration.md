@@ -451,7 +451,7 @@ Final state (supersedes the round-79 notes above):
 - All platform shaders use e7s -> Slang -> SPIR-V; e7s supports combined image
   samplers (`Sampler2D<[f32;4]>`) for the textured/UI/lit fragment stages.
 - Host PPM capture writes RGB from BGRA swapchain bytes.
-- Full suite: scheduler 8, compiler 206, runtime 135, transpiler 26; all pass
+- Full suite: scheduler 8, compiler 206, runtime 139, transpiler 26; all pass
   with zero skipped tests (capture assertions now require actual frame content).
 - Procedural sphere (UV 16x24), capsule (24 slices, closed band, 8 cap stacks),
   and plane meshes render through the lit pipeline; box keeps the cube. Full
@@ -472,3 +472,12 @@ Final state (supersedes the round-79 notes above):
 - Physics parity restored: sleeping bodies re-check ground/body support each
   step and wake when their support is removed, so stacks fall instead of
   floating until disturbed.
+
+- Physics rotation is quaternion-only end to end: `PhysicsWorld.quaternions`
+  is the sole simulation state, the fixed step no longer decomposes it to Euler
+  (no `quat_to_euler`, no dynamic `Transform.rotation` writes), and a
+  `BodyOrientation` component publishes it for rendering.  The renderer has a
+  direct quaternion -> column-major model-matrix API
+  (`object_model_matrix_quat`, normalized R(quat) * scale with translate) used
+  by the procedural and custom-mesh paths; authored Euler rotation is converted
+  once at Init for static bodies only.

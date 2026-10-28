@@ -18,9 +18,11 @@ mod narrowphase
 #   -> player movement/jump -> nearest-pickup acquire/release/hold
 #   -> camera look + player-follow -> (PostUpdate: Held marker sync, debug ray).
 # The step is fixed at 16 ms.  Quaternion authoritative orientation lives in
-# PhysicsWorld.quaternions (map body id -> [x,y,z,w]); Transform.rotation is the
-# Euler mirror used by rendering/tools.  Pickup and camera follow observe the
-# same step's transforms instead of lagging a phase behind.
+# PhysicsWorld.quaternions (map body id -> [x,y,z,w]); the step publishes it to
+# the BodyOrientation component for rendering and never decomposes it back to
+# Euler angles.  Transform.rotation is authored data for static bodies and
+# non-physics callers; dynamic bodies leave it untouched.  Pickup and camera
+# follow observe the same step's transforms instead of lagging a phase behind.
 
 use core::ecs::*;
 use core::events::*;
@@ -59,9 +61,11 @@ pub PhysicsWorld <- struct
     camera_yaw: f32
     camera_pitch: f32
     move_speed: f32
-    # Quaternion per body id (x, y, z, w).  Initialised lazily from the Euler
-    # Transform.rotation; authoritative for oriented collisions and integrated
-    # with normalisation at the fixed step.  Diagonal inverse inertia is derived
+    # Quaternion per body id (x, y, z, w).  The sole orientation state for the
+    # simulation: initialised once from the authored Euler Transform.rotation
+    # (static bodies keep that value) and integrated with normalisation for
+    # dynamic bodies.  Collision, the body AABB and the rendered model matrix
+    # all consume this quaternion directly.  Diagonal inverse inertia is derived
     # per shape from BodyBounds/mass when impulses are applied.
     quaternions: map[i64, [f32]]
     # Ground plane used by narrowphase (demo plane is y-up at 0).
@@ -403,6 +407,40 @@ pair_manifold <- (
     ret contact
 
 # ---------------------------------------------------------------------------
+# Render orientation initialisation
+# ---------------------------------------------------------------------------
+
+# Seed the render-facing BodyOrientation quaternion from the authored Euler
+# Transform.rotation exactly once.  Dynamic bodies are overwritten from the
+# physics quaternion every step; static bodies keep this converted value, so
+# Euler angles never reach the renderer as rotation state.
+@trigger(Init)
+pub physics_orientation_init <- sys (orientations: select &mut BodyOrientation, &Transform from Components):
+    for (orientation, transform) in orientations:
+        q := quat_from_euler(transform.rotation[0], transform.rotation[1], transform.rotation[2])
+        orientation.x = q.x
+        orientation.y = q.y
+        orientation.z = q.z
+        orientation.w = q.w
+
+
+# Publish the authoritative physics quaternion to the render-facing component.
+# This runs after the fixed step so rendering never sees an Euler intermediate;
+# the quaternion map is the only rotation state that flows into the renderer.
+@trigger(PostUpdate)
+pub physics_publish_orientation <- sys (
+    world: res &PhysicsWorld,
+    orientations: select &mut BodyOrientation, &BodyId from Components,
+):
+    for (orientation, body_id) in orientations:
+        qv := world.quaternions[body_id.id]
+        if qv.len() >= 4:
+            orientation.x = qv[0]
+            orientation.y = qv[1]
+            orientation.z = qv[2]
+            orientation.w = qv[3]
+
+# ---------------------------------------------------------------------------
 # The fixed-step system
 # ---------------------------------------------------------------------------
 
@@ -472,11 +510,10 @@ pub physics_step <- sys (
                     Vec3 { x: body.angular_velocity[0], y: body.angular_velocity[1], z: body.angular_velocity[2] },
                     dt,
                 )
+                # The quaternion is the only orientation state written here;
+                # rendering reads it through BodyOrientation, published by
+                # physics_publish_orientation once the step is complete.
                 world.quaternions[id] = [q.x, q.y, q.z, q.w]
-                euler := quat_to_euler(Quat { x: q.x, y: q.y, z: q.z, w: q.w })
-                transform.rotation[0] = euler.x
-                transform.rotation[1] = euler.y
-                transform.rotation[2] = euler.z
                 body.angular_velocity[0] = body.angular_velocity[0] * 0.995
                 body.angular_velocity[1] = body.angular_velocity[1] * 0.995
                 body.angular_velocity[2] = body.angular_velocity[2] * 0.995

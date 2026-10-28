@@ -3772,3 +3772,949 @@ test "physics sleeping stack wakes when its support is removed" {
     try std.testing.expect(top_a_y_after > 0);
     try std.testing.expect(top_b_y_after > 0);
 }
+
+// ---------------------------------------------------------------------------
+// Quaternion-only rotation path (physics -> render)
+// ---------------------------------------------------------------------------
+
+test "quaternion model matrix matches the rotation formula" {
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+
+    const probe =
+        \\matrix_probe <- () -> i64:
+        \\    out := e7_alloc_bytes(64) as i64
+        \\    score := 0
+        \\    # Identity quaternion: R = I, scaled by (1, 1, 1) in metres.
+        \\    object_model_matrix_quat(out, 1000, 1000, 1000, 0.0, 0.0, 0.0, 1.0)
+        \\    if e7_f32_abs(e7_load_f32(out) - 1.0) < 0.0005:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 20) - 1.0) < 0.0005:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 40) - 1.0) < 0.0005:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 60) - 1.0) < 0.0001:
+        \\        score = score + 1
+        \\    # +90 deg about Y with non-uniform scale (2, 3, 4) metres.
+        \\    # R = [[0,0,1],[0,1,0],[-1,0,0]]; columns are (0,0,-2), (0,3,0), (4,0,0).
+        \\    object_model_matrix_quat(out, 2000, 3000, 4000, 0.0, 0.7071067811865476, 0.0, 0.7071067811865476)
+        \\    if e7_f32_abs(e7_load_f32(out)) < 1.0:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 4)) < 1.0:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 8) + 2.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 16)) < 1.0:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 20) - 3.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 24)) < 1.0:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 32) - 4.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 36)) < 1.0:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 40)) < 1.0:
+        \\        score = score + 1
+        \\    # A non-unit quaternion normalises to the same rotation.
+        \\    object_model_matrix_quat(out, 2000, 3000, 4000, 0.0, 2.0, 0.0, 2.0)
+        \\    if e7_f32_abs(e7_load_f32(out + 8) + 2.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 32) - 4.0) < 0.001:
+        \\        score = score + 1
+        \\    # +90 deg about X: R = [[1,0,0],[0,0,-1],[0,1,0]]; columns (1,0,0),(0,0,1),(0,-1,0).
+        \\    object_model_matrix_quat(out, 1000, 1000, 1000, 0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
+        \\    if e7_f32_abs(e7_load_f32(out) - 1.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 24) - 1.0) < 0.001:
+        \\        score = score + 1
+        \\    if e7_f32_abs(e7_load_f32(out + 36) + 1.0) < 0.001:
+        \\        score = score + 1
+        \\    e7_free_ptr(out)
+        \\    ret score
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "quat-model-matrix");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "matrix_probe");
+    try std.testing.expectEqual(@as(i64, 18), probe_fn());
+}
+
+test "quaternion draw uses the physics orientation for procedural meshes" {
+    if (!canResolve("libSDL3.so", "SDL_CreateWindow") or !canResolve("libvulkan.so", "vkCreateInstance")) return error.SkipZigTest;
+    const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
+    defer std.testing.allocator.free(sdl_source);
+    const vk_source = try readRepoSource(std.testing.allocator, "engine/platform/vulkan.e7");
+    defer std.testing.allocator.free(vk_source);
+    const scene_source = try readRepoSource(std.testing.allocator, "engine/platform/scene.e7");
+    defer std.testing.allocator.free(scene_source);
+
+    const probe =
+        \\bright_width <- (scene: u64) -> i64:
+        \\    pixels_out := e7_alloc_bytes(8)
+        \\    size_out := e7_alloc_bytes(8)
+        \\    drew := scene_draw(scene, pixels_out, size_out)
+        \\    if drew == 0:
+        \\        e7_free_ptr(pixels_out)
+        \\        e7_free_ptr(size_out)
+        \\        ret -1
+        \\    pixels := e7_load_u64(pixels_out)
+        \\    width := scene_width(scene)
+        \\    height := scene_height(scene)
+        \\    min_x := width
+        \\    max_x := -1
+        \\    y := 0
+        \\    while y < height:
+        \\        x := 0
+        \\        while x < width:
+        \\            pixel := e7_load_u32(pixels + (y * width + x) * 4)
+        \\            # Ignore the alpha byte: only background RGB is zero.
+        \\            if pixel % 16777216 != 0:
+        \\                if x < min_x:
+        \\                    min_x = x
+        \\                if x > max_x:
+        \\                    max_x = x
+        \\            x = x + 1
+        \\        y = y + 1
+        \\    e7_free_ptr(pixels)
+        \\    e7_free_ptr(pixels_out)
+        \\    e7_free_ptr(size_out)
+        \\    if max_x < 0:
+        \\        ret 0
+        \\    span := max_x - min_x + 1
+        \\    ret e7_f32_to_i64(e7_f32_from_i64(span))
+        \\render_probe <- () -> i64:
+        \\    if video_init("dummy") == 0:
+        \\        ret 0
+        \\    win := window_create("e7 quat draw", 64, 48, 268435464)
+        \\    if win == 0:
+        \\        ret 0
+        \\    scene := scene_create(win, 64, 48)
+        \\    if scene == 0:
+        \\        window_destroy(win)
+        \\        ret -2
+        \\    scene_set_camera(scene, 0, 0, 4000, 0, 0)
+        \\    scene_set_light(scene, 2600, 3000, 2600, 1000, 900, 800, 4000)
+        \\    # Elongated box (4 m wide, 2 m deep) seen down -Z: wide silhouette.
+        \\    scene_begin_frame(scene)
+        \\    scene_draw_shape_quat(scene, 0, 0, 0, 0, 2000, 1000, 1000, 0.0, 0.0, 0.0, 1.0, 1000, 1000, 1000, 0 as u64)
+        \\    identity_width := bright_width(scene)
+        \\    # +90 deg yaw from a quaternion: the same box now shows its 2 m side.
+        \\    scene_begin_frame(scene)
+        \\    sin_half := e7_f32_sqrt(0.5)
+        \\    scene_draw_shape_quat(scene, 0, 0, 0, 0, 2000, 1000, 1000, 0.0, sin_half, 0.0, sin_half, 1000, 1000, 1000, 0 as u64)
+        \\    rotated_width := bright_width(scene)
+        \\    scene_destroy(scene)
+        \\    window_destroy(win)
+        \\    video_quit()
+        \\    if identity_width <= 0:
+        \\        ret -3
+        \\    if rotated_width <= 0:
+        \\        ret -4
+        \\    ret identity_width * 10000 + rotated_width
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}\n{s}\n{s}", .{ sdl_source, vk_source, scene_source, probe });
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "quat-draw-width");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "render_probe");
+    const result = probe_fn();
+    if (result <= 0) {
+        std.debug.print("skipping quaternion draw test: window/scene unavailable (code {d})\n", .{result});
+        return error.SkipZigTest;
+    }
+    const identity_width: i64 = @divTrunc(result, 10000);
+    const rotated_width: i64 = @mod(result, 10000);
+    // A +90 deg yaw turns the 4 m along X into depth, so the projected width
+    // must shrink by the box's 2:1 axis ratio (allow pipeline/pixel slack).
+    try std.testing.expect(identity_width > rotated_width + 8);
+    try std.testing.expect(rotated_width > 2);
+}
+
+/// Reference implementation of the fixed-step angular integration: q' =
+/// normalize(q + 0.5 * dt * omega (x) q) with the same per-step 0.995 damping.
+fn referenceAngularQuaternion(steps: usize) [4]f64 {
+    var q = [4]f64{ 0.0, 0.0, 0.0, 1.0 };
+    var omega: f64 = 2.0;
+    const dt: f64 = 0.016;
+    var step: usize = 0;
+    while (step < steps) : (step += 1) {
+        const half_dt = 0.5 * dt;
+        const wy = omega * half_dt;
+        const nx = q[0] + wy * q[2];
+        const ny = q[1] + wy * q[3];
+        const nz = q[2] - wy * q[0];
+        const nw = q[3] - wy * q[1];
+        const length = @sqrt(nx * nx + ny * ny + nz * nz + nw * nw);
+        q = .{ nx / length, ny / length, nz / length, nw / length };
+        omega *= 0.995;
+    }
+    return q;
+}
+
+fn expectMilliNear(expected: f64, actual: i64, tolerance: i64) !void {
+    const expected_milli: i64 = @intFromFloat(expected * 1000000.0);
+    const delta = if (actual >= expected_milli) actual - expected_milli else expected_milli - actual;
+    try std.testing.expect(delta <= tolerance);
+}
+
+test "physics publishes the integrated quaternion with no Euler round-trip" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+    const root_source =
+        \\mod platform
+        \\mod core
+        \\mod physics
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
+        \\use physics::*;
+        \\use platform::scene::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    qx: i64
+        \\    qy: i64
+        \\    qz: i64
+        \\    qw: i64
+        \\    map_qx: i64
+        \\    map_qy: i64
+        \\    map_qz: i64
+        \\    map_qw: i64
+        \\    m00: i64
+        \\    m02: i64
+        \\    m20: i64
+        \\    m22: i64
+        \\    rot_x: i64
+        \\    rot_y: i64
+        \\    rot_z: i64
+        \\pub Capture <- trigger
+        \\pub QuatScene <- plugin
+        \\    quat_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { qx: 0, qy: 0, qz: 0, qw: 0, map_qx: 0, map_qy: 0, map_qz: 0, map_qw: 0, m00: 0, m02: 0, m20: 0, m22: 0, rot_x: 0, rot_y: 0, rot_z: 0 })
+        \\        commands.insert_resource(Input {
+        \\            window: 0,
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        commands.insert_resource(PhysicsWorld {
+        \\            gravity_y: 0.0,
+        \\            max_step: 0.05,
+        \\            grounded: false,
+        \\            jump_latched: false,
+        \\            player_x: 0.0,
+        \\            player_y: 0.0,
+        \\            player_z: 0.0,
+        \\            camera_yaw: 0.0,
+        \\            camera_pitch: 0.0,
+        \\            move_speed: 4.0,
+        \\            quaternions: map[i64, [f32]] {},
+        \\            plane_normal: [0.0, 1.0, 0.0],
+        \\            plane_offset: 0.0,
+        \\            friction: 0.9,
+        \\            friction_static: 1.15,
+        \\            pending_impulses: map[i64, [f32]] {},
+        \\            sleep_state: map[i64, [f32]] {},
+        \\        })
+        \\        body_transform := Transform { translation: [0.0, 100.0, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+        \\        body_id := BodyId { id: 7 }
+        \\        body_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        body := RigidBody {
+        \\            velocity: [0.0, 0.0, 0.0],
+        \\            angular_velocity: [0.0, 2.0, 0.0],
+        \\            orientation: [0.0, 0.0, 0.0],
+        \\            inv_mass: 1.0,
+        \\            gravity_scale: 1.0,
+        \\            rotation_locked: false,
+        \\            is_static: false,
+        \\        }
+        \\        collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 7, held_by: 0 }
+        \\        orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        \\        commands.add_row(Components, { body_transform, body_id, body_bounds, body, collider, flags, orientation })
+        \\@trigger(Capture)
+        \\pub capture <- sys (
+        \\    world: res &PhysicsWorld,
+        \\    orientations: select &BodyOrientation, &BodyId from Components,
+        \\    bodies: select &Transform, &BodyId from Components,
+        \\    probe: res &mut Probe,
+        \\):
+        \\    for (orientation, id) in orientations:
+        \\        if id.id == 7:
+        \\            probe.qx = e7_f32_to_i64(orientation.x * 1000000.0)
+        \\            probe.qy = e7_f32_to_i64(orientation.y * 1000000.0)
+        \\            probe.qz = e7_f32_to_i64(orientation.z * 1000000.0)
+        \\            probe.qw = e7_f32_to_i64(orientation.w * 1000000.0)
+        \\            out := e7_alloc_bytes(64) as i64
+        \\            object_model_matrix_quat(out, 1000, 1000, 1000, orientation.x, orientation.y, orientation.z, orientation.w)
+        \\            probe.m00 = e7_f32_to_i64(e7_load_f32(out) * 1000000.0)
+        \\            probe.m02 = e7_f32_to_i64(e7_load_f32(out + 8) * 1000000.0)
+        \\            probe.m20 = e7_f32_to_i64(e7_load_f32(out + 32) * 1000000.0)
+        \\            probe.m22 = e7_f32_to_i64(e7_load_f32(out + 40) * 1000000.0)
+        \\            e7_free_ptr(out)
+        \\            qv := world.quaternions[id.id]
+        \\            if qv.len() >= 4:
+        \\                probe.map_qx = e7_f32_to_i64(qv[0] * 1000000.0)
+        \\                probe.map_qy = e7_f32_to_i64(qv[1] * 1000000.0)
+        \\                probe.map_qz = e7_f32_to_i64(qv[2] * 1000000.0)
+        \\                probe.map_qw = e7_f32_to_i64(qv[3] * 1000000.0)
+        \\    for (transform, id) in bodies:
+        \\        if id.id == 7:
+        \\            probe.rot_x = e7_f32_to_i64(transform.rotation[0] * 1000000.0)
+        \\            probe.rot_y = e7_f32_to_i64(transform.rotation[1] * 1000000.0)
+        \\            probe.rot_z = e7_f32_to_i64(transform.rotation[2] * 1000000.0)
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(QuatScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await PostUpdate()
+        \\    await Capture()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        modules.sources,
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("quat integration diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "quat-integration");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const qx = aggregate.e7_load_i64(probe_ptr);
+    const qy = aggregate.e7_load_i64(probe_ptr + 8);
+    const qz = aggregate.e7_load_i64(probe_ptr + 16);
+    const qw = aggregate.e7_load_i64(probe_ptr + 24);
+    const map_qx = aggregate.e7_load_i64(probe_ptr + 32);
+    const map_qy = aggregate.e7_load_i64(probe_ptr + 40);
+    const map_qz = aggregate.e7_load_i64(probe_ptr + 48);
+    const map_qw = aggregate.e7_load_i64(probe_ptr + 56);
+    const m00 = aggregate.e7_load_i64(probe_ptr + 64);
+    const m02 = aggregate.e7_load_i64(probe_ptr + 72);
+    const m20 = aggregate.e7_load_i64(probe_ptr + 80);
+    const m22 = aggregate.e7_load_i64(probe_ptr + 88);
+    const rot_x = aggregate.e7_load_i64(probe_ptr + 96);
+    const rot_y = aggregate.e7_load_i64(probe_ptr + 104);
+    const rot_z = aggregate.e7_load_i64(probe_ptr + 112);
+
+    // No collisions: the physics quaternion matches the reference integration.
+    const expected = referenceAngularQuaternion(100);
+    try expectMilliNear(expected[0], qx, 3);
+    try expectMilliNear(expected[1], qy, 3);
+    try expectMilliNear(expected[2], qz, 3);
+    try expectMilliNear(expected[3], qw, 3);
+    // BodyOrientation is exactly the physics quaternion (render source).
+    try std.testing.expect(@abs(qx - map_qx) <= 1);
+    try std.testing.expect(@abs(qy - map_qy) <= 1);
+    try std.testing.expect(@abs(qz - map_qz) <= 1);
+    try std.testing.expect(@abs(qw - map_qw) <= 1);
+    // The quaternion stays normalised.
+    const norm = @sqrt(@as(f64, @floatFromInt(qx * qx + qy * qy + qz * qz + qw * qw)) / 1000000000000.0);
+    try std.testing.expect(@abs(norm - 1.0) < 0.0005);
+    // The model matrix is built from that quaternion (R entries for a pure-Y spin).
+    const ex = expected[0];
+    const ey = expected[1];
+    const ez = expected[2];
+    const ew = expected[3];
+    try expectMilliNear(1.0 - 2.0 * (ey * ey + ez * ez), m00, 3);
+    // out is column-major: m02 (slot +8) is R20, m20 (slot +32) is R02.
+    try expectMilliNear(2.0 * (ex * ez - ew * ey), m02, 3);
+    try expectMilliNear(2.0 * (ex * ez + ew * ey), m20, 3);
+    try expectMilliNear(1.0 - 2.0 * (ex * ex + ey * ey), m22, 3);
+    // Dynamic bodies never write the Euler Transform mirror.
+    try std.testing.expectEqual(@as(i64, 0), rot_x);
+    try std.testing.expectEqual(@as(i64, 0), rot_y);
+    try std.testing.expectEqual(@as(i64, 0), rot_z);
+}
+
+test "quaternion stack contacts keep render orientation consistent" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+    const root_source =
+        \\mod platform
+        \\mod core
+        \\mod physics
+        \\use core::events::*;
+        \\use core::ecs::*;
+        \\use core::time::*;
+        \\use core::input::*;
+        \\use core::camera::*;
+        \\use physics::broadphase::*;
+        \\use physics::narrowphase::*;
+        \\use physics::*;
+        \\use platform::scene::*;
+        \\@resource
+        \\pub Probe <- struct
+        \\    up_qx: i64
+        \\    up_qy: i64
+        \\    up_qz: i64
+        \\    up_qw: i64
+        \\    map_qx: i64
+        \\    map_qy: i64
+        \\    map_qz: i64
+        \\    map_qw: i64
+        \\    m00: i64
+        \\    m02: i64
+        \\    m20: i64
+        \\    m22: i64
+        \\    rot_x: i64
+        \\    rot_y: i64
+        \\    rot_z: i64
+        \\    low_y: i64
+        \\    up_y: i64
+        \\pub Capture <- trigger
+        \\pub StackQuatScene <- plugin
+        \\    stack_quat_scene_plugin_init <- sys (commands: &mut Commands):
+        \\        commands.insert_resource(Probe { up_qx: 0, up_qy: 0, up_qz: 0, up_qw: 0, map_qx: 0, map_qy: 0, map_qz: 0, map_qw: 0, m00: 0, m02: 0, m20: 0, m22: 0, rot_x: 0, rot_y: 0, rot_z: 0, low_y: 0, up_y: 0 })
+        \\        commands.insert_resource(Input {
+        \\            window: 0,
+        \\            move_forward: false, move_backward: false, move_left: false, move_right: false,
+        \\            move_up: false, move_down: false, sprint: false,
+        \\            look_left: false, look_right: false, look_up: false, look_down: false,
+        \\            look_dx: 0.0, look_dy: 0.0,
+        \\            jump_pressed: false, jump_down: false, jump_was_down: false,
+        \\            interact: false, interact_pressed: false, interact_was_down: false,
+        \\        })
+        \\        commands.insert_resource(PhysicsWorld {
+        \\            gravity_y: -30.0,
+        \\            max_step: 0.05,
+        \\            grounded: false,
+        \\            jump_latched: false,
+        \\            player_x: 0.0,
+        \\            player_y: 0.0,
+        \\            player_z: 0.0,
+        \\            camera_yaw: 0.0,
+        \\            camera_pitch: 0.0,
+        \\            move_speed: 4.0,
+        \\            quaternions: map[i64, [f32]] {},
+        \\            plane_normal: [0.0, 1.0, 0.0],
+        \\            plane_offset: 0.0,
+        \\            friction: 0.9,
+        \\            friction_static: 1.15,
+        \\            pending_impulses: map[i64, [f32]] {},
+        \\            sleep_state: map[i64, [f32]] {},
+        \\        })
+        \\        lower_transform := Transform { translation: [0.0, 0.5, 0.0], rotation: [0.04, 0.0, 0.03], scale: [1.0, 1.0, 1.0] }
+        \\        lower_id := BodyId { id: 10 }
+        \\        lower_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        lower_body := RigidBody { velocity: [0.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0], inv_mass: 1.0, gravity_scale: 1.0, rotation_locked: false, is_static: false }
+        \\        lower_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        lower_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 10, held_by: 0 }
+        \\        lower_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        \\        commands.add_row(Components, { lower_transform, lower_id, lower_bounds, lower_body, lower_collider, lower_flags, lower_orientation })
+        \\        upper_transform := Transform { translation: [0.0, 1.5, 0.0], rotation: [0.04, 0.0, 0.03], scale: [1.0, 1.0, 1.0] }
+        \\        upper_id := BodyId { id: 11 }
+        \\        upper_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        \\        upper_body := RigidBody { velocity: [0.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0], inv_mass: 1.0, gravity_scale: 1.0, rotation_locked: false, is_static: false }
+        \\        upper_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+        \\        upper_flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: 11, held_by: 0 }
+        \\        upper_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        \\        commands.add_row(Components, { upper_transform, upper_id, upper_bounds, upper_body, upper_collider, upper_flags, upper_orientation })
+        \\@trigger(Capture)
+        \\pub capture <- sys (
+        \\    world: res &PhysicsWorld,
+        \\    orientations: select &BodyOrientation, &BodyId from Components,
+        \\    bodies: select &Transform, &BodyId from Components,
+        \\    probe: res &mut Probe,
+        \\):
+        \\    for (orientation, id) in orientations:
+        \\        if id.id == 11:
+        \\            probe.up_qx = e7_f32_to_i64(orientation.x * 1000000.0)
+        \\            probe.up_qy = e7_f32_to_i64(orientation.y * 1000000.0)
+        \\            probe.up_qz = e7_f32_to_i64(orientation.z * 1000000.0)
+        \\            probe.up_qw = e7_f32_to_i64(orientation.w * 1000000.0)
+        \\            out := e7_alloc_bytes(64) as i64
+        \\            object_model_matrix_quat(out, 1000, 1000, 1000, orientation.x, orientation.y, orientation.z, orientation.w)
+        \\            probe.m00 = e7_f32_to_i64(e7_load_f32(out) * 1000000.0)
+        \\            probe.m02 = e7_f32_to_i64(e7_load_f32(out + 8) * 1000000.0)
+        \\            probe.m20 = e7_f32_to_i64(e7_load_f32(out + 32) * 1000000.0)
+        \\            probe.m22 = e7_f32_to_i64(e7_load_f32(out + 40) * 1000000.0)
+        \\            e7_free_ptr(out)
+        \\            qv := world.quaternions[id.id]
+        \\            if qv.len() >= 4:
+        \\                probe.map_qx = e7_f32_to_i64(qv[0] * 1000000.0)
+        \\                probe.map_qy = e7_f32_to_i64(qv[1] * 1000000.0)
+        \\                probe.map_qz = e7_f32_to_i64(qv[2] * 1000000.0)
+        \\                probe.map_qw = e7_f32_to_i64(qv[3] * 1000000.0)
+        \\    for (transform, id) in bodies:
+        \\        if id.id == 10:
+        \\            probe.low_y = e7_f32_to_milli(transform.translation[1])
+        \\        if id.id == 11:
+        \\            probe.up_y = e7_f32_to_milli(transform.translation[1])
+        \\            probe.rot_x = e7_f32_to_i64(transform.rotation[0] * 1000000.0)
+        \\            probe.rot_y = e7_f32_to_i64(transform.rotation[1] * 1000000.0)
+        \\            probe.rot_z = e7_f32_to_i64(transform.rotation[2] * 1000000.0)
+        \\main <- async () -> i32:
+        \\    commands := await query &mut Commands
+        \\    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+        \\    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+        \\    commands.add_plugin(physics::PhysicsPlugin)
+        \\    commands.add_plugin(StackQuatScene)
+        \\    disown commands
+        \\    await Init()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await Update()
+        \\    await PostUpdate()
+        \\    await Capture()
+        \\    ret 0
+    ;
+    var compiled = try compiler.pipeline.compileProjectFromSources(
+        std.testing.allocator,
+        root_source,
+        modules.sources,
+        .{},
+    );
+    defer compiled.deinit();
+    if (!compiled.analysis.ok()) {
+        for (compiled.analysis.diagnostics) |diagnostic| {
+            std.debug.print("stack quat diagnostic {d}:{d} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
+        }
+    }
+    try std.testing.expect(compiled.analysis.ok());
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "stack-quat");
+    const Main = *const fn () callconv(.c) i64;
+    const main_ctor = try jit.get(Main, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const probe_ptr = ecs.e7_ecs_resource(probe_id);
+    try std.testing.expect(probe_ptr != 0);
+    const up_qx = aggregate.e7_load_i64(probe_ptr);
+    const up_qy = aggregate.e7_load_i64(probe_ptr + 8);
+    const up_qz = aggregate.e7_load_i64(probe_ptr + 16);
+    const up_qw = aggregate.e7_load_i64(probe_ptr + 24);
+    const map_qx = aggregate.e7_load_i64(probe_ptr + 32);
+    const map_qy = aggregate.e7_load_i64(probe_ptr + 40);
+    const map_qz = aggregate.e7_load_i64(probe_ptr + 48);
+    const map_qw = aggregate.e7_load_i64(probe_ptr + 56);
+    const m00 = aggregate.e7_load_i64(probe_ptr + 64);
+    const m02 = aggregate.e7_load_i64(probe_ptr + 72);
+    const m20 = aggregate.e7_load_i64(probe_ptr + 80);
+    const m22 = aggregate.e7_load_i64(probe_ptr + 88);
+    const rot_x = aggregate.e7_load_i64(probe_ptr + 96);
+    const rot_y = aggregate.e7_load_i64(probe_ptr + 104);
+    const rot_z = aggregate.e7_load_i64(probe_ptr + 112);
+    const low_y = aggregate.e7_load_i64(probe_ptr + 120);
+    const up_y = aggregate.e7_load_i64(probe_ptr + 128);
+
+    // Stack stays stacked through 240 contact steps (no tunnelling/explosion)
+    // and the upper body keeps its authored Euler mirror untouched.
+    try std.testing.expect(low_y > 200 and low_y < 800);
+    try std.testing.expect(up_y > 1000 and up_y < 2000);
+    try std.testing.expectEqual(@as(i64, 40000), rot_x);
+    try std.testing.expectEqual(@as(i64, 0), rot_y);
+    try std.testing.expectEqual(@as(i64, 30), @divTrunc(rot_z, 1000));
+    // Collision response publishes the same normalised quaternion to the
+    // render component that the solver integrated.
+    try std.testing.expect(@abs(up_qx - map_qx) <= 1);
+    try std.testing.expect(@abs(up_qy - map_qy) <= 1);
+    try std.testing.expect(@abs(up_qz - map_qz) <= 1);
+    try std.testing.expect(@abs(up_qw - map_qw) <= 1);
+    const norm = @sqrt(@as(f64, @floatFromInt(up_qx * up_qx + up_qy * up_qy + up_qz * up_qz + up_qw * up_qw)) / 1000000000000.0);
+    try std.testing.expect(@abs(norm - 1.0) < 0.001);
+    // The rendered model matrix is derived directly from that quaternion.
+    const qx: f64 = @as(f64, @floatFromInt(up_qx)) / 1000000.0;
+    const qy: f64 = @as(f64, @floatFromInt(up_qy)) / 1000000.0;
+    const qz: f64 = @as(f64, @floatFromInt(up_qz)) / 1000000.0;
+    const qw: f64 = @as(f64, @floatFromInt(up_qw)) / 1000000.0;
+    try expectMilliNear(1.0 - 2.0 * (qy * qy + qz * qz), m00, 4);
+    // Column-major slots: +8 holds R20, +32 holds R02.
+    try expectMilliNear(2.0 * (qx * qz - qw * qy), m02, 4);
+    try expectMilliNear(2.0 * (qx * qz + qw * qy), m20, 4);
+    try expectMilliNear(1.0 - 2.0 * (qx * qx + qy * qy), m22, 4);
+}

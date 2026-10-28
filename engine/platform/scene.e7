@@ -441,6 +441,55 @@ texture_set_lit <- (scene: u64, texture: i64) -> i64:
         ret white
     ret set
 
+
+# Append the draw-list entry for a procedural shape kind: kinds 1..3 use the
+# generated wide (32-byte stride) geometry, kind 0 and any fallback use the
+# shared cube buffer and the lit/tinted pipeline.
+append_procedural_draw <- (scene: u64, count: i64, kind: i64, texture: i64) -> nil:
+    if kind >= 1 and kind <= 3:
+        shape_vertices := e7_load_u64(scene + 1320)
+        shape_indices := e7_load_u64(scene + 1336)
+        wide_pipeline := e7_load_u64(scene + 1304)
+        if shape_vertices != 0 and shape_indices != 0 and wide_pipeline != 0:
+            append_draw(
+                scene,
+                wide_pipeline,
+                e7_load_u64(scene + 1312),
+                shape_vertices,
+                shape_indices,
+                e7_load_u32(scene + (1364 + kind * 8) as u64),
+                0,
+                e7_load_u32(scene + (1360 + kind * 8) as u64),
+                0,
+                e7_load_u64(scene + 128),
+                1,
+                count * 320,
+                texture_set_lit(scene, texture),
+            )
+            ret
+    pipeline := e7_load_u64(scene + 1256)
+    layout := e7_load_u64(scene + 1264)
+    set1 := texture_set_lit(scene, texture)
+    if pipeline == 0:
+        # Lit pipeline unavailable: vertex-colour mesh pipeline has no texture.
+        pipeline = e7_load_u64(scene + 160)
+        layout = e7_load_u64(scene + 168)
+        set1 = 0
+    append_draw(scene, pipeline, layout, e7_load_u64(scene + 176), e7_load_u64(scene + 192), 36, 0, 0, 0, e7_load_u64(scene + 128), 1, count * 320, set1)
+
+# Append the draw-list entry for an uploaded OBJ mesh.  Returns 0 when the mesh
+# id is unknown or the wide pipeline is unavailable so callers can fall back to
+# the documented box approximation.
+append_custom_draw <- (scene: u64, count: i64, mesh: u64, texture: i64) -> i64:
+    mesh_count := e7_load_u32(scene + 1296)
+    pipeline := e7_load_u64(scene + 1304)
+    if mesh == 0 or (mesh as i64) > mesh_count or pipeline == 0:
+        ret 0
+    extra := e7_load_u64(scene + 1280)
+    entry := extra + 9440 + (mesh as i64 - 1) * 48
+    append_draw(scene, pipeline, e7_load_u64(scene + 1312), e7_load_u64(entry), e7_load_u64(entry + 16), e7_load_u32(entry + 32), 1, 0, 0, e7_load_u64(scene + 128), 1, count * 320, texture_set_lit(scene, texture))
+    ret 1
+
 # Write the 12 rotation/scale floats (columns 0..2) of the model matrix for the
 # given half-extent scale and intrinsic-XYZ Euler rotation; column 3 is set to
 # (0, 0, 0, 1).  This is the removed Zig renderer's column-major
@@ -498,6 +547,71 @@ object_model_matrix <- (out: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r
     e7_store_f32(out + 56, 0.0)
     e7_store_f32(out + 60, 1.0)
 
+
+# Write the 12 rotation/scale floats (columns 0..2) of the model matrix from a
+# unit quaternion (x, y, z, w); column 3 is set to (0, 0, 0, 1).  This is the
+# physics-driven render path: the quaternion is normalised here and converted
+# directly to a column-major rotation matrix, with no Euler-angle intermediate.
+#   R = [ 1-2(yy+zz),  2(xy-wz),    2(xz+wy)   ]
+#       [ 2(xy+wz),    1-2(xx+zz),  2(yz-wx)   ]
+#       [ 2(xz-wy),    2(yz+wx),    1-2(xx+yy) ]
+# with each column scaled by (sx, sy, sz) and stored as four contiguous columns
+# (Mat4[col][row]), matching the shader's `column_major` Scene block.
+object_model_matrix_quat <- (
+    out: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+) -> nil:
+    sx := milli_to_f32(sx_milli)
+    sy := milli_to_f32(sy_milli)
+    sz := milli_to_f32(sz_milli)
+    length := e7_f32_sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    nx := 0.0
+    ny := 0.0
+    nz := 0.0
+    nw := 1.0
+    if length > 0.000001:
+        nx = qx / length
+        ny = qy / length
+        nz = qz / length
+        nw = qw / length
+    xx := nx * nx
+    yy := ny * ny
+    zz := nz * nz
+    # Column 0 = (R00, R10, R20) * sx.
+    c00 := 1.0 - 2.0 * (yy + zz)
+    c01 := 2.0 * (nx * ny + nw * nz)
+    c02 := 2.0 * (nx * nz - nw * ny)
+    # Column 1 = (R01, R11, R21) * sy.
+    c10 := 2.0 * (nx * ny - nw * nz)
+    c11 := 1.0 - 2.0 * (xx + zz)
+    c12 := 2.0 * (ny * nz + nw * nx)
+    # Column 2 = (R02, R12, R22) * sz.
+    c20 := 2.0 * (nx * nz + nw * ny)
+    c21 := 2.0 * (ny * nz - nw * nx)
+    c22 := 1.0 - 2.0 * (xx + yy)
+    e7_store_f32(out, c00 * sx)
+    e7_store_f32(out + 4, c01 * sx)
+    e7_store_f32(out + 8, c02 * sx)
+    e7_store_f32(out + 12, 0.0)
+    e7_store_f32(out + 16, c10 * sy)
+    e7_store_f32(out + 20, c11 * sy)
+    e7_store_f32(out + 24, c12 * sy)
+    e7_store_f32(out + 28, 0.0)
+    e7_store_f32(out + 32, c20 * sz)
+    e7_store_f32(out + 36, c21 * sz)
+    e7_store_f32(out + 40, c22 * sz)
+    e7_store_f32(out + 44, 0.0)
+    e7_store_f32(out + 48, 0.0)
+    e7_store_f32(out + 52, 0.0)
+    e7_store_f32(out + 56, 0.0)
+    e7_store_f32(out + 60, 1.0)
+
 # Write the 320-byte per-object UBO slot (model = T * Rz*Ry*Rx * S, then the
 # material tint).  Slot 0's frame block (view/proj/camera/light) is copied from
 # the previous slot; scene_set_camera/scene_set_light write it before the frame
@@ -510,6 +624,42 @@ write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z
     if slot_index > 0:
         e7_memcpy(slot, ubo, 320)
     object_model_matrix(slot, sx_milli, sy_milli, sz_milli, rx_milli, ry_milli, rz_milli)
+    e7_store_f32(slot + 48, milli_to_f32(x_milli))
+    e7_store_f32(slot + 52, milli_to_f32(y_milli))
+    e7_store_f32(slot + 56, milli_to_f32(z_milli))
+    e7_store_f32(slot + 60, 1.0)
+    e7_store_f32(slot + 256, e7_f32_div(e7_f32_from_i64(r_milli), 1000.0))
+    e7_store_f32(slot + 260, e7_f32_div(e7_f32_from_i64(g_milli), 1000.0))
+    e7_store_f32(slot + 264, e7_f32_div(e7_f32_from_i64(b_milli), 1000.0))
+    e7_store_f32(slot + 268, 1.0)
+
+
+# Quaternion variant of write_object_slot: model = T * R(quat) * S with no Euler
+# intermediate, used by the physics-driven render path.
+write_object_slot_quat <- (
+    scene: u64,
+    slot_index: i64,
+    x_milli: i64,
+    y_milli: i64,
+    z_milli: i64,
+    sx_milli: i64,
+    sy_milli: i64,
+    sz_milli: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    r_milli: i64,
+    g_milli: i64,
+    b_milli: i64,
+) -> nil:
+    ubo := e7_load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    slot := ubo + slot_index * 320
+    if slot_index > 0:
+        e7_memcpy(slot, ubo, 320)
+    object_model_matrix_quat(slot, sx_milli, sy_milli, sz_milli, qx, qy, qz, qw)
     e7_store_f32(slot + 48, milli_to_f32(x_milli))
     e7_store_f32(slot + 52, milli_to_f32(y_milli))
     e7_store_f32(slot + 56, milli_to_f32(z_milli))
@@ -738,42 +888,39 @@ scene_draw_shape_rot <- (scene: u64, shape: i32, x: i64, y: i64, z: i64, sx: i64
     count := e7_load_u32(scene + 1300)
     if count >= 24:
         ret
-    kind := shape as i64
-    if kind >= 1 and kind <= 3:
-        shape_vertices := e7_load_u64(scene + 1320)
-        shape_indices := e7_load_u64(scene + 1336)
-        wide_pipeline := e7_load_u64(scene + 1304)
-        if shape_vertices != 0 and shape_indices != 0 and wide_pipeline != 0:
-            write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
-            append_draw(
-                scene,
-                wide_pipeline,
-                e7_load_u64(scene + 1312),
-                shape_vertices,
-                shape_indices,
-                e7_load_u32(scene + (1364 + kind * 8) as u64),
-                0,
-                e7_load_u32(scene + (1360 + kind * 8) as u64),
-                0,
-                e7_load_u64(scene + 128),
-                1,
-                count * 320,
-                texture_set_lit(scene, texture as i64),
-            )
-            ret
     write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
-    pipeline := e7_load_u64(scene + 1256)
-    layout := e7_load_u64(scene + 1264)
-    set1 := texture_set_lit(scene, texture as i64)
-    if pipeline == 0:
-        # Lit pipeline unavailable: vertex-colour mesh pipeline has no texture.
-        pipeline = e7_load_u64(scene + 160)
-        layout = e7_load_u64(scene + 168)
-        set1 = 0
-    append_draw(scene, pipeline, layout, e7_load_u64(scene + 176), e7_load_u64(scene + 192), 36, 0, 0, 0, e7_load_u64(scene + 128), 1, count * 320, set1)
+    append_procedural_draw(scene, count, shape as i64, texture as i64)
 
 scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, angle_milli: i64) -> nil:
     scene_draw_shape_rot(scene, 0, x_milli, y_milli, z_milli, sx_milli, sy_milli, sz_milli, 0, angle_milli, 0, r_milli, g_milli, b_milli, 0 as u64)
+# Quaternion procedural draw: the rotation comes from a unit quaternion and is
+# converted straight to the model matrix by write_object_slot_quat.
+scene_draw_shape_quat <- (
+    scene: u64,
+    shape: i32,
+    x: i64,
+    y: i64,
+    z: i64,
+    sx: i64,
+    sy: i64,
+    sz: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    r: i64,
+    g: i64,
+    b: i64,
+    texture: u64,
+) -> nil:
+    if scene == 0:
+        ret
+    count := e7_load_u32(scene + 1300)
+    if count >= 24:
+        ret
+    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b)
+    append_procedural_draw(scene, count, shape as i64, texture as i64)
+
 
 # Record a draw of an uploaded OBJ mesh.  Mesh layout 0 is the engine OBJ
 # interleaved format (position xyz, normal xyz, uv xy -> 32-byte stride) with
@@ -781,19 +928,42 @@ scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_mill
 scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
     if scene == 0:
         ret
-    mesh_count := e7_load_u32(scene + 1296)
-    pipeline := e7_load_u64(scene + 1304)
-    if mesh == 0 or (mesh as i64) > mesh_count or pipeline == 0:
-        # Unknown mesh or missing pipeline: documented box approximation.
-        scene_draw_shape_rot(scene, 0, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, texture)
-        ret
     count := e7_load_u32(scene + 1300)
     if count >= 24:
         ret
     write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
-    extra := e7_load_u64(scene + 1280)
-    entry := extra + 9440 + (mesh as i64 - 1) * 48
-    append_draw(scene, pipeline, e7_load_u64(scene + 1312), e7_load_u64(entry), e7_load_u64(entry + 16), e7_load_u32(entry + 32), 1, 0, 0, e7_load_u64(scene + 128), 1, count * 320, texture_set_lit(scene, texture as i64))
+    if append_custom_draw(scene, count, mesh, texture as i64) == 0:
+        # Unknown mesh or missing pipeline: documented box approximation.
+        append_procedural_draw(scene, count, 0, texture as i64)
+
+# Quaternion custom-mesh draw (same fallback policy as scene_draw_custom).
+scene_draw_custom_quat <- (
+    scene: u64,
+    mesh: u64,
+    x: i64,
+    y: i64,
+    z: i64,
+    sx: i64,
+    sy: i64,
+    sz: i64,
+    qx: f32,
+    qy: f32,
+    qz: f32,
+    qw: f32,
+    r: i64,
+    g: i64,
+    b: i64,
+    texture: u64,
+) -> nil:
+    if scene == 0:
+        ret
+    count := e7_load_u32(scene + 1300)
+    if count >= 24:
+        ret
+    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b)
+    if append_custom_draw(scene, count, mesh, texture as i64) == 0:
+        # Unknown mesh or missing pipeline: documented box approximation.
+        append_procedural_draw(scene, count, 0, texture as i64)
 
 # Capture the recorded frame.  The main draw is degenerate (zero indices); all
 # object and UI draws live in the extension list so each keeps its own pipeline,
