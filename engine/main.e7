@@ -14,6 +14,7 @@ use core::window::*;
 use core::input::*;
 use core::camera::*;
 use core::bootstrap::*;
+use platform::audio::*;
 use gfx::gpu::*;
 use gfx::scene::*;
 use physics::*;
@@ -391,6 +392,28 @@ pub demo_ui_actions <- sys (
             else:
                 light.intensity = 2.8
 
+# Audio: dynamic SDL3 one-shot playback through `platform::audio`.  Headless
+# runs (tests and frame capture) select SDL's deterministic dummy audio driver;
+# desktop runs use the default playback device and degrade to a silent system
+# when none is available.
+pub AudioPlugin <- plugin
+    audio_plugin_init <- sys (commands: &mut Commands):
+        ready := 0
+        if host::headless() != 0:
+            ready = audio_init("dummy")
+        else:
+            ready = audio_init("")
+        commands.insert_resource(AudioSystem {
+            ready: ready != 0,
+            volume: 1.0,
+            stream: 0,
+        })
+
+@trigger(DeInit)
+pub shutdown_audio <- sys (audio: res &mut AudioSystem):
+    audio.shutdown()
+
+
 pub main <- async () -> i32:
     commands := await query &mut Commands
 
@@ -403,6 +426,7 @@ pub main <- async () -> i32:
     commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
     commands.add_plugin(physics::PhysicsPlugin)
     commands.add_plugin(assets::AssetsPlugin)
+    commands.add_plugin(AudioPlugin)
     commands.add_plugin(DemoPlugin)
     commands.add_plugin(ui::Ui)
     disown commands
@@ -410,6 +434,9 @@ pub main <- async () -> i32:
     window := await query &Window
 
     await Init()
+    if window.handle == 0:
+        await DeInit()
+        ret 1
 
     while not window.quit_requested:
         await FrameInit()

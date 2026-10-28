@@ -37,6 +37,7 @@ engine/
 │   ├── scene.e7         Vulkan scene/pipeline/uniform setup
 │   ├── sdl.e7           SDL bindings
 │   ├── text.e7          SDL_ttf bindings
+│   ├── audio.e7         SDL3 audio bindings, AudioClip/AudioSystem
 │   ├── vulkan.e7        Vulkan bindings and pipeline helpers
 │   └── shaders/         e7s platform shader sources + generated SPIR-V
 └── shaders/             e7s runtime-scene shader sources + generated SPIR-V
@@ -54,7 +55,8 @@ engine/
   `core::input::InputPlugin`, `core::time::TimePlugin`, `gfx::gpu::GfxPlugin`,
   `core::camera::CameraPlugin`, `physics::PhysicsPlugin`,
   `physics::broadphase::BroadphasePlugin`,
-  `physics::narrowphase::NarrowphasePlugin`, `assets::AssetsPlugin`, `ui::Ui`),
+  `physics::narrowphase::NarrowphasePlugin`, `assets::AssetsPlugin`,
+  `platform::audio::AudioPlugin`, `ui::Ui`),
   plus the demo `DemoPlugin` in `main.e7` (`DemoPlugin` also derives a
   `DemoSettings` config serialized through JSON).
   `main.e7` is the only
@@ -176,6 +178,17 @@ engine/
   upload_texture/upload_mesh`, `image.upload_texture/free`,
   `mesh.upload`, `input.key_down/mouse_dx/mouse_dy/text_input/cursor_x/y/
   mouse_down`, `time.now_ms/start`.
+- Audio lives in `platform/audio.e7`, which binds SDL3 at runtime through the
+  generic C FFI (no runtime audio intrinsic or link directive).  `AudioClip`
+  owns a decoded WAV buffer plus its `SDL_AudioSpec` (format/channels/rate) and
+  is freed with `clip.free()`; `AudioSystem` is the ECS resource that owns one
+  one-shot `SDL_AudioStream*`, the current gain, and the SDL audio subsystem.
+  `AudioSystem.play(&clip)`, `stop`, `playing`, `set_volume`, and `shutdown`
+  never fail the engine: a missing device leaves `ready == false` and every call
+  is a no-op.  `AudioPlugin` in `main.e7` initializes the subsystem on the
+  headless "dummy" driver for tests/capture and on the default device for
+  desktop runs; `engine/assets/testdata/tone.wav` is the fixture tone.
+  Asset-server-driven clip loading is a follow-up task.
   Call sites use methods; raw calls only appear inside the wrappers.
 - `AssetsPlugin` loads the sample PNG/OBJ into CPU resources at plugin init,
   then a `FrameInit` system uploads them once the window/scene exists:

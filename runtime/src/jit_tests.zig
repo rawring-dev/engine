@@ -1651,6 +1651,110 @@ test "e7 SDL+Vulkan platform draws a triangle and captures it" {
     try std.testing.expectEqual(@as(i64, 1), result);
 }
 
+test "e7 audio platform loads a WAV and plays through the SDL dummy driver" {
+    if (!canResolve("libSDL3.so", "SDL_OpenAudioDeviceStream")) return error.SkipZigTest;
+    const audio_source = try readRepoSource(std.testing.allocator, "engine/platform/audio.e7");
+    defer std.testing.allocator.free(audio_source);
+
+    const probe =
+        \\load_probe_tone <- () -> AudioClip:
+        \\    first := audio_load_wav("engine/assets/testdata/tone.wav")
+        \\    if first.valid():
+        \\        ret first
+        \\    second := audio_load_wav("../engine/assets/testdata/tone.wav")
+        \\    if second.valid():
+        \\        ret second
+        \\    ret audio_load_wav("../../engine/assets/testdata/tone.wav")
+        \\
+        \\is_dummy_driver <- () -> i64:
+        \\    name := audio_current_driver()
+        \\    if str::len(name) != 5:
+        \\        ret 0
+        \\    data := str::data(name) as u64
+        \\    if ptr::load_u8(data) != 100:
+        \\        ret 0
+        \\    if ptr::load_u8(data + 1) != 117:
+        \\        ret 0
+        \\    if ptr::load_u8(data + 2) != 109:
+        \\        ret 0
+        \\    if ptr::load_u8(data + 3) != 109:
+        \\        ret 0
+        \\    if ptr::load_u8(data + 4) != 121:
+        \\        ret 0
+        \\    ret 1
+        \\
+        \\audio_probe <- () -> i64:
+        \\    if audio_init("dummy") == 0:
+        \\        ret 0
+        \\    if is_dummy_driver() == 0:
+        \\        ret -1
+        \\    clip := load_probe_tone()
+        \\    if not clip.valid():
+        \\        ret -2
+        \\    if clip.length != 8820:
+        \\        ret -3
+        \\    if clip.channels as i64 != 1:
+        \\        ret -4
+        \\    if clip.freq as i64 != 44100:
+        \\        ret -5
+        \\    if clip.bytes_per_frame() != 2:
+        \\        ret -6
+        \\    if clip.frame_count() != 4410:
+        \\        ret -7
+        \\    if clip.duration_ms() != 100:
+        \\        ret -8
+        \\    missing := audio_load_wav("engine/assets/testdata/missing-tone.wav")
+        \\    if missing.valid():
+        \\        ret -9
+        \\    missing.free()
+        \\    invalid := audio_load_wav("engine/assets/testdata/cube.png")
+        \\    if invalid.valid():
+        \\        ret -10
+        \\    invalid.free()
+        \\    system := AudioSystem { ready: true, volume: 1.0, stream: 0 }
+        \\    if system.play(&clip) != 1:
+        \\        ret -11
+        \\    system.set_volume(0.25)
+        \\    system.stop()
+        \\    if system.playing() != 0:
+        \\        ret -12
+        \\    system.shutdown()
+        \\    clip.free()
+        \\    ret 1
+    ;
+    const source = try std.fmt.allocPrint(std.testing.allocator, "{s}\n{s}", .{ audio_source, probe });
+    defer std.testing.allocator.free(source);
+    const parsed_result = try compiler.parser.parse(std.testing.allocator, source);
+    var parsed = switch (parsed_result) {
+        .ast => |tree| tree,
+        .diagnostic => |d| {
+            std.debug.print("e7 audio parse: {s}\n", .{d.message});
+            return error.TestUnexpectedResult;
+        },
+    };
+    defer parsed.deinit();
+    var analysis = try compiler.semantic.analyze(std.testing.allocator, parsed.module);
+    defer analysis.deinit();
+    if (!analysis.ok()) {
+        for (analysis.diagnostics) |d| std.debug.print("e7 audio diagnostic: {}:{}: {s}\n", .{ d.span.line, d.span.column, d.message });
+        return error.TestUnexpectedResult;
+    }
+    var compiled = try compiler.pipeline.compile(std.testing.allocator, source, .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "e7-audio");
+    const Probe = *const fn () callconv(.c) i64;
+    const probe_fn = try jit.get(Probe, "audio_probe");
+    const result = probe_fn();
+    if (result == 0) {
+        std.debug.print("skipping e7 audio test: SDL audio unavailable\n", .{});
+        return error.SkipZigTest;
+    }
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
 test "e7 input module maps actions and mouse state through SDL" {
     if (!canResolve("libSDL3.so", "SDL_CreateWindow")) return error.SkipZigTest;
     const sdl_source = try readRepoSource(std.testing.allocator, "engine/platform/sdl.e7");
@@ -3450,6 +3554,7 @@ const jit_physics_module_specs = [_]JitPhysicsRepoModule{
     .{ .name = "scene", .path = "engine/platform/scene.e7" },
     .{ .name = "engine_window", .path = "engine/platform/engine_window.e7" },
     .{ .name = "engine_scene", .path = "engine/platform/engine_scene.e7" },
+    .{ .name = "audio", .path = "engine/platform/audio.e7" },
     .{ .name = "core", .source = "mod events\nmod ecs\nmod time\nmod input\nmod camera\nmod window\n" },
     .{ .name = "events", .path = "engine/core/events.e7" },
     .{ .name = "ecs", .path = "engine/core/ecs.e7" },

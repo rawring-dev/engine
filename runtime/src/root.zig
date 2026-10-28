@@ -1659,6 +1659,7 @@ const platform_module_specs = [_]RepoModule{
     .{ .name = "scene", .path = "engine/platform/scene.e7" },
     .{ .name = "engine_window", .path = "engine/platform/engine_window.e7" },
     .{ .name = "engine_scene", .path = "engine/platform/engine_scene.e7" },
+    .{ .name = "audio", .path = "engine/platform/audio.e7" },
 };
 
 const core_module_specs = [_]RepoModule{
