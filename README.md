@@ -722,11 +722,10 @@ a minimal JIT usage example.
 
 ## Verification
 
-`zig build test` runs 408 tests: scheduler 8, compiler 217, runtime 157,
+`zig build test` runs 417 tests: scheduler 8, compiler 222, runtime 161,
 transpiler 26.  The runtime count includes six harness self-tests
 (`e7_test.test.*` and `test_support.test.*`); `zig build test-e7` additionally
-runs the 14 e7-authored tests in `tests/e7/` (language 6, collections 4,
-engine/platform 4, 57 assertions) through the JIT.
+runs the 28 e7-authored tests in `tests/e7/` (6 files, 103 assertions) through the JIT.
 
 - scheduler: LAPACK solve/eigen checks, L-BFGS quadratic and Rosenbrock
   minimization, two-view block recovery, dimension validation;
