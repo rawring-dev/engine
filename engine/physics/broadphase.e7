@@ -40,8 +40,8 @@ pub BroadphasePlugin <- plugin
 # for negative non-integer values.
 pub cell_floor <- (value: f32, cell_size: f32) -> i64:
     scaled := value / cell_size
-    truncated := e7_f32_to_i64(scaled)
-    rounded_back := e7_f32_from_i64(truncated)
+    truncated := (scaled) as i64
+    rounded_back := (truncated) as f32
     if rounded_back > scaled:
         ret truncated - 1
     ret truncated
@@ -62,7 +62,7 @@ append_unique <- (ids: [i64], id: i64) -> [i64]:
         index = index + 1
     if known:
         ret ids
-    ret e7_vec_push(ids, id)
+    ret vec::push(ids, id)
 
 # Insert one body into a (possibly new) cell map.  Returns the updated map so
 # the caller can thread it through a rebuild loop without mutating a `&mut` map

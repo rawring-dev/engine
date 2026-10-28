@@ -104,16 +104,16 @@ make_text_texture <- (gpu: &mut Gpu, font: u64, text: str, colour: [f32; 4]) -> 
         ret TextTexture { texture: 0, width: 0, height: 0 }
     if text.len() == 0:
         ret TextTexture { texture: 0, width: 0, height: 0 }
-    r := e7_f32_to_i64(e7_f32_clamp(colour[0] * 255.0, 0.0, 255.0))
-    g := e7_f32_to_i64(e7_f32_clamp(colour[1] * 255.0, 0.0, 255.0))
-    b := e7_f32_to_i64(e7_f32_clamp(colour[2] * 255.0, 0.0, 255.0))
+    r := (f32::clamp(colour[0] * 255.0, 0.0, 255.0)) as i64
+    g := (f32::clamp(colour[1] * 255.0, 0.0, 255.0)) as i64
+    b := (f32::clamp(colour[2] * 255.0, 0.0, 255.0)) as i64
     image := e7_text_image(font, text, r, g, b)
     if image == 0:
         ret TextTexture { texture: 0, width: 0, height: 0 }
-    width := e7_image_width(image)
-    height := e7_image_height(image)
+    width := image::width(image)
+    height := image::height(image)
     texture := gpu.upload_texture(image)
-    e7_image_free(image)
+    image::free(image)
     ret TextTexture { texture: texture, width: width, height: height }
 
 ensure_cached_text <- (
@@ -231,14 +231,14 @@ pub ui_interact <- sys (
 quad <- (gpu: &Gpu, x: f32, y: f32, w: f32, h: f32, colour: [f32; 4]) -> nil:
     gpu.draw_ui_quad(
         0 as u64,
-        e7_f32_to_i64(x),
-        e7_f32_to_i64(y),
-        e7_f32_to_i64(w),
-        e7_f32_to_i64(h),
-        e7_f32_to_i64(e7_f32_clamp(colour[0] * 255.0, 0.0, 255.0)),
-        e7_f32_to_i64(e7_f32_clamp(colour[1] * 255.0, 0.0, 255.0)),
-        e7_f32_to_i64(e7_f32_clamp(colour[2] * 255.0, 0.0, 255.0)),
-        e7_f32_to_i64(e7_f32_clamp(colour[3] * 255.0, 0.0, 255.0)),
+        (x) as i64,
+        (y) as i64,
+        (w) as i64,
+        (h) as i64,
+        (f32::clamp(colour[0] * 255.0, 0.0, 255.0)) as i64,
+        (f32::clamp(colour[1] * 255.0, 0.0, 255.0)) as i64,
+        (f32::clamp(colour[2] * 255.0, 0.0, 255.0)) as i64,
+        (f32::clamp(colour[3] * 255.0, 0.0, 255.0)) as i64,
     )
 
 draw_text_texture <- (
@@ -253,10 +253,10 @@ draw_text_texture <- (
         ret
     gpu.draw_ui_quad(
         texture,
-        e7_f32_to_i64(x),
-        e7_f32_to_i64(y),
-        e7_f32_to_i64(width),
-        e7_f32_to_i64(height),
+        (x) as i64,
+        (y) as i64,
+        (width) as i64,
+        (height) as i64,
         255, 255, 255, 255,
     )
 
@@ -274,9 +274,9 @@ pub draw_widget <- (
     if panel.colour[3] > 0.0:
         background := panel.colour
         if button.action != 0 and state.hover_entity == entity:
-            background = [e7_f32_clamp(panel.colour[0] * 1.35, 0.0, 1.0), e7_f32_clamp(panel.colour[1] * 1.35, 0.0, 1.0), e7_f32_clamp(panel.colour[2] * 1.35, 0.0, 1.0), panel.colour[3]]
+            background = [f32::clamp(panel.colour[0] * 1.35, 0.0, 1.0), f32::clamp(panel.colour[1] * 1.35, 0.0, 1.0), f32::clamp(panel.colour[2] * 1.35, 0.0, 1.0), panel.colour[3]]
         if field.max_len > 0 and field.focused:
-            background = [e7_f32_clamp(panel.colour[0] * 1.25, 0.0, 1.0), e7_f32_clamp(panel.colour[1] * 1.25, 0.0, 1.0), e7_f32_clamp(panel.colour[2] * 1.25, 0.0, 1.0), panel.colour[3]]
+            background = [f32::clamp(panel.colour[0] * 1.25, 0.0, 1.0), f32::clamp(panel.colour[1] * 1.25, 0.0, 1.0), f32::clamp(panel.colour[2] * 1.25, 0.0, 1.0), panel.colour[3]]
         quad(gpu, rect.x, rect.y, rect.w, rect.h, background)
 
     if label.text.len() > 0:
@@ -289,7 +289,7 @@ pub draw_widget <- (
             width = entry[1]
             height = entry[2]
         if texture != 0:
-            draw_text_texture(gpu, texture, e7_f32_from_i64(width), e7_f32_from_i64(height), rect.x + 10.0, rect.y + (rect.h - e7_f32_from_i64(height)) * 0.5)
+            draw_text_texture(gpu, texture, (width) as f32, (height) as f32, rect.x + 10.0, rect.y + (rect.h - (height) as f32) * 0.5)
 
     if button.action != 0:
         entry := state.textures[entity]
@@ -304,20 +304,20 @@ pub draw_widget <- (
             draw_text_texture(
                 gpu,
                 texture,
-                e7_f32_from_i64(width),
-                e7_f32_from_i64(height),
-                rect.x + (rect.w - e7_f32_from_i64(width)) * 0.5,
-                rect.y + (rect.h - e7_f32_from_i64(height)) * 0.5,
+                (width) as f32,
+                (height) as f32,
+                rect.x + (rect.w - (width) as f32) * 0.5,
+                rect.y + (rect.h - (height) as f32) * 0.5,
             )
 
     if field.max_len > 0 and field.texture != 0:
         draw_text_texture(
             gpu,
             field.texture,
-            e7_f32_from_i64(field.texture_w),
-            e7_f32_from_i64(field.texture_h),
+            (field.texture_w) as f32,
+            (field.texture_h) as f32,
             rect.x + 8.0,
-            rect.y + (rect.h - e7_f32_from_i64(field.texture_h)) * 0.5,
+            rect.y + (rect.h - (field.texture_h) as f32) * 0.5,
         )
 
 @plugin(Ui)
