@@ -1,0 +1,20 @@
+# e7-test-source: ../../engine/platform/sdl.e7
+# e7-test-source: ../../engine/platform/vulkan.e7
+
+# HDR is often advertised first. The capture ABI requires BGRA8, regardless
+# of driver enumeration order; a different format must not reach readback.
+test_capture_surface_format <- () -> i64:
+    formats := ptr::alloc(32) as u64
+    ptr::store_u32(formats, 97)
+    ptr::store_u32(formats + 4, 1000104002)
+    ptr::store_u32(formats + 8, 50)
+    ptr::store_u32(formats + 16, 44)
+    assert_eq_i64(vulkan_capture_format_index(formats, 3), 2)
+    assert_eq_i64(vulkan_capture_format_index(formats, 2), 1)
+    assert_eq_i64(vulkan_capture_format_index(formats, 1), -1)
+    assert_eq_i64(vulkan_capture_format_index(formats, 0), -1)
+    ptr::store_u32(formats, 0)
+    ptr::store_u32(formats + 4, 0)
+    assert_eq_i64(vulkan_capture_format_index(formats, 1), 0)
+    ptr::free(formats)
+    ret 0

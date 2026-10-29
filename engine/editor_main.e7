@@ -14,6 +14,7 @@ mod editor
 use core::ecs::*;
 use core::events::*;
 use core::window::*;
+use core::input::*;
 use ui::*;
 use editor::*;
 
@@ -41,10 +42,16 @@ pub main <- async () -> i32:
         await DeInit()
         ret 1
 
+    input := await query &mut Input
+    input.window = window.handle
+    input.release_mouse()
+    disown input
+
     # Spawn the initial scene rows from the loaded document.
     await EditorRefresh()
     state := await query &mut EditorState
-    state.dirty = false
+    state.refresh_needed = false
+    disown state
 
     while not window.quit_requested:
         await FrameInit()
@@ -57,11 +64,14 @@ pub main <- async () -> i32:
             await UIButtonPressed()
             ui_state.action = 0
 
-        await Update()
+        await EditorInput()
         editor := await query &mut EditorState
-        if editor.dirty:
+        refresh := editor.refresh_needed
+        editor.refresh_needed = false
+        disown editor
+        if refresh:
             await EditorRefresh()
-            editor.dirty = false
+        await Update()
 
         await PostUpdate()
         await Render()

@@ -1,0 +1,117 @@
+# End-to-end physics regressions, loaded by runtime/src/jit_tests.zig.
+# Uses the real engine modules without creating a window or Vulkan device.
+mod platform
+mod core
+mod physics
+use core::events::*;
+use core::ecs::*;
+use core::input::*;
+use physics::*;
+use physics::narrowphase::*;
+use physics::broadphase::*;
+
+@resource
+pub Probe <- struct
+    max_drift: f32
+    max_height_error: f32
+    max_speed: f32
+    max_spin: f32
+    sleep_samples: i64
+    samples: i64
+    groups: [f32]
+
+pub Measure <- trigger
+
+pub Scene <- plugin
+    init <- sys (commands: &mut Commands):
+        commands.insert_resource(Probe { max_drift: 0.0, max_height_error: 0.0, max_speed: 0.0, max_spin: 0.0, sleep_samples: 0, samples: 0, groups: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] })
+        commands.insert_resource(Input {
+            window: 0,
+            move_forward: false, move_backward: false, move_left: false, move_right: false,
+            move_up: false, move_down: false, sprint: false,
+            look_left: false, look_right: false, look_up: false, look_down: false,
+            look_dx: 0.0, look_dy: 0.0,
+            jump_pressed: false, jump_down: false, jump_was_down: false,
+            interact: false, interact_pressed: false, interact_was_down: false,
+        })
+        commands.insert_resource(PhysicsWorld {
+            gravity_y: -30.0, max_step: 0.05, grounded: false, jump_latched: false,
+            player_x: 0.0, player_y: 0.0, player_z: 0.0,
+            camera_yaw: 0.0, camera_pitch: 0.0, move_speed: 4.0,
+            quaternions: map[i64, [f32]] {}, plane_normal: [0.0, 1.0, 0.0], plane_offset: 0.0,
+            friction: 0.9, friction_static: 1.15,
+            pending_impulses: map[i64, [f32]] {}, sleep_state: map[i64, [f32]] {},
+        })
+        group := 0
+        while group < 4:
+            index := 0
+            while index < 4:
+                layer := index
+                if group == 1:
+                    layer = 3 - index
+                x := (group as f32) * 5.0
+                y := 0.5 + layer as f32
+                if group == 2:
+                    y = y + (layer as f32) * 0.15
+                tilt := 0.0
+                if group == 3:
+                    tilt = 0.005
+                transform := Transform { translation: [x, y, 0.0], rotation: [tilt, 0.0, tilt], scale: [1.0, 1.0, 1.0] }
+                id := BodyId { id: group * 10 + layer + 1 }
+                bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+                body := RigidBody {
+                    velocity: [0.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0],
+                    inv_mass: 1.0, gravity_scale: 1.0, rotation_locked: false, is_static: false,
+                }
+                flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: false, target_id: group * 10 + layer + 1, held_by: 0 }
+                commands.add_row(Components, { transform, id, bounds, body, flags })
+                index = index + 1
+            group = group + 1
+
+@trigger(Measure)
+pub measure <- sys (
+    probe: res &mut Probe, world: res &PhysicsWorld,
+    rows: select &Transform, &RigidBody, &BodyId from Components,
+):
+    for (transform, body, id) in rows:
+        group := id.id / 10
+        layer := id.id % 10 - 1
+        drift := f32::abs(transform.translation[0] - (group as f32) * 5.0) + f32::abs(transform.translation[2])
+        height_error := f32::abs(transform.translation[1] - (0.5 + layer as f32))
+        speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
+        spin := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
+        metrics := [drift, height_error, speed, spin]
+        m := 0
+        while m < 4:
+            at := group * 4 + m
+            if metrics[m as usize] > probe.groups[at as usize]:
+                probe.groups[at as usize] = metrics[m as usize]
+            m = m + 1
+        if drift > probe.max_drift:
+            probe.max_drift = drift
+        if height_error > probe.max_height_error:
+            probe.max_height_error = height_error
+        if speed > probe.max_speed:
+            probe.max_speed = speed
+        if spin > probe.max_spin:
+            probe.max_spin = spin
+        sleep := world.sleep_state[id.id]
+        if sleep.len() >= 2 and sleep[1] > 0.5:
+            probe.sleep_samples = probe.sleep_samples + 1
+        probe.samples = probe.samples + 1
+
+main <- async () -> i32:
+    commands := await query &mut Commands
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(Scene)
+    disown commands
+    await Init()
+    frame := 0
+    while frame < 360:
+        await Update()
+        if frame >= 240:
+            await Measure()
+        frame = frame + 1
+    ret 0

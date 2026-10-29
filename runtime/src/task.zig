@@ -23,7 +23,7 @@ pub const Error = error{
     TooManyArguments,
 };
 
-pub const max_args = 8;
+pub const max_args = 12;
 pub const cancelled_result: i64 = std.math.minInt(i64);
 pub const stack_size = 1 << 20;
 
@@ -395,6 +395,10 @@ fn callEntry(entry: usize, task_ptr: i64, args: []const i64) i64 {
     const F6 = *const fn (i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
     const F7 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
     const F8 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F9 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F10 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F11 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
+    const F12 = *const fn (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64;
     return switch (args.len) {
         0 => @as(F0, @ptrFromInt(entry))(task_ptr),
         1 => @as(F1, @ptrFromInt(entry))(task_ptr, args[0]),
@@ -405,6 +409,10 @@ fn callEntry(entry: usize, task_ptr: i64, args: []const i64) i64 {
         6 => @as(F6, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5]),
         7 => @as(F7, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6]),
         8 => @as(F8, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]),
+        9 => @as(F9, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8]),
+        10 => @as(F10, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]),
+        11 => @as(F11, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10]),
+        12 => @as(F12, @ptrFromInt(entry))(task_ptr, args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9], args[10], args[11]),
         else => 0,
     };
 }
@@ -670,4 +678,13 @@ test "task leases release on suspend and reacquire on resume" {
     global_runtime.?.spawn(task_handle);
     // acquired=1 before=1 child_saw=0 after=1 child_cleared=1 released=1
     try std.testing.expectEqual(@as(i64, 110_111), global_runtime.?.awaitTask(task_handle));
+}
+
+test "task entry forwards twelve arguments across the C ABI" {
+    const Entry = struct {
+        fn run(task_ptr: i64, a: i64, b: i64, c_: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64, j: i64, k: i64, l: i64) callconv(.c) i64 {
+            return task_ptr + a + 2 * b + 3 * c_ + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i + 10 * j + 11 * k + 12 * l;
+        }
+    };
+    try std.testing.expectEqual(@as(i64, 750), callEntry(@intFromPtr(&Entry.run), 100, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }));
 }

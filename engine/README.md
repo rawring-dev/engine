@@ -45,6 +45,41 @@ engine/
 
 ## Developer-facing model
 
+### Physics collision pipeline
+
+`physics/main.e7` integrates all bodies before building contact constraints
+from the complete body snapshot. Box contacts clip the incident face against
+the reference box, preserving a support patch instead of selecting arbitrary
+corners. The solver iterates all contacts together, including the floor:
+up to 128 velocity iterations accumulate normal impulses and clamp tangential
+impulses to static/dynamic Coulomb friction; 24 separate position iterations remove
+penetration without adding velocity. Corrections are weighted by inverse mass,
+and static bodies remain fixed. These independent solver functions live in
+`physics/narrowphase.e7`.
+
+Resting contacts preserve sleep timers. A box may sleep only when its centre
+of mass projects inside the convex hull of its upward contact patches, with
+a nonzero support area. This permits balanced overhangs and bridges while
+waking unbalanced cubes even if they were already asleep. Quiet, stably
+supported bodies sleep after 0.35 s and wake on impact, lost support, or player
+interaction. The public spatial grid is rebuilt from committed transforms
+after pickup movement; each ECS pass owns a separate query cursor.
+
+`tests/physics/collisions.e7` covers collision geometry, momentum transfer,
+off-centre torque, static bodies, and mass weighting. `stack_settling.e7`
+simulates four stacks (including reversed entity order, dropped cubes, and
+small initial tilts) and measures drift, height error, residual motion, and
+sleep over the final two seconds, with limits of 2.5 cm drift and 6 mm height
+error. `overhang.e7` checks that unbalanced sleepers wake and fall, while a
+balanced offset and a bridge remain at rest, including reversed entity order
+and a rotated pedestal. These run through the real JIT/ECS pipeline as part
+of `zig build test`.
+
+The simulation still advances one 16 ms discrete step per `Update`; it does
+not perform swept collision detection, so sufficiently fast bodies can tunnel.
+
+### Engine components and plugins
+
 - Modules are nested: `mod ui` loads `engine/ui/main.e7`; nested declarations load
   submodules relative to their file (`core/window.e7`, `physics/broadphase.e7`).
   Items are module-qualified (`ui::Ui`, `core::window::Window`,
@@ -108,8 +143,8 @@ engine/
   `Material` row, one `draw_custom_rot` per uploaded OBJ mesh row, one
   `draw_ui_quad` per widget layer, and `end_frame`.  The draw calls receive the
   full `Transform.rotation` XYZ Euler triple, so physics rotation around any
-  axis is rendered.  There is a per-frame recording capacity of 24 3D draws
-  (16 procedural + 8 uploaded meshes) and 88 total draws including UI quads;
+  axis is rendered.  There is a per-frame recording capacity of 256 3D draws
+  and 512 total draws including UI quads;
   object count below those caps is dynamic.
 - Frames are recorded, not submitted per draw: `engine/platform/scene.e7`
   writes one 80-byte entry per object into the scene draw list (pipeline,
@@ -119,12 +154,12 @@ engine/
   `Scene` UBO at set 0, combined image-sampler at set 1 binding 1), so the
   material tint and texture are applied per object.  UI entries are appended
   after the 3D entries and use the blended UI pipeline (`ui.vert`/`ui.frag`,
-  set 0 binding 0) with a 64-quad dynamic vertex buffer updated at draw time;
+  set 0 binding 0) with a 256-quad dynamic vertex buffer updated at draw time;
   this is the screen-space pass over the 3D scene (pixels from top-left,
   RGBA 0..255, straight alpha).
 - Engine textures: `e7_engine_scene_texture_create` uploads an e7 image handle
   (font glyph images and material PNGs) through
-  `e7_image_width/height/pixels`; ids are stable (1..24, free-list reuse after
+  `e7_image_width/height/pixels`; ids are stable (1..256, free-list reuse after
   `e7_engine_scene_texture_destroy`), id 0 is the built-in white texture.
   Each texture owns two combined-sampler descriptor sets (set 0 binding 0 for
   UI, set 1 binding 1 for the lit material path) and is freed with the scene.
@@ -259,3 +294,15 @@ by the e7 platform layer; the scene recreates its swapchain, depth attachment,
 image views and framebuffers while preserving the render pass, pipelines,
 descriptors, textures and meshes. The engine resizes the scene before rendering
 so projection aspect and capture dimensions match the client area.
+
+## Scene editor
+
+Run `zig build run-editor` from the workspace root. The editor provides primitive
+creation, a paged scene hierarchy, viewport picking, transform/tint inspection,
+duplication/deletion, 64-step undo/redo, and save/open with unsaved-change checks.
+Inspector fields are generated from `json::schema::<T>()` for objects, cameras,
+and lights, including nested fields, enum choices, and paged drafts. Hold RMB
+and use WASD/QE to fly; F focuses selection. Inspector edits commit
+with Apply. Edit the path above the viewport to save another scene file.
+Reload code saves first and restores the active scene path, selection, and view.
+See [the editor guide](../notes/design/editor.md) for controls and limitations.

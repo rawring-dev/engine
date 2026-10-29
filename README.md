@@ -440,7 +440,7 @@ function with the same path takes precedence.
 | `f32` | `parse`, `sin`, `cos`, `sqrt`, `abs`, `clamp`, `to_milli`, `from_milli`, `to_i64`, `from_i64` | `parse_f32`, `f32_*` helpers |
 | `i64` | `parse` | `parse_i64` |
 | `str` | `from_bytes`, `data`, `cstr`, `len`, `lines`, `fields`, `split` | `str_new`, `str_data`, `cstr`, `str_len`, `str_lines`, `str_fields`, `str_split` |
-| `vec` | `push` | `vec_push` |
+| `vec` | `new`, `push` | `vec_new` (bytecode), `vec_push` |
 | `ptr` | `alloc`, `free`, `copy`, `offset`, `load_{u8,u16,u32,u64,i64,f32,usize}`, `store_{u8,u16,u32,u64,i64,f32,usize}` | `alloc_bytes`, `free_ptr`, `memcpy`, `load_*`/`store_*` |
 | `ffi` | `bind`, `call0`..`call16`, `call_f32_2`, `handle` | `cffi_bind`, `ffi_call*`, `handle` |
 | `host` | `time_now_ms`, `read_shader`, `headless`, `should_close`, `note_frame`, `capture` | engine/host helpers |
@@ -623,6 +623,11 @@ through a compiler-generated schema.  See
 [`notes/design/json.md`](notes/design/json.md) for the wire format and
 limitations.
 
+`json::schema::<T>()` exposes the same derived type schema as a string constant.
+The scene editor uses it to generate paged object, camera, and light inspectors;
+new serializable fields appear without adding inspector field lists. Apply
+reuses typed JSON decoding before committing changes.
+
 The engine libraries now also include an `obj.e7` Wavefront parser,
 PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
 `physics.e7` library with `RigidBody`, box/sphere/capsule/plane colliders,
@@ -678,11 +683,13 @@ the scanned cube image/OBJ and keeps its fixed loads as fallback.  See
 [`notes/design/assetserver.md`](notes/design/assetserver.md) for the directory
 layout, callback contract, folder-key semantics, and lifetime rules.
 
-The e7 project editor is scaffolded as its own e7 project
+The e7 scene editor is its own e7 project
 (`engine/editor_main.e7`) run by the `editor-run` host: `zig build run-editor`
 (append `-- --frames 2 --headless --capture out.ppm` for a headless capture, or
 `-- --frames 3 --headless --reload-test` to exercise the in-process code swap).
-The scene file format, editing UI, and ECS mapping are described in
+Create primitives, select from the hierarchy or viewport, edit transforms and
+tint, undo/redo, and save/open scene files. Hold RMB + WASD/QE to navigate;
+Focus frames selection. The scene file format, editing UI, and ECS mapping are described in
 [`notes/design/editor.md`](notes/design/editor.md); `zig build run-editor`
 renders the sample scene through the same engine renderer as the demo.
 

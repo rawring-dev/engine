@@ -2153,3 +2153,27 @@ test "rejects mismatched function values and indirect arity" {
         .{},
     ));
 }
+
+test "JSON schema reflection embeds the serialization schema as a constant" {
+    var result = try compile(std.testing.allocator,
+        \\@derive(Serialize, Deserialize)
+        \\Settings <- struct
+        \\    enabled: bool
+        \\    values: [i64; 2]
+        \\schema <- () -> str = json::schema::<Settings>()
+    , .{});
+    defer result.deinit();
+    var saw_schema = false;
+    for (result.bytecode.functions) |function| {
+        for (function.code) |op| switch (op) {
+            .string_lit => |value| {
+                if (std.mem.eql(u8, value, "{enabled=b;values=A2:i}")) saw_schema = true;
+            },
+            .runtime_call => |call| {
+                try std.testing.expect(call.function != .json_encode and call.function != .json_decode);
+            },
+            else => {},
+        };
+    }
+    try std.testing.expect(saw_schema);
+}

@@ -1,11 +1,12 @@
 # JSON for e7 values
 
 The compiler and runtime provide first-class JSON encoding and decoding.  The
-e7-facing API is the builtin namespace pair:
+e7-facing API uses the builtin namespace:
 
 ```e7
 text := json::encode(value)          # -> str
 value := json::decode::<T>(text)     # -> T
+schema := json::schema::<T>()        # -> str (compile-time type schema)
 ```
 
 The single-segment spellings `json_encode(value)` and
@@ -22,6 +23,49 @@ Decoding returns `0` on malformed JSON, schema mismatch, unsupported value, or
 out-of-memory.  `0` is also the value of `false`, integer `0`, and `nil`, so use
 a handle-shaped target (struct, enum, vector, map, string) when failure must be
 distinguishable.
+
+## Schema reflection and inspectors
+
+`json::schema::<T>()` exposes the exact compact schema already generated for
+encoding/decoding, embedded as a string constant. It takes one type argument
+and no value arguments. Struct/enum targets and their nested types must derive
+both `Serialize` and `Deserialize`; primitives and supported collections work
+without derives. Unsupported or recursive types receive the existing serializer
+diagnostics. No runtime registry or second field declaration is involved.
+
+For example, a derived `Settings { enabled: bool, speed: f32 }` produces
+`{enabled=b;speed=f}`. The compact grammar is documented in
+`runtime/src/json.zig`: scalar tags are `b`, `i`, `f`, `s`; structs use
+`{field=type;...}`, enums `E{Variant=u;Payload=(type)}`, optionals `?type`,
+vectors `[type]`, fixed arrays `A<count>:type`, matrices
+`M<rows>:<columns>:type`, and maps `<key,value>`.
+
+The reusable e7 inspector (`engine/editor/inspector.e7`) consumes this schema:
+
+```e7
+source := json::encode(&settings)
+fields := inspect_fields(json::schema::<Settings>(), source)
+values := inspect_values(&fields)
+# Edit values by index, or locate a property with inspect_find(&fields, "speed").
+values[1] = "3.25"
+candidate := inspect_patch(source, &fields, &values)
+updated := json::decode::<Settings>(candidate)
+# Check ffi::handle(&updated) != 0, then domain rules, before replacing settings.
+```
+
+`inspect_patch` builds a new JSON string; it does not mutate the original value
+or validate the target type. The caller commits only after typed decoding and
+application-specific validation succeed. Keep the source and its field spans
+together; regenerate them when the inspected value changes. Handle-shaped
+targets allow unambiguous rejection, including valid `false`, zero, and null
+properties inside a record.
+
+Nested structs expand into dotted property paths. Strings use normal text with
+JSON escaping on write; numeric text retains serializer precision. Boolean and
+unit-enum fields provide finite choices. Arrays, matrices, maps, optionals, and
+payload enums use JSON text and the existing deserializer's validation. After
+32 nested struct levels, the remaining subtree stays editable as JSON. Unknown
+source members and unchanged JSON fragments survive patch construction.
 
 ## Wire format
 

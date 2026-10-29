@@ -41,6 +41,7 @@ pub UITextField <- struct
     text: str
     max_len: i64
     focused: bool
+    select_all: bool
     revision: i64
     rendered_revision: i64
     texture: u64
@@ -195,21 +196,33 @@ pub ui_interact <- sys (
             if clicked and hit:
                 state.focused_entity = entity
                 clicked_field = true
+                field.select_all = true
             focused := state.focused_entity == entity
             if focused != field.focused:
                 field.focused = focused
                 field.revision = field.revision + 1
             field.focused = focused
+            if not focused:
+                field.select_all = false
             if focused:
+                if input.key_down(14) and input.key_down(2):
+                    field.select_all = true
                 typed := input.text_input()
                 text_len := field.text.len() as i64
-                if typed.len() > 0 and text_len < field.max_len:
+                if typed.len() > 0 and (text_len < field.max_len or field.select_all):
+                    if field.select_all:
+                        field.text = ""
+                        field.select_all = false
                     field.text = field.text + typed
                     if field.text.len() as i64 > field.max_len:
                         field.text = field.text.slice(0, field.max_len as usize)
                     field.revision = field.revision + 1
                 if input.key_down(12) and field.text.len() as i64 > 0:
-                    field.text = field.text.slice(0, (field.text.len() as i64 - 1) as usize)
+                    if field.select_all:
+                        field.text = ""
+                        field.select_all = false
+                    else:
+                        field.text = field.text.slice(0, (field.text.len() as i64 - 1) as usize)
                     field.revision = field.revision + 1
                 if input.key_down(13):
                     state.focused_entity = 0
@@ -260,6 +273,25 @@ draw_text_texture <- (
         255, 255, 255, 255,
     )
 
+# Respect the requested font size and keep schema paths / JSON values inside
+# their controls. Rasterization stays cached at the shared font's resolution.
+draw_fitted_text <- (gpu: &Gpu, texture: u64, width: f32, height: f32, rect: &UIRect, size: i64, font_size: i64, centered: bool) -> nil:
+    if width <= 0.0 or height <= 0.0 or rect.w <= 20.0 or rect.h <= 2.0:
+        ret
+    scale := (size as f32) / (font_size as f32)
+    fit_x := (rect.w - 20.0) / width
+    fit_y := (rect.h - 2.0) / height
+    if fit_x < scale:
+        scale = fit_x
+    if fit_y < scale:
+        scale = fit_y
+    fitted_width := width * scale
+    fitted_height := height * scale
+    x := rect.x + 10.0
+    if centered:
+        x = rect.x + (rect.w - fitted_width) * 0.5
+    draw_text_texture(gpu, texture, fitted_width, fitted_height, x, rect.y + (rect.h - fitted_height) * 0.5)
+
 pub draw_widget <- (
     gpu: &Gpu,
     state: &mut UIState,
@@ -289,7 +321,7 @@ pub draw_widget <- (
             width = entry[1]
             height = entry[2]
         if texture != 0:
-            draw_text_texture(gpu, texture, (width) as f32, (height) as f32, rect.x + 10.0, rect.y + (rect.h - (height) as f32) * 0.5)
+            draw_fitted_text(gpu, texture, width as f32, height as f32, rect, label.size, state.font_size, false)
 
     if button.action != 0:
         entry := state.textures[entity]
@@ -301,24 +333,10 @@ pub draw_widget <- (
             width = entry[1]
             height = entry[2]
         if texture != 0:
-            draw_text_texture(
-                gpu,
-                texture,
-                (width) as f32,
-                (height) as f32,
-                rect.x + (rect.w - (width) as f32) * 0.5,
-                rect.y + (rect.h - (height) as f32) * 0.5,
-            )
+            draw_fitted_text(gpu, texture, width as f32, height as f32, rect, label.size, state.font_size, true)
 
     if field.max_len > 0 and field.texture != 0:
-        draw_text_texture(
-            gpu,
-            field.texture,
-            (field.texture_w) as f32,
-            (field.texture_h) as f32,
-            rect.x + 8.0,
-            rect.y + (rect.h - (field.texture_h) as f32) * 0.5,
-        )
+        draw_fitted_text(gpu, field.texture, field.texture_w as f32, field.texture_h as f32, rect, label.size, state.font_size, false)
 
 @plugin(Ui)
 @trigger(DeInit)

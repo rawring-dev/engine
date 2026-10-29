@@ -1,0 +1,27 @@
+# Regression for LLVM 23 InstCombine aborting on a simple nine-field aggregate
+# constructor after adding select-all state to the editor's text input.
+EditorFieldDefault <- struct
+    text: str
+    max_len: i64
+    focused: bool
+    select_all: bool
+    revision: i64
+    rendered_revision: i64
+    texture: u64
+    texture_w: i64
+    texture_h: i64
+
+editor_field_default <- () -> EditorFieldDefault:
+    ret EditorFieldDefault {
+        text: "", max_len: 0, focused: false, select_all: false,
+        revision: 0, rendered_revision: 0, texture: 0, texture_w: 0, texture_h: 0,
+    }
+
+test_aggregate_default_initializer <- () -> i64:
+    field := editor_field_default()
+    assert_eq_bool(field.select_all, false)
+    assert_eq_i64(field.texture_w, 0)
+    assert_str_eq(field.text, "")
+    field.select_all = true
+    assert_eq_bool(field.select_all, true)
+    ret 0

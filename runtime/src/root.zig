@@ -3002,7 +3002,9 @@ test "JIT body pairs exchange equal and opposite impulses" {
     try std.testing.expect(avx < 1950);
     try std.testing.expect(bvx > 50);
     try std.testing.expect(avx + bvx > 1800 and avx + bvx < 2200);
-    try std.testing.expect(awz != 0 or bwz != 0);
+    // A centered face-on impact must transfer momentum without the spurious
+    // corner torque that previously destabilized stacks.
+    try std.testing.expect(@abs(awz) <= 2 and @abs(bwz) <= 2);
 }
 
 test "JIT sleeping body wakes on contact" {
@@ -3238,6 +3240,21 @@ test "JIT runs the e7 editor project, swaps code, and captures a frame" {
     }
     if (root_path.len == 0) return error.SkipZigTest;
 
+    // Seed an alternate scene path and selection; the input allocation can be
+    // freed before either JIT runs because the host owns a copy of the bytes.
+    const scene_path = try std.fs.path.join(std.testing.allocator, &.{ std.fs.path.dirname(root_path).?, "editor/scenes/sample.scene.json" });
+    defer std.testing.allocator.free(scene_path);
+    const scene_text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, scene_path, std.testing.allocator, .limited(1024 * 1024));
+    defer std.testing.allocator.free(scene_text);
+    const session = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{"document":{s},"scene_path":".zig-cache/reload-target.scene.json","selected":2,
+        \\"view_camera":{{"position":{{"x":0,"y":1.8,"z":6}},"yaw":0,"pitch":-0.15,"fov_y":1.0471975512,"near":0.1,"far":100}}}}
+    , .{scene_text});
+    defer std.testing.allocator.free(session);
+    const session_handle = makeTestString(session);
+    try std.testing.expectEqual(@as(i64, 0), host.e7_host_set_reload_state(session_handle));
+    aggregate.e7_free_ptr(session_handle);
+
     // Generation 0 requests a code swap (host requests it before the first
     // frame); generation 1 is a fresh compile + fresh JIT of the same project.
     var reloads: usize = 0;
@@ -3283,6 +3300,18 @@ test "JIT runs the e7 editor project, swaps code, and captures a frame" {
         const handle = main_ctor();
         try std.testing.expect(handle != 0);
         const result = task.e7_task_await(handle);
+        var checked_session = false;
+        for (compiled.analysis.resources) |resource| {
+            if (!std.mem.endsWith(u8, resource.name, "EditorState")) continue;
+            const editor_state_ptr = ecs.e7_ecs_resource(resource.id);
+            try std.testing.expect(editor_state_ptr != 0);
+            const active_path = aggregate.e7_load_i64(editor_state_ptr + 8);
+            const active_path_data: [*]const u8 = @ptrFromInt(@as(usize, @intCast(active_path + 8)));
+            try std.testing.expectEqualStrings(".zig-cache/reload-target.scene.json", active_path_data[0..@intCast(aggregate.e7_str_len(active_path))]);
+            try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(editor_state_ptr + 16));
+            checked_session = true;
+        }
+        try std.testing.expect(checked_session);
         if (generation == 0) {
             // Editor `main` returns 42 to request a host code swap.
             try std.testing.expectEqual(@as(i64, 42), result);

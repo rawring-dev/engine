@@ -227,8 +227,24 @@ vulkan_device_destroy <- (device: i64) -> nil:
     destroy := bind_vk("vkDestroyDevice")
     ffi::call2(destroy, device, 0)
 
-# Create a swapchain for the window surface.  The first reported surface format
-# is used (or BGRA8/SRGB when the surface reports VK_FORMAT_UNDEFINED), FIFO
+# Pure selection over VkSurfaceFormatKHR pairs. Return -1 rather than making
+# readback interpret an HDR pixel as two unrelated BGRA8 pixels.
+vulkan_capture_format_index <- (formats: u64, count: i64) -> i64:
+    fallback := -1
+    index := 0
+    while index < count:
+        format := ptr::load_u32(formats + ((index * 8) as u64))
+        space := ptr::load_u32(formats + ((index * 8) as u64) + 4)
+        if space == 0:
+            if format == 44 or format == 0:
+                ret index
+            if format == 50:
+                fallback = index
+        index = index + 1
+    ret fallback
+
+# Create a swapchain using BGRA8, matching the four-byte capture/PPM ABI.
+# Prefer UNORM to SRGB; never silently use HDR/16-bit surface formats. FIFO
 # presentation is requested, and the swapchain images are returned as an array
 # of VkImage handles.  `window_state` supplies the pixel extent when the surface
 # reports the special 0xFFFFFFFF currentExtent.
@@ -269,8 +285,14 @@ vulkan_swapchain_create <- (
         ret 0
     formats := ptr::alloc(formats_len * 8) as u64
     ffi::call4(get_formats, physical, surface, format_count, formats)
-    image_format := ptr::load_u32(formats)
-    color_space := ptr::load_u32(formats + 4)
+    selected_format := vulkan_capture_format_index(formats, formats_len)
+    if selected_format < 0:
+        ptr::free(capabilities)
+        ptr::free(format_count)
+        ptr::free(formats)
+        ret 0
+    image_format := ptr::load_u32(formats + ((selected_format * 8) as u64))
+    color_space := ptr::load_u32(formats + ((selected_format * 8) as u64) + 4)
     if image_format == 0:
         image_format = 44
         color_space = 0

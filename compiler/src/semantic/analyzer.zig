@@ -1501,6 +1501,7 @@ const Checker = struct {
         const last_segment = path.segments[path.segments.len - 1];
         var is_encode = false;
         var is_decode = false;
+        var is_schema = false;
         if (path.segments.len == 1) {
             const name = last_segment.name;
             is_encode = std.mem.eql(u8, name, "json_encode");
@@ -1512,7 +1513,8 @@ const Checker = struct {
             if (!std.mem.eql(u8, path.segments[0].name, "json")) return null;
             is_encode = std.mem.eql(u8, last_segment.name, "encode");
             is_decode = std.mem.eql(u8, last_segment.name, "decode");
-            if (!is_encode and !is_decode) return null;
+            is_schema = std.mem.eql(u8, last_segment.name, "schema");
+            if (!is_encode and !is_decode and !is_schema) return null;
         } else {
             return null;
         }
@@ -1520,7 +1522,24 @@ const Checker = struct {
         var schema_visited = std.AutoHashMapUnmanaged(*TypeDef, void).empty;
         defer schema_visited.deinit(self.allocator);
 
+        if (is_schema) {
+            if (last_segment.args.len != 1 or call.args.len != 0) {
+                try self.report("json::schema requires one type argument and no values, e.g. json::schema::<T>()", .{});
+                return self.store.make(.string);
+            }
+            const target_ty = try self.resolveType(last_segment.args[0]);
+            const context = try self.store.typeName(target_ty);
+            if (try self.jsonSchemaForType(target_ty, true, true, &schema_visited, context)) |schema| {
+                try self.json_call_schemas.put(self.allocator, @intFromPtr(expr), schema);
+            }
+            return self.store.make(.string);
+        }
+
         if (is_encode) {
+            // Encoding returns an owned string; temporary input borrows do not
+            // escape into that string's binding.
+            const loan_mark = self.loans.items.len;
+            defer self.releaseTemporaries(loan_mark);
             if (last_segment.args.len != 0) {
                 try self.report("json_encode does not take type arguments", .{});
             }

@@ -1,17 +1,7 @@
 use core::ecs::*;
 use core::events::*;
 use gfx::gpu::*;
-use core::time::*;
 use ui::*;
-
-@trigger(Update)
-pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
-    angle := time.elapsed * 0.7 + 0.8
-    for light in lights:
-        light.position[0] = 2.8 * f32::cos(angle)
-        light.position[1] = 3.0
-        light.position[2] = 2.8 * f32::sin(angle)
-
 
 @trigger(Render)
 pub render_scene <- sys (
@@ -41,6 +31,7 @@ pub render_scene <- sys (
             f32::to_milli(yaw_degrees),
             f32::to_milli(pitch_degrees),
         )
+        gpu.set_projection(camera.fov_y, camera.near, camera.far)
 
     for light_row in lights:
         gpu.set_light(

@@ -104,6 +104,26 @@ e7_engine_key_down <- (handle: u64, code: i64) -> i64:
         scancode = 81
     elif code == 11:
         scancode = 44
+    elif code == 12:
+        scancode = 42 # Backspace
+    elif code == 13:
+        scancode = 40 # Return
+    elif code == 14:
+        if key_down(handle, 224) != 0 or key_down(handle, 228) != 0:
+            ret 1
+        ret 0
+    elif code == 15:
+        scancode = 29 # Z
+    elif code == 16:
+        scancode = 28 # Y
+    elif code == 17:
+        scancode = 17 # N
+    elif code == 18:
+        scancode = 76 # Delete
+    elif code == 19:
+        scancode = 9 # F
+    elif code == 20:
+        scancode = 18 # O
     else:
         ret 0
     ret key_down(handle, scancode)

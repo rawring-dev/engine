@@ -1,0 +1,111 @@
+# e7-test-source: ../../engine/editor/inspector.e7
+
+@derive(Serialize, Deserialize)
+InspectorNested <- struct
+    speed: f64
+    enabled: bool
+
+@derive(Serialize, Deserialize)
+InspectorMode <- enum
+    Idle
+    Running
+    Custom(i64)
+
+@derive(Serialize, Deserialize)
+InspectorFixture <- struct
+    title: str
+    nested: InspectorNested
+    mode: InspectorMode
+    items: [i64]
+    optional: ?str
+
+fixture_json <- () -> str:
+    ret "{\"title\":\"hi\",\"nested\":{\"speed\":1.234567890123,\"enabled\":false},\"mode\":\"Idle\",\"items\":[1,2],\"optional\":null}"
+
+test_schema_drives_unrelated_nested_inspector <- () -> i64:
+    schema := json::schema::<InspectorFixture>()
+    assert_str_eq(schema, "{title=s;nested={speed=f;enabled=b};mode=E{Idle=u;Running=u;Custom=(i)};items=[i];optional=?s}")
+    fields := inspect_fields(schema, fixture_json())
+    assert_eq_i64(fields.len() as i64, 6)
+    assert_str_eq(fields[1].path, "nested.speed")
+    assert_str_eq(fields[1].text, "1.234567890123")
+    assert_str_eq(fields[2].text, "false")
+    assert_str_eq(fields[3].text, "Idle")
+    values := inspect_values(&fields)
+    assert_str_eq(inspect_patch(fixture_json(), &fields, &values), fixture_json())
+    values[0] = "quote \" slash \\ newline\n snowman ☃"
+    values[2] = "true"
+    values[3] = "Running"
+    values[4] = "[3,4,5]"
+    values[5] = "\"present\""
+    edited := json::decode::<InspectorFixture>(inspect_patch(fixture_json(), &fields, &values))
+    assert_str_eq(edited.title, "quote \" slash \\ newline\n snowman ☃")
+    assert_eq_bool(edited.nested.enabled, true)
+    assert_eq_i64(edited.items.len() as i64, 3)
+    assert_str_eq(json::encode(&edited.mode), "\"Running\"")
+    ret 0
+
+@derive(Serialize, Deserialize)
+InspectorCollections <- struct
+    pairs: map[str, i64]
+    grid: [i64; 2, 2]
+    fixed: [f64; 2]
+
+test_inspector_containers_reuse_typed_deserializer_validation <- () -> i64:
+    source := "{\"pairs\":{\"a\":0},\"grid\":[[1,2],[3,4]],\"fixed\":[1.25,2.5]}"
+    fields := inspect_fields(json::schema::<InspectorCollections>(), source)
+    assert_eq_i64(fields.len() as i64, 3)
+    values := inspect_values(&fields)
+    values[0] = "{\"a\":-9,\"brace } comma , quote \\\"\":0}"
+    values[1] = "[[5,6],[7,8]]"
+    values[2] = "[1.234567890123,0]"
+    edited := json::decode::<InspectorCollections>(inspect_patch(source, &fields, &values))
+    assert_eq_i64(edited.pairs["a"], -9)
+    assert_eq_i64(edited.grid[1][1], 8)
+    assert_eq_bool(edited.fixed[0] > 1.23456789012 and edited.fixed[0] < 1.23456789013, true)
+    values[1] = "[[1],[2]]"
+    invalid := json::decode::<InspectorCollections>(inspect_patch(source, &fields, &values))
+    assert_eq_i64(ffi::handle(&invalid) as i64, 0)
+    values[1] = "[[5,6],[7,8]]"
+    values[2] = "[1,2,3]"
+    invalid_size := json::decode::<InspectorCollections>(inspect_patch(source, &fields, &values))
+    assert_eq_i64(ffi::handle(&invalid_size) as i64, 0)
+    ret 0
+
+test_inspector_handles_reordered_keys_payload_enums_and_preserves_unknown_fields <- () -> i64:
+    source := "{\"extra\":{\"punctuation\":\"},[\\\"\"},\"optional\":null,\"items\":[1],\"mode\":{\"Custom\":7},\"nested\":{\"enabled\":false,\"speed\":0},\"title\":\"\"}"
+    fields := inspect_fields(json::schema::<InspectorFixture>(), source)
+    assert_eq_i64(fields.len() as i64, 6)
+    values := inspect_values(&fields)
+    values[0] = "braces } [ , and \\ slash"
+    values[1] = "0.125"
+    values[3] = "{\"Custom\":42}"
+    patched := inspect_patch(source, &fields, &values)
+    edited := json::decode::<InspectorFixture>(patched)
+    assert_eq_bool(ffi::handle(&edited) != 0, true)
+    assert_str_eq(edited.title, "braces } [ , and \\ slash")
+    assert_eq_bool(edited.nested.enabled, false)
+    assert_str_eq(json::encode(&edited.mode), "{\"Custom\":42}")
+    # The source prefix is an unknown subtree and must survive unchanged.
+    assert_str_eq(patched.slice(0, 38), source.slice(0, 38))
+    assert_eq_i64(inspect_choices("b").len() as i64, 2)
+    assert_eq_i64(inspect_choices("E{A=u;B=u}").len() as i64, 2)
+    assert_eq_i64(inspect_choices("E{A=u;B=(i)}").len() as i64, 0)
+    ret 0
+
+test_inspector_rejects_invalid_boolean_enum_and_mismatched_patch_counts <- () -> i64:
+    source := fixture_json()
+    fields := inspect_fields(json::schema::<InspectorFixture>(), source)
+    values := inspect_values(&fields)
+    values[2] = "1"
+    invalid_bool := json::decode::<InspectorFixture>(inspect_patch(source, &fields, &values))
+    assert_eq_i64(ffi::handle(&invalid_bool) as i64, 0)
+    values[2] = "false"
+    values[3] = "MissingVariant"
+    invalid_enum := json::decode::<InspectorFixture>(inspect_patch(source, &fields, &values))
+    assert_eq_i64(ffi::handle(&invalid_enum) as i64, 0)
+    short: [str] := []
+    assert_str_eq(inspect_patch(source, &fields, &short), "")
+    assert_str_eq(json::schema::<bool>(), "b")
+    assert_str_eq(json::schema::<[i64; 2]>(), "A2:i")
+    ret 0

@@ -37,6 +37,10 @@ e7_engine_scene_set_cube_angle <- (scene: u64, angle: i64) -> nil:
         ret
     scene_set_cube_angle(scene, angle)
 
+e7_engine_scene_set_projection <- (scene: u64, fov_y: f32, near: f32, far: f32) -> nil:
+    if scene != 0:
+        scene_set_projection(scene, fov_y, near, far)
+
 e7_engine_scene_set_light <- (scene: u64, x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, intensity: i64) -> nil:
     if scene == 0:
         ret

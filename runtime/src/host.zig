@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const abi = @import("ffi/abi.zig");
+const aggregate = @import("aggregate.zig");
 const io_mod = @import("ffi/io.zig");
 
 const Symbol = abi.Symbol;
@@ -33,6 +34,7 @@ const State = struct {
     /// the running project code at the next safe point.
     reload_requested: bool = false,
     capture: ?Capture = null,
+    reload_state: ?[]u8 = null,
 };
 
 var state: State = .{};
@@ -52,6 +54,8 @@ pub fn reset() void {
     state.frames = 0;
     state.quit = false;
     state.reload_requested = false;
+    if (state.reload_state) |bytes| std.heap.c_allocator.free(bytes);
+    state.reload_state = null;
 }
 
 /// Ask the containing host loop to recompile and swap the project code.
@@ -158,6 +162,26 @@ pub export fn e7_host_take_reload_request() callconv(.c) i64 {
     return @intFromBool(takeReloadRequest());
 }
 
+/// Opaque e7-owned policy, copied so it survives disposal of the old JIT.
+pub export fn e7_host_set_reload_state(value: i64) callconv(.c) i64 {
+    const length = aggregate.e7_str_len(value);
+    if (length < 0) return -1;
+    const source: [*]const u8 = @ptrFromInt(@as(usize, @intCast(value + 8)));
+    const copy = std.heap.c_allocator.dupe(u8, source[0..@intCast(length)]) catch return -1;
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (state.reload_state) |bytes| std.heap.c_allocator.free(bytes);
+    state.reload_state = copy;
+    return 0;
+}
+
+pub export fn e7_host_reload_state() callconv(.c) i64 {
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    const bytes = state.reload_state orelse return 0;
+    return aggregate.e7_str_new(@intCast(@intFromPtr(bytes.ptr)), @intCast(bytes.len));
+}
+
 pub fn writePpm(io: std.Io, path: []const u8, capture: Capture) !void {
     var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
     defer file.close(io);
@@ -189,8 +213,10 @@ pub fn captureHasContent(capture: Capture) bool {
     return false;
 }
 
-pub fn symbols() [6]Symbol {
+pub fn symbols() [8]Symbol {
     return .{
+        .{ .name = "e7_host_reload_state", .address = @intFromPtr(&e7_host_reload_state) },
+        .{ .name = "e7_host_set_reload_state", .address = @intFromPtr(&e7_host_set_reload_state) },
         .{ .name = "e7_host_headless", .address = @intFromPtr(&e7_host_headless) },
         .{ .name = "e7_host_should_close", .address = @intFromPtr(&e7_host_should_close) },
         .{ .name = "e7_host_note_frame", .address = @intFromPtr(&e7_host_note_frame) },

@@ -1,0 +1,249 @@
+# Schema-driven JSON inspection. This module knows no scene/ECS types.
+# Inputs are schemas from json::schema::<T>() and text from json::encode.
+# Structs expand into property paths; containers and optional/enum payloads
+# retain JSON editing. Applying produces a new JSON value for typed decoding.
+
+pub InspectField <- struct
+    path: str
+    schema: str
+    text: str
+    start: i64
+    end: i64
+    choices: [str]
+
+InspectSpan <- struct
+    start: i64
+    end: i64
+    found: bool
+
+pub inspect_char <- (text: str, at: i64) -> str:
+    if at < 0 or at >= text.len() as i64:
+        ret ""
+    ret text.slice(at as usize, (at + 1) as usize)
+
+inspect_space <- (text: str, start: i64) -> i64:
+    at := start
+    while at < text.len() as i64:
+        c := inspect_char(text, at)
+        if c != " " and c != "\t" and c != "\r" and c != "\n":
+            break
+        at = at + 1
+    ret at
+
+inspect_string_end <- (text: str, start: i64) -> i64:
+    at := start + 1
+    while at < text.len() as i64:
+        c := inspect_char(text, at)
+        at = at + 1
+        if c == "\\":
+            at = at + 1
+        elif c == "\"":
+            ret at
+    ret -1
+
+inspect_value_end <- (text: str, start: i64) -> i64:
+    first := inspect_char(text, start)
+    if first == "\"":
+        ret inspect_string_end(text, start)
+    if first == "{" or first == "[":
+        depth := 1
+        at := start + 1
+        while at < text.len() as i64:
+            c := inspect_char(text, at)
+            if c == "\"":
+                at = inspect_string_end(text, at)
+                if at < 0:
+                    ret -1
+            else:
+                if c == "{" or c == "[":
+                    depth = depth + 1
+                elif c == "}" or c == "]":
+                    depth = depth - 1
+                at = at + 1
+                if depth == 0:
+                    ret at
+        ret -1
+    at := start
+    while at < text.len() as i64:
+        c := inspect_char(text, at)
+        if c == "," or c == "}" or c == "]" or c == " " or c == "\t" or c == "\n" or c == "\r":
+            break
+        at = at + 1
+    ret at
+
+pub inspect_schema_end <- (schema: str, start: i64) -> i64:
+    first := inspect_char(schema, start)
+    if first == "?" or first == "E":
+        ret inspect_schema_end(schema, start + 1)
+    if first == "A" or first == "M":
+        colons := 1
+        if first == "M":
+            colons = 2
+        at := start + 1
+        while at < schema.len() as i64 and colons > 0:
+            if inspect_char(schema, at) == ":":
+                colons = colons - 1
+            at = at + 1
+        ret inspect_schema_end(schema, at)
+    if first == "{" or first == "[" or first == "<" or first == "(":
+        depth := 1
+        at := start + 1
+        while at < schema.len() as i64:
+            c := inspect_char(schema, at)
+            if c == "{" or c == "[" or c == "<" or c == "(":
+                depth = depth + 1
+            elif c == "}" or c == "]" or c == ">" or c == ")":
+                depth = depth - 1
+            at = at + 1
+            if depth == 0:
+                ret at
+        ret schema.len() as i64
+    ret start + 1
+
+inspect_member <- (text: str, object_start: i64, name: str) -> InspectSpan:
+    at := inspect_space(text, object_start + 1)
+    while inspect_char(text, at) == "\"":
+        key_end := inspect_string_end(text, at)
+        if key_end < 0:
+            break
+        key := json::decode::<str>(text.slice(at as usize, key_end as usize))
+        colon := inspect_space(text, key_end)
+        if inspect_char(text, colon) != ":":
+            break
+        value_start := inspect_space(text, colon + 1)
+        value_end := inspect_value_end(text, value_start)
+        if value_end <= value_start:
+            break
+        if key == name:
+            ret InspectSpan { start: value_start, end: value_end, found: true }
+        at = inspect_space(text, value_end)
+        if inspect_char(text, at) != ",":
+            break
+        at = inspect_space(text, at + 1)
+    ret InspectSpan { start: 0, end: 0, found: false }
+
+inspect_walk <- (schema: str, source: str, start: i64, end: i64, prefix: str, depth: i64) -> [InspectField]:
+    fields: [InspectField] := []
+    if inspect_char(schema, 0) == "{" and depth < 32:
+        at := 1
+        while at < schema.len() as i64 and inspect_char(schema, at) != "}":
+            equal := at
+            while equal < schema.len() as i64 and inspect_char(schema, equal) != "=":
+                equal = equal + 1
+            name := schema.slice(at as usize, equal as usize)
+            type_end := inspect_schema_end(schema, equal + 1)
+            child_schema := schema.slice((equal + 1) as usize, type_end as usize)
+            span := inspect_member(source, start, name)
+            path := name
+            if prefix.len() > 0:
+                path = prefix + "." + name
+            if span.found:
+                children := inspect_walk(child_schema, source, span.start, span.end, path, depth + 1)
+                for child in children:
+                    fields = vec::push(fields, child)
+            at = type_end
+            if inspect_char(schema, at) == ";":
+                at = at + 1
+    else:
+        json_value := source.slice(start as usize, end as usize)
+        text := json_value
+        if schema == "s" or (inspect_char(schema, 0) == "E" and inspect_char(json_value, 0) == "\""):
+            text = json::decode::<str>(json_value)
+        fields = vec::push(fields, InspectField { path: prefix, schema: schema, text: text, start: start, end: end, choices: inspect_choices(schema) })
+    ret fields
+
+pub inspect_fields <- (schema: str, source: str) -> [InspectField]:
+    if schema.len() == 0 or source.len() == 0:
+        ret []
+    start := inspect_space(source, 0)
+    end := inspect_value_end(source, start)
+    if end <= start or inspect_space(source, end) != source.len() as i64:
+        ret []
+    ret inspect_walk(schema, source, start, end, "", 0)
+
+pub inspect_values <- (fields: &[InspectField]) -> [str]:
+    values: [str] := []
+    index := 0
+    while index < fields.len() as i64:
+        values = vec::push(values, fields[index as usize].text)
+        index = index + 1
+    ret values
+
+# Unit enums and booleans have a finite set of values; render as cycle buttons.
+# Payload enums keep the JSON text editor so payload data is never discarded.
+pub inspect_choices <- (schema: str) -> [str]:
+    if schema == "b":
+        ret ["false", "true"]
+    choices: [str] := []
+    if inspect_char(schema, 0) != "E":
+        ret choices
+    at := 2
+    while at < schema.len() as i64 and inspect_char(schema, at) != "}":
+        equal := at
+        while equal < schema.len() as i64 and inspect_char(schema, equal) != "=":
+            equal = equal + 1
+        if inspect_char(schema, equal + 1) != "u":
+            ret []
+        choices = vec::push(choices, schema.slice(at as usize, equal as usize))
+        at = equal + 2
+        if inspect_char(schema, at) == ";":
+            at = at + 1
+    ret choices
+
+pub inspect_type_hint <- (schema: str) -> str:
+    if schema == "s":
+        ret "text"
+    if schema == "b":
+        ret "true / false"
+    if schema == "i":
+        ret "integer"
+    if schema == "f":
+        ret "number"
+    if inspect_char(schema, 0) == "E":
+        ret "enum / JSON"
+    ret "JSON"
+
+# A pure transaction: replacement spans refer to the original source. Sorting
+# by source offset also handles JSON object keys in a different declaration order.
+# The caller must decode the result as T and validate domain rules before commit.
+pub inspect_patch <- (source: str, fields: &[InspectField], values: &[str]) -> str:
+    if fields.len() != values.len():
+        ret ""
+    out := ""
+    position := 0
+    count := 0
+    while count < fields.len() as i64:
+        chosen := -1
+        earliest := source.len() as i64 + 1
+        index := 0
+        while index < fields.len() as i64:
+            field := fields[index as usize]
+            if field.start >= position and field.start < earliest:
+                chosen = index
+                earliest = field.start
+            index = index + 1
+        if chosen < 0:
+            ret ""
+        field := fields[chosen as usize]
+        value := values[chosen as usize]
+        replacement := value
+        if value == field.text:
+            replacement = source.slice(field.start as usize, field.end as usize)
+        elif field.schema == "s":
+            replacement = json::encode(value)
+        elif inspect_char(field.schema, 0) == "E":
+            first := inspect_char(value, inspect_space(value, 0))
+            if first != "{" and first != "\"":
+                replacement = json::encode(value)
+        out = out + source.slice(position as usize, field.start as usize) + replacement
+        position = field.end
+        count = count + 1
+    ret out + source.slice(position as usize, source.len() as usize)
+
+pub inspect_find <- (fields: &[InspectField], path: str) -> i64:
+    index := 0
+    while index < fields.len() as i64:
+        if fields[index as usize].path == path:
+            ret index
+        index = index + 1
+    ret -1

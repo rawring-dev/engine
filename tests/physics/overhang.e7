@@ -1,0 +1,148 @@
+# End-to-end physics regressions, loaded by runtime/src/jit_tests.zig.
+# Uses the real engine modules without creating a window or Vulkan device.
+mod platform
+mod core
+mod physics
+use core::events::*;
+use core::ecs::*;
+use core::input::*;
+use physics::*;
+use physics::narrowphase::*;
+use physics::broadphase::*;
+
+# A contact can support weight only when the projected centre of mass lies
+# inside the support polygon. Include initially asleep bodies and a marginal
+# overhang close to the tipping threshold.
+# Groups: 0 centred, 1 balanced offset, 2 asleep overhang, 3 marginal overhang,
+# 4 diagonal overhang, 5 reversed entity order, 6 rotated support, 7 bridge.
+@resource
+pub Probe <- struct
+    early_sleep: [i64]
+    final_y: [f32]
+    final_sleep: [i64]
+
+pub CaptureEarly <- trigger
+pub CaptureFinal <- trigger
+
+pub Scene <- plugin
+    init <- sys (commands: &mut Commands):
+        commands.insert_resource(Probe { early_sleep: [0, 0, 0, 0, 0, 0, 0, 0], final_y: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], final_sleep: [0, 0, 0, 0, 0, 0, 0, 0] })
+        sleepers := map[i64, [f32]] {}
+        group := 0
+        while group < 8:
+            if group != 3:
+                sleepers[group * 10 + 2] = [1.0, 1.0]
+            group = group + 1
+        sleepers[72] = [0.0, 0.0]
+        sleepers[73] = [1.0, 1.0]
+        commands.insert_resource(Input {
+            window: 0,
+            move_forward: false, move_backward: false, move_left: false, move_right: false,
+            move_up: false, move_down: false, sprint: false,
+            look_left: false, look_right: false, look_up: false, look_down: false,
+            look_dx: 0.0, look_dy: 0.0,
+            jump_pressed: false, jump_down: false, jump_was_down: false,
+            interact: false, interact_pressed: false, interact_was_down: false,
+        })
+        commands.insert_resource(PhysicsWorld {
+            gravity_y: -30.0, max_step: 0.05, grounded: false, jump_latched: false,
+            player_x: 0.0, player_y: 0.0, player_z: 0.0,
+            camera_yaw: 0.0, camera_pitch: 0.0, move_speed: 4.0,
+            quaternions: map[i64, [f32]] {}, plane_normal: [0.0, 1.0, 0.0], plane_offset: 0.0,
+            friction: 0.9, friction_static: 1.15,
+            pending_impulses: map[i64, [f32]] {}, sleep_state: sleepers,
+        })
+        group = 0
+        while group < 8:
+            count := 2
+            if group == 7:
+                count = 3
+            index := 0
+            while index < count:
+                slot := index
+                if group == 5:
+                    slot = 1 - index
+                top := slot == 1
+                if group == 7:
+                    top = slot == 2
+                x := (group as f32) * 5.0
+                y := 0.5
+                z := 0.0
+                yaw := 0.0
+                hx := 0.5
+                if top:
+                    y = 1.499
+                    if group == 1:
+                        x = x + 0.35
+                    elif group == 2 or group == 5:
+                        x = x + 0.75
+                    elif group == 3:
+                        x = x + 0.505
+                    elif group == 4:
+                        x = x + 0.65
+                        z = 0.65
+                    elif group == 6:
+                        x = x + 0.6
+                        z = 0.3
+                    elif group == 7:
+                        hx = 1.2
+                elif group == 6:
+                    yaw = 0.7853981634
+                elif group == 7:
+                    hx = 0.3
+                    if slot == 0:
+                        x = x - 0.9
+                    else:
+                        x = x + 0.9
+                transform := Transform { translation: [x, y, z], rotation: [0.0, yaw, 0.0], scale: [1.0, 1.0, 1.0] }
+                id := BodyId { id: group * 10 + slot + 1 }
+                bounds := BodyBounds { half_extents: [hx, 0.5, 0.5] }
+                mass := 0.0
+                if top:
+                    mass = 1.0
+                body := RigidBody {
+                    velocity: [0.0, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0],
+                    inv_mass: mass, gravity_scale: 1.0, rotation_locked: false, is_static: not top,
+                }
+                flags := BodyFlags { shape: 0, radius: 0.0, half_height: 0.0, is_player: false, is_pickup: top, target_id: group * 10 + slot + 1, held_by: 0 }
+                commands.add_row(Components, { transform, id, bounds, body, flags })
+                index = index + 1
+            group = group + 1
+
+@trigger(CaptureEarly)
+pub capture_early <- sys (probe: res &mut Probe, world: res &PhysicsWorld, rows: select &BodyFlags from Components):
+    for flags in rows:
+        if flags.is_pickup:
+            group := flags.target_id / 10
+            state := world.sleep_state[flags.target_id]
+            asleep := 0
+            if state.len() >= 2 and state[1] > 0.5:
+                asleep = 1
+            probe.early_sleep[group as usize] = asleep
+
+@trigger(CaptureFinal)
+pub capture_final <- sys (probe: res &mut Probe, world: res &PhysicsWorld, rows: select &Transform, &BodyFlags from Components):
+    for (transform, flags) in rows:
+        if flags.is_pickup:
+            group := flags.target_id / 10
+            probe.final_y[group as usize] = transform.translation[1]
+            state := world.sleep_state[flags.target_id]
+            if state.len() >= 2 and state[1] > 0.5:
+                probe.final_sleep[group as usize] = 1
+
+main <- async () -> i32:
+    commands := await query &mut Commands
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(Scene)
+    disown commands
+    await Init()
+    frame := 0
+    while frame < 360:
+        await Update()
+        if frame == 30:
+            await CaptureEarly()
+        frame = frame + 1
+    await CaptureFinal()
+    ret 0

@@ -1864,3 +1864,44 @@ test "checks inherent method call sugar and receiver mutability" {
         \\    r.add("bad")
     , "type mismatch");
 }
+
+test "JSON snapshot does not keep a temporary input borrow alive" {
+    try expectClean(
+        \\@derive(Serialize)
+        \\Document <- struct
+        \\    value: i64
+        \\snapshot_then_edit <- () -> str:
+        \\    document := Document { value: 1 }
+        \\    snapshot := json::encode(&document)
+        \\    document.value = 2
+        \\    ret snapshot
+    );
+}
+
+test "JSON schema reflection validates types, derives, and arity" {
+    try expectClean(
+        \\@derive(Serialize, Deserialize)
+        \\Settings <- struct
+        \\    enabled: bool
+        \\    names: [str]
+        \\schema <- () -> str:
+        \\    ret json::schema::<Settings>()
+    );
+    try expectDiagnostic(
+        \\bad <- () -> str = json::schema()
+    , "requires one type argument and no values");
+    try expectDiagnostic(
+        \\bad <- () -> str = json::schema::<i64>(1)
+    , "requires one type argument and no values");
+    try expectDiagnostic(
+        \\@derive(Serialize)
+        \\ReadOnly <- struct
+        \\    value: i64
+        \\bad <- () -> str = json::schema::<ReadOnly>()
+    , "must also derive Deserialize");
+    try expectDiagnostic(
+        \\Unsupported <- struct
+        \\    value: i64
+        \\bad <- () -> str = json::schema::<Unsupported>()
+    , "must also derive Serialize");
+}

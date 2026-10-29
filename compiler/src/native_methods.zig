@@ -65,14 +65,15 @@ const any_ = Type.any_;
 const unit_ = Type.unit;
 const raw_u8_ = Type.raw_u8;
 
-/// How a native method lowers.  All but `byte_offset` emit a single
-/// `runtime_call` to the method's `runtime` entry.
+/// Lower native methods to either a runtime call or a dedicated bytecode operation.
 pub const Lowering = enum {
     /// One `runtime_call` with the method's argument count.
     runtime_call,
     /// `ptr::offset(pointer, bytes)` is unchecked byte-addressed pointer
     /// arithmetic (`pointer + bytes`, no pointee-size scaling).
     byte_offset,
+    /// Allocate a zero-initialized vector or matrix with `vec_new`.
+    vector_new,
 };
 
 pub const Method = struct {
@@ -175,6 +176,8 @@ const host_methods = [_]Method{
     // consume that request from the e7 main loop at a safe shutdown point.
     .{ .name = "request_reload", .params = &.{}, .result = unit_, .runtime = .host_request_reload },
     .{ .name = "take_reload_request", .params = &.{}, .result = i64_, .runtime = .host_take_reload_request },
+    .{ .name = "reload_state", .params = &.{}, .result = str_, .runtime = .host_reload_state },
+    .{ .name = "set_reload_state", .params = &.{str_}, .result = i64_, .runtime = .host_set_reload_state },
     .{ .name = "headless", .params = &.{}, .result = i64_, .runtime = .host_headless },
     .{ .name = "should_close", .params = &.{}, .result = i64_, .runtime = .host_should_close },
     .{ .name = "note_frame", .params = &.{}, .result = unit_, .runtime = .host_note_frame },
@@ -191,6 +194,8 @@ const image_methods = [_]Method{
 };
 
 const vec_methods = [_]Method{
+    // Allocate a zero-initialized vector (columns=0) or matrix in one call.
+    .{ .name = "new", .params = &.{ i64_, i64_ }, .result = any_, .lowering = .vector_new },
     // The result type follows the vector argument; the analyzer special-cases
     // it the same way it does for the `e7_vec_push` intrinsic.
     .{ .name = "push", .params = &.{ any_, any_ }, .result = any_, .runtime = .vec_push },
@@ -230,7 +235,7 @@ test "every runtime-backed native method matches the bytecode arity" {
     for (namespaces) |namespace| {
         for (namespace.methods) |method| {
             const runtime = method.runtime orelse {
-                try std.testing.expectEqual(Lowering.byte_offset, method.lowering);
+                try std.testing.expect(method.lowering == .byte_offset or method.lowering == .vector_new);
                 continue;
             };
             try std.testing.expectEqual(@as(usize, runtime.arity()), method.params.len);

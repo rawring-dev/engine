@@ -2770,6 +2770,10 @@ const Builder = struct {
         if (call.type_args.len != 0) return error.UnsupportedFeature;
         if (call.args.len != method.params.len) return error.UnsupportedFeature;
         switch (method.lowering) {
+            .vector_new => {
+                for (call.args) |arg| try self.lowerExpr(arg);
+                try self.emit(.vec_new);
+            },
             .byte_offset => {
                 // `ptr::offset(pointer, bytes)`: unchecked byte arithmetic, no
                 // pointee-size scaling (unlike `pointer + count`).
@@ -2932,6 +2936,7 @@ const Builder = struct {
         const last_segment = path.segments[path.segments.len - 1];
         var is_encode = false;
         var is_decode = false;
+        var is_schema = false;
         if (path.segments.len == 1) {
             is_encode = std.mem.eql(u8, last_segment.name, "json_encode");
             is_decode = std.mem.eql(u8, last_segment.name, "json_decode");
@@ -2942,9 +2947,15 @@ const Builder = struct {
             if (!std.mem.eql(u8, path.segments[0].name, "json")) return false;
             is_encode = std.mem.eql(u8, last_segment.name, "encode");
             is_decode = std.mem.eql(u8, last_segment.name, "decode");
-            if (!is_encode and !is_decode) return false;
+            is_schema = std.mem.eql(u8, last_segment.name, "schema");
+            if (!is_encode and !is_decode and !is_schema) return false;
         } else {
             return false;
+        }
+        if (is_schema) {
+            const schema = self.analysis.jsonCallSchema(@intFromPtr(expr)) orelse return error.UnsupportedFeature;
+            try self.emit(.{ .string_lit = schema });
+            return true;
         }
         if (call.args.len != 1) return error.UnsupportedFeature;
         const schema = self.analysis.jsonCallSchema(@intFromPtr(expr)) orelse blk: {

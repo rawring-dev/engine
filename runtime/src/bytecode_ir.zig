@@ -99,6 +99,9 @@ fn functionNeedsFixpointAttr(function: bytecode.Function) bool {
     for (function.code, 0..) |op, index| switch (op) {
         // Container/map lowering expands into branchy call chains that can trip
         // LLVM 23's InstCombine fixed-point verifier.
+        // Aggregate constructors also trigger the verifier after stack-slot
+        // promotion (e.g. a nine-field UITextField default initializer).
+        .alloc,
         .vec_new,
         .vec_len,
         .vec_get,

@@ -61,6 +61,10 @@ impl Input:
         e7_engine_capture_mouse(input.window, 1)
         ret
 
+    pub release_mouse <- (input: &Input) -> nil:
+        e7_engine_capture_mouse(input.window, 0)
+        ret
+
     pub mouse_captured <- (input: &Input) -> bool:
         ret e7_engine_mouse_captured(input.window) != 0
 

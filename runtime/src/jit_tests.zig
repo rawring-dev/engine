@@ -3900,7 +3900,9 @@ test "physics sleeping stack wakes when its support is removed" {
     try std.testing.expectEqual(@as(i64, 1), bottom_a_sleep_before);
     try std.testing.expectEqual(@as(i64, 1), top_a_sleep_before);
     try std.testing.expectEqual(@as(i64, 1), top_b_sleep_before);
-    try std.testing.expectEqual(@as(i64, 1490), top_a_y_before);
+    // Split correction may remove the seeded 1 cm overlap while preserving
+    // the sleeping stack and its support relationship.
+    try std.testing.expect(top_a_y_before >= 1490 and top_a_y_before <= 1502);
     // Despawned support is gone; moved support still exists.
     try std.testing.expectEqual(@as(i64, 0), support_a_rows_after);
     try std.testing.expectEqual(@as(i64, 1), support_b_rows_after);
@@ -4838,6 +4840,7 @@ test "quaternion stack contacts keep render orientation consistent" {
     // Stack stays stacked through 240 contact steps (no tunnelling/explosion)
     // and the upper body keeps its authored Euler mirror untouched.
     try std.testing.expect(low_y > 200 and low_y < 800);
+    if (!(up_y > 1000 and up_y < 2000)) std.debug.print("stack heights: lower={d}, upper={d}\n", .{ low_y, up_y });
     try std.testing.expect(up_y > 1000 and up_y < 2000);
     try std.testing.expectEqual(@as(i64, 40000), rot_x);
     try std.testing.expectEqual(@as(i64, 0), rot_y);
@@ -4860,4 +4863,129 @@ test "quaternion stack contacts keep render orientation consistent" {
     try expectMilliNear(2.0 * (qx * qz - qw * qy), m02, 4);
     try expectMilliNear(2.0 * (qx * qz + qw * qy), m20, 4);
     try expectMilliNear(1.0 - 2.0 * (qx * qx + qy * qy), m22, 4);
+}
+
+test "physics collision snapshots, static order, mass weighting, and thin obstacles" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+    const source = try readRepoSource(std.testing.allocator, "tests/physics/collisions.e7");
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compileProjectFromSources(std.testing.allocator, source, modules.sources, .{});
+    defer compiled.deinit();
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-collision-regressions");
+    const main_ctor = try jit.get(*const fn () callconv(.c) i64, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    const result = task.e7_task_await(handle);
+    if (result != 0) {
+        for (compiled.analysis.resources) |resource| {
+            if (!std.mem.endsWith(u8, resource.name, "Probe")) continue;
+            const ptr = ecs.e7_ecs_resource(resource.id);
+            const debug = aggregate.e7_load_i64(ptr + 8);
+            var index: i64 = 0;
+            while (index < aggregate.e7_vec_len(debug)) : (index += 3) {
+                std.debug.print("body {d}: x={d} vx={d} (milli)\n", .{
+                    aggregate.e7_vec_get(debug, index),
+                    aggregate.e7_vec_get(debug, index + 1),
+                    aggregate.e7_vec_get(debug, index + 2),
+                });
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(i64, 0), result);
+}
+
+test "physics stacks settle without bouncing or lateral creep in either entity order" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+    const source = try readRepoSource(std.testing.allocator, "tests/physics/stack_settling.e7");
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compileProjectFromSources(std.testing.allocator, source, modules.sources, .{});
+    defer compiled.deinit();
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-stack-settling");
+    const main_ctor = try jit.get(*const fn () callconv(.c) i64, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const ptr = ecs.e7_ecs_resource(probe_id);
+    const drift = @as(f64, @bitCast(aggregate.e7_load_i64(ptr)));
+    const height_error = @as(f64, @bitCast(aggregate.e7_load_i64(ptr + 8)));
+    const speed = @as(f64, @bitCast(aggregate.e7_load_i64(ptr + 16)));
+    const spin = @as(f64, @bitCast(aggregate.e7_load_i64(ptr + 24)));
+    const sleeping = aggregate.e7_load_i64(ptr + 32);
+    const samples = aggregate.e7_load_i64(ptr + 40);
+    std.debug.print("stack settling: drift={d:.6}, height error={d:.6}, speed={d:.6}, spin={d:.6}, sleeping={d}/{d}\n", .{ drift, height_error, speed, spin, sleeping, samples });
+    const groups = aggregate.e7_load_i64(ptr + 48);
+    for (0..4) |group| {
+        const g: i64 = @intCast(group * 4);
+        std.debug.print("group {d}: drift={d:.6} height={d:.6} speed={d:.6} spin={d:.6}\n", .{
+            group,
+            @as(f64, @bitCast(aggregate.e7_vec_get(groups, g))),
+            @as(f64, @bitCast(aggregate.e7_vec_get(groups, g + 1))),
+            @as(f64, @bitCast(aggregate.e7_vec_get(groups, g + 2))),
+            @as(f64, @bitCast(aggregate.e7_vec_get(groups, g + 3))),
+        });
+    }
+    try std.testing.expect(drift < 0.025);
+    try std.testing.expect(height_error < 0.006);
+    try std.testing.expect(speed < 0.005);
+    try std.testing.expect(spin < 0.005);
+    try std.testing.expectEqual(@as(i64, 1920), samples);
+    try std.testing.expect(sleeping > @divTrunc(samples * 9, 10));
+}
+
+test "physics overhanging cubes wake and fall while supported offsets and bridges rest" {
+    var modules = try loadJitPhysicsModules(std.testing.allocator);
+    defer modules.deinit();
+    const source = try readRepoSource(std.testing.allocator, "tests/physics/overhang.e7");
+    defer std.testing.allocator.free(source);
+    var compiled = try compiler.pipeline.compileProjectFromSources(std.testing.allocator, source, modules.sources, .{});
+    defer compiled.deinit();
+    ecs.e7_ecs_reset();
+    defer ecs.e7_ecs_reset();
+    var jit = try orc.Jit.init(std.testing.allocator);
+    defer jit.deinit();
+    try jit.addBytecode(&compiled.bytecode, "physics-overhang");
+    const main_ctor = try jit.get(*const fn () callconv(.c) i64, "main");
+    const handle = main_ctor();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(handle));
+    var probe_id: i64 = -1;
+    for (compiled.analysis.resources) |resource| {
+        if (std.mem.endsWith(u8, resource.name, "Probe")) probe_id = resource.id;
+    }
+    try std.testing.expect(probe_id >= 0);
+    const ptr = ecs.e7_ecs_resource(probe_id);
+    const early = aggregate.e7_load_i64(ptr);
+    const heights = aggregate.e7_load_i64(ptr + 8);
+    const asleep = aggregate.e7_load_i64(ptr + 16);
+    for (0..8) |group| {
+        const g: i64 = @intCast(group);
+        const y: f64 = @bitCast(aggregate.e7_vec_get(heights, g));
+        std.debug.print("overhang group {d}: early asleep={d}, final y={d:.6}, final asleep={d}\n", .{ group, aggregate.e7_vec_get(early, g), y, aggregate.e7_vec_get(asleep, g) });
+    }
+    for (0..8) |group| {
+        const g: i64 = @intCast(group);
+        const y: f64 = @bitCast(aggregate.e7_vec_get(heights, g));
+        if (group == 0 or group == 1 or group == 7) {
+            try std.testing.expect(@abs(y - 1.499) < 0.01);
+            try std.testing.expectEqual(@as(i64, 1), aggregate.e7_vec_get(asleep, g));
+        } else {
+            try std.testing.expectEqual(@as(i64, 0), aggregate.e7_vec_get(early, g));
+            try std.testing.expect(y < 0.8);
+        }
+    }
 }

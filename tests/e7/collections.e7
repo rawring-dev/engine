@@ -35,3 +35,14 @@ test_maps <- () -> i64:
     names := map[str, i64] { "one": 1 }
     assert_eq_i64(names["one"], 1)
     ret 0
+
+# Single-allocation buffers support numerical algorithms without repeated copies.
+test_vector_zero_buffer <- () -> i64:
+    values: [f32] := vec::new(4, 0)
+    assert_eq_i64(values.len() as i64, 4)
+    assert_f32_near(values[0], 0.0, 0.000001)
+    assert_f32_near(values[3], 0.0, 0.000001)
+    values[2] = 1.5
+    assert_f32_near(values[2], 1.5, 0.000001)
+    assert_f32_near(values[1], 0.0, 0.000001)
+    ret 0

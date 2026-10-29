@@ -1,0 +1,646 @@
+# Editor policy is independent of widgets and rendering so the same commands
+# can be exercised by the e7 tests and by keyboard, hierarchy, and inspector UI.
+
+@derive(Serialize, Deserialize)
+pub EditorSnapshot <- struct
+    document: SceneDocument
+    selected: i64
+
+@derive(Serialize, Deserialize)
+pub EditorResume <- struct
+    document: SceneDocument
+    scene_path: str
+    selected: i64
+    view_camera: SceneCamera
+
+@resource
+pub EditorState <- struct
+    document: SceneDocument
+    scene_path: str
+    selected: i64
+    dirty: bool
+    refresh_needed: bool
+    status: str
+    colour_step: i64
+    undo_stack: [str]
+    redo_stack: [str]
+    saved_json: str
+    pending_action: i64
+    revision: i64
+    path_revision: i64
+    hierarchy_page: i64
+    view_camera: SceneCamera
+    pointer_down: bool
+    camera_active: bool
+    last_shortcut: i64
+    inspector_target: i64
+    inspector_page: i64
+    inspector_fields: [InspectField]
+    inspector_draft: [str]
+
+pub editor_state <- (document: SceneDocument, path: str) -> EditorState:
+    saved := scene_to_json(&document)
+    camera := json::decode::<SceneCamera>(json::encode(&document.camera))
+    owned := json::decode::<SceneDocument>(saved)
+    state := EditorState {
+        document: owned, scene_path: path, selected: 0, dirty: false,
+        refresh_needed: true, status: "Ready", colour_step: 0,
+        undo_stack: [], redo_stack: [], saved_json: saved, pending_action: 0,
+        revision: 1, path_revision: 1, hierarchy_page: 0, view_camera: camera,
+        pointer_down: false, camera_active: false, last_shortcut: 0,
+        inspector_target: 0, inspector_page: 0, inspector_fields: [], inspector_draft: [],
+    }
+    editor_rebuild_inspector(&mut state)
+    ret state
+
+pub editor_resume <- (fallback: SceneDocument, path: str) -> EditorState:
+    text := host::reload_state()
+    if text.len() > 0:
+        session := json::decode::<EditorResume>(text)
+        if ffi::handle(&session) != 0:
+            state := editor_state(session.document, session.scene_path)
+            editor_select(&mut state, session.selected)
+            state.view_camera = session.view_camera
+            state.status = "Code reloaded; scene restored"
+            ret state
+    ret editor_state(fallback, path)
+
+pub editor_store_session <- (state: &EditorState) -> bool:
+    session := EditorResume {
+        document: state.document,
+        scene_path: state.scene_path,
+        selected: state.selected,
+        view_camera: state.view_camera,
+    }
+    ret host::set_reload_state(json::encode(&session)) == 0
+
+pub digit_text <- (digit: i64) -> str:
+    digits := "0123456789"
+    ret digits.slice(digit as usize, (digit + 1) as usize)
+
+pub fmt_i64 <- (value: i64) -> str:
+    if value == 0:
+        ret "0"
+    magnitude := value
+    if magnitude < 0:
+        magnitude = 0 - magnitude
+    out := ""
+    while magnitude > 0:
+        out = digit_text(magnitude % 10) + out
+        magnitude = magnitude / 10
+    if value < 0:
+        ret "-" + out
+    ret out
+
+pub editor_trim <- (text: str) -> str:
+    first := 0
+    last := text.len() as i64
+    while first < last:
+        c := text.slice(first as usize, (first + 1) as usize)
+        if c != " " and c != "\t" and c != "\r" and c != "\n":
+            break
+        first = first + 1
+    while last > first:
+        c := text.slice((last - 1) as usize, last as usize)
+        if c != " " and c != "\t" and c != "\r" and c != "\n":
+            break
+        last = last - 1
+    ret text.slice(first as usize, last as usize)
+
+pub selected_object_index <- (state: &EditorState) -> i64:
+    count := state.document.objects.len() as i64
+    if state.selected < 0 or state.selected >= count:
+        ret -1
+    ret state.selected
+
+pub editor_select <- (state: &mut EditorState, index: i64) -> nil:
+    count := state.document.objects.len() as i64
+    if count == 0:
+        state.selected = -1
+    else:
+        at := index
+        if at < 0:
+            at = count - 1
+        if at >= count:
+            at = 0
+        state.selected = at
+        state.hierarchy_page = at / 8
+    state.pending_action = 0
+    state.inspector_target = 0
+    state.inspector_page = 0
+    editor_rebuild_inspector(state)
+    state.revision = state.revision + 1
+
+bounded_history <- (history: [str], snapshot: str) -> [str]:
+    out: [str] := []
+    start := 0
+    if history.len() >= 64:
+        start = history.len() as i64 - 63
+    i := start
+    while i < history.len() as i64:
+        out = vec::push(out, history[i as usize])
+        i = i + 1
+    ret vec::push(out, snapshot)
+
+history_without_last <- (history: [str]) -> [str]:
+    out: [str] := []
+    i := 0
+    while i + 1 < history.len() as i64:
+        out = vec::push(out, history[i as usize])
+        i = i + 1
+    ret out
+
+editor_snapshot <- (state: &EditorState) -> str:
+    value := EditorSnapshot { document: state.document, selected: state.selected }
+    ret json::encode(&value)
+
+pub editor_begin_edit <- (state: &mut EditorState) -> nil:
+    state.undo_stack = bounded_history(state.undo_stack, editor_snapshot(state))
+    state.redo_stack = []
+    state.pending_action = 0
+
+pub editor_changed <- (state: &mut EditorState, message: str) -> nil:
+    editor_rebuild_inspector(state)
+    state.dirty = scene_to_json(&state.document) != state.saved_json
+    state.refresh_needed = true
+    state.revision = state.revision + 1
+    state.status = message
+
+pub editor_undo <- (state: &mut EditorState, redo: bool) -> nil:
+    history := state.undo_stack
+    if redo:
+        history = state.redo_stack
+    if history.len() == 0:
+        state.status = "Nothing to undo"
+        if redo:
+            state.status = "Nothing to redo"
+        ret
+    snapshot := json::decode::<EditorSnapshot>(history[(history.len() as i64 - 1) as usize])
+    current := editor_snapshot(state)
+    if redo:
+        state.undo_stack = bounded_history(state.undo_stack, current)
+        state.redo_stack = history_without_last(state.redo_stack)
+    else:
+        state.redo_stack = bounded_history(state.redo_stack, current)
+        state.undo_stack = history_without_last(state.undo_stack)
+    state.document = snapshot.document
+    target := state.inspector_target
+    editor_select(state, snapshot.selected)
+    state.inspector_target = target
+    if target == 1:
+        state.view_camera = json::decode::<SceneCamera>(json::encode(&state.document.camera))
+    editor_changed(state, "Undo")
+    if redo:
+        state.status = "Redo"
+
+pub copy_scene_object <- (object: SceneObject) -> SceneObject:
+    ret SceneObject {
+        name: object.name, kind: object.kind, texture: object.texture,
+        translation: Vec3 { x: object.translation.x, y: object.translation.y, z: object.translation.z },
+        rotation: Vec3 { x: object.rotation.x, y: object.rotation.y, z: object.rotation.z },
+        half_extents: Vec3 { x: object.half_extents.x, y: object.half_extents.y, z: object.half_extents.z },
+        colour: Colour { r: object.colour.r, g: object.colour.g, b: object.colour.b, a: object.colour.a },
+    }
+
+editor_name_exists <- (state: &EditorState, name: str, except: i64) -> bool:
+    i := 0
+    while i < state.document.objects.len() as i64:
+        if i != except and state.document.objects[i as usize].name == name:
+            ret true
+        i = i + 1
+    ret false
+
+editor_unique_name <- (objects: [SceneObject], prefix: str) -> str:
+    serial := 1
+    candidate := prefix + " " + fmt_i64(serial)
+    known := true
+    while known:
+        known = false
+        for object in objects:
+            if object.name == candidate:
+                known = true
+        if known:
+            serial = serial + 1
+            candidate = prefix + " " + fmt_i64(serial)
+    ret candidate
+
+pub editor_add <- (state: &mut EditorState, kind: ShapeKind) -> nil:
+    editor_begin_edit(state)
+    code := shape_kind_code(kind)
+    half := Vec3 { x: 0.5, y: 0.5, z: 0.5 }
+    if code == 2:
+        half = Vec3 { x: 0.4, y: 1.0, z: 0.4 }
+    if code == 3:
+        half = Vec3 { x: 4.0, y: 0.1, z: 4.0 }
+    object := SceneObject {
+        name: editor_unique_name(state.document.objects, shape_kind_name(shape_kind_from_code(code))), kind: shape_kind_from_code(code),
+        translation: Vec3 { x: 0.0, y: half.y, z: 0.0 },
+        rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        half_extents: half, colour: Colour { r: 0.7, g: 0.75, b: 0.85, a: 1.0 }, texture: "",
+    }
+    state.document.objects = vec::push(state.document.objects, object)
+    editor_select(state, state.document.objects.len() as i64 - 1)
+    editor_changed(state, "Added object")
+
+pub editor_duplicate <- (state: &mut EditorState) -> nil:
+    at := selected_object_index(state)
+    if at < 0:
+        state.status = "Select an object first"
+        ret
+    editor_begin_edit(state)
+    object := copy_scene_object(state.document.objects[at as usize])
+    object.name = editor_unique_name(state.document.objects, object.name + " copy")
+    object.translation.x = object.translation.x + 0.5
+    object.translation.z = object.translation.z + 0.5
+    state.document.objects = vec::push(state.document.objects, object)
+    editor_select(state, state.document.objects.len() as i64 - 1)
+    editor_changed(state, "Duplicated object")
+
+pub editor_delete <- (state: &mut EditorState) -> nil:
+    at := selected_object_index(state)
+    if at < 0:
+        state.status = "Select an object first"
+        ret
+    editor_begin_edit(state)
+    out: [SceneObject] := []
+    i := 0
+    while i < state.document.objects.len() as i64:
+        if i != at:
+            out = vec::push(out, state.document.objects[i as usize])
+        i = i + 1
+    state.document.objects = out
+    next := at
+    if next >= state.document.objects.len() as i64:
+        next = state.document.objects.len() as i64 - 1
+    editor_select(state, next)
+    editor_changed(state, "Deleted object (Undo to restore)")
+
+pub editor_inspector_source <- (state: &EditorState) -> str:
+    if state.inspector_target == 1:
+        ret json::encode(&state.document.camera)
+    if state.inspector_target == 2:
+        ret json::encode(&state.document.light)
+    at := selected_object_index(state)
+    if at < 0:
+        ret ""
+    object := state.document.objects[at as usize]
+    ret json::encode(&object)
+
+pub editor_rebuild_inspector <- (state: &mut EditorState) -> nil:
+    schema := json::schema::<SceneObject>()
+    if state.inspector_target == 1:
+        schema = json::schema::<SceneCamera>()
+    elif state.inspector_target == 2:
+        schema = json::schema::<SceneLight>()
+    state.inspector_fields = inspect_fields(schema, editor_inspector_source(state))
+    state.inspector_draft = inspect_values(&state.inspector_fields)
+    if state.inspector_page * 6 >= state.inspector_fields.len() as i64:
+        state.inspector_page = 0
+
+pub editor_capture_inspector_page <- (state: &mut EditorState, fields: [str]) -> nil:
+    if fields.len() != 7:
+        ret
+    slot := 0
+    while slot < 6:
+        index := state.inspector_page * 6 + slot
+        if index < state.inspector_draft.len() as i64:
+            state.inspector_draft[index as usize] = fields[(slot + 1) as usize]
+        slot = slot + 1
+
+# JSON decoding owns type validation. These are scene-specific constraints,
+# deliberately separate from the reusable schema-driven inspector.
+pub editor_apply_inspector <- (state: &mut EditorState, values: [str]) -> bool:
+    source := editor_inspector_source(state)
+    if source.len() == 0 or values.len() != state.inspector_fields.len():
+        state.status = "No inspector target or incomplete values"
+        ret false
+    candidate := inspect_patch(source, &state.inspector_fields, &values)
+    if candidate == source:
+        state.status = "Properties unchanged"
+        ret true
+    if state.inspector_target == 1:
+        camera := json::decode::<SceneCamera>(candidate)
+        if ffi::handle(&camera) == 0:
+            state.status = "Invalid camera values; nothing changed"
+            ret false
+        if camera.fov_y < 0.05 or camera.fov_y > 3.0 or camera.near < 0.001 or camera.far <= camera.near:
+            state.status = "Camera needs FOV 0.05..3 radians and 0 < near < far"
+            ret false
+        if json::encode(&camera) == source:
+            state.status = "Properties unchanged"
+            ret true
+        editor_begin_edit(state)
+        state.document.camera = camera
+        state.view_camera = json::decode::<SceneCamera>(json::encode(&state.document.camera))
+    elif state.inspector_target == 2:
+        light := json::decode::<SceneLight>(candidate)
+        if ffi::handle(&light) == 0:
+            state.status = "Invalid light values; nothing changed"
+            ret false
+        if light.intensity < 0.0 or light.colour.x < 0.0 or light.colour.y < 0.0 or light.colour.z < 0.0:
+            state.status = "Light colour and intensity must be nonnegative"
+            ret false
+        if json::encode(&light) == source:
+            state.status = "Properties unchanged"
+            ret true
+        editor_begin_edit(state)
+        state.document.light = light
+    else:
+        object := json::decode::<SceneObject>(candidate)
+        if ffi::handle(&object) == 0:
+            state.status = "Invalid property type or enum; nothing changed"
+            ret false
+        at := selected_object_index(state)
+        object.name = editor_trim(object.name)
+        if object.name.len() == 0 or editor_name_exists(state, object.name, at):
+            state.status = "Use a nonempty, unique object name"
+            ret false
+        sizes := [object.half_extents.x, object.half_extents.y, object.half_extents.z]
+        for size in sizes:
+            if size < 0.001 or size > 10000.0:
+                state.status = "Half-size must be 0.001 to 10000"
+                ret false
+        channels := [object.colour.r, object.colour.g, object.colour.b, object.colour.a]
+        for channel in channels:
+            if channel < 0.0 or channel > 1.0:
+                state.status = "Tint channels must be between 0 and 1"
+                ret false
+        if json::encode(&object) == source:
+            state.status = "Properties unchanged"
+            ret true
+        editor_begin_edit(state)
+        state.document.objects[at as usize] = object
+    editor_changed(state, "Applied inspector transaction")
+    ret true
+
+# Full-property entry point for tools/tests: path followed by schema leaf values.
+pub editor_apply_fields <- (state: &mut EditorState, fields: [str]) -> bool:
+    values: [str] := []
+    index := 1
+    while index < fields.len() as i64:
+        values = vec::push(values, fields[index as usize])
+        index = index + 1
+    ret editor_apply_inspector(state, values)
+
+pub editor_field_text <- (state: &EditorState, role: i64) -> str:
+    if role == 0:
+        ret state.scene_path
+    index := state.inspector_page * 6 + role - 1
+    if index >= 0 and index < state.inspector_draft.len() as i64:
+        ret state.inspector_draft[index as usize]
+    ret ""
+
+pub editor_save <- (state: &mut EditorState, path_input: str) -> bool:
+    path := editor_trim(path_input)
+    if path.len() == 0:
+        state.status = "Enter a scene path first"
+        ret false
+    if save_scene(path, &state.document) != 0:
+        state.status = "Save failed; document kept in memory"
+        ret false
+    state.scene_path = path
+    state.path_revision = state.path_revision + 1
+    state.saved_json = scene_to_json(&state.document)
+    state.dirty = false
+    state.pending_action = 0
+    state.status = "Saved " + path
+    ret true
+
+pub editor_confirm_discard <- (state: &mut EditorState, action: i64) -> bool:
+    if state.dirty and state.pending_action != action:
+        state.pending_action = action
+        state.status = "Unsaved changes: click again to discard, or Save"
+        ret false
+    state.pending_action = 0
+    ret true
+
+pub editor_open <- (state: &mut EditorState, path_input: str) -> bool:
+    path := editor_trim(path_input)
+    candidate := scene_from_json(host::read_asset(path))
+    if not document_is_valid(&candidate):
+        state.status = "Open failed; current scene preserved"
+        ret false
+    if not editor_confirm_discard(state, 21):
+        ret false
+    state.document = candidate
+    state.scene_path = path
+    state.path_revision = state.path_revision + 1
+    state.view_camera = json::decode::<SceneCamera>(json::encode(&state.document.camera))
+    state.saved_json = scene_to_json(&state.document)
+    state.undo_stack = []
+    state.redo_stack = []
+    editor_select(state, 0)
+    editor_changed(state, "Opened " + path)
+    ret true
+
+pub editor_new <- (state: &mut EditorState) -> bool:
+    if not editor_confirm_discard(state, 20):
+        ret false
+    state.document = SceneDocument {
+        format: scene_format(), version: scene_version(), name: "untitled",
+        camera: default_camera(), light: default_light(), objects: [],
+    }
+    state.scene_path = "engine/editor/scenes/untitled.scene.json"
+    state.path_revision = state.path_revision + 1
+    state.view_camera = default_camera()
+    state.saved_json = ""
+    state.undo_stack = []
+    state.redo_stack = []
+    editor_select(state, -1)
+    editor_changed(state, "New scene; choose a path and Save")
+    ret true
+
+pub editor_focus <- (state: &mut EditorState) -> nil:
+    at := selected_object_index(state)
+    if at < 0:
+        ret
+    object := state.document.objects[at as usize]
+    extent := object.half_extents.x
+    if object.half_extents.y > extent:
+        extent = object.half_extents.y
+    if object.half_extents.z > extent:
+        extent = object.half_extents.z
+    distance := extent * 3.0 + 2.0
+    state.view_camera.position = Vec3 { x: object.translation.x, y: object.translation.y + distance * 0.2, z: object.translation.z + distance }
+    state.view_camera.yaw = 0.0
+    state.view_camera.pitch = -0.1973955598
+    state.refresh_needed = true
+    state.status = "Focused selection"
+
+pub editor_nudge <- (state: &mut EditorState, axis: i64, step: f32) -> nil:
+    at := selected_object_index(state)
+    if at < 0:
+        ret
+    editor_begin_edit(state)
+    object := copy_scene_object(state.document.objects[at as usize])
+    if axis == 0:
+        object.translation.x = object.translation.x + step
+    elif axis == 1:
+        object.translation.y = object.translation.y + step
+    else:
+        object.translation.z = object.translation.z + step
+    state.document.objects[at as usize] = object
+    editor_changed(state, "Moved selection")
+
+pub editor_dispatch <- (state: &mut EditorState, action: i64, fields: [str]) -> nil:
+    if action != 20 and action != 21:
+        state.pending_action = 0
+    editor_capture_inspector_page(state, fields)
+    if action >= 100 and action < 108:
+        editor_select(state, state.hierarchy_page * 8 + action - 100)
+        ret
+    if action == 1:
+        editor_select(state, state.selected + 1)
+    elif action == 2:
+        editor_select(state, state.selected - 1)
+    elif action >= 3 and action <= 8:
+        step := -0.25
+        if action % 2 == 0:
+            step = 0.25
+        editor_nudge(state, (action - 3) / 2, step)
+    elif action == 10 or action == 11:
+        if fields.len() > 0 and editor_save(state, fields[0]) and action == 11:
+            if editor_store_session(state):
+                state.status = "Saved; reloading code"
+                host::request_reload()
+            else:
+                state.status = "Saved; could not preserve reload session"
+    elif action == 12:
+        editor_duplicate(state)
+    elif action == 13:
+        editor_delete(state)
+    elif action == 14:
+        editor_undo(state, false)
+    elif action == 15:
+        editor_undo(state, true)
+    elif action == 16:
+        editor_add(state, ShapeKind::Box)
+    elif action == 17:
+        editor_add(state, ShapeKind::Sphere)
+    elif action == 18:
+        editor_add(state, ShapeKind::Capsule)
+    elif action == 19:
+        editor_add(state, ShapeKind::Plane)
+    elif action == 20:
+        changed := editor_new(state)
+    elif action == 21 and fields.len() > 0:
+        opened := editor_open(state, fields[0])
+    elif action == 22:
+        if state.hierarchy_page > 0:
+            state.hierarchy_page = state.hierarchy_page - 1
+    elif action == 23:
+        if (state.hierarchy_page + 1) * 8 < state.document.objects.len() as i64:
+            state.hierarchy_page = state.hierarchy_page + 1
+    elif action == 24:
+        editor_focus(state)
+    elif action == 25:
+        editor_begin_edit(state)
+        state.document.camera = json::decode::<SceneCamera>(json::encode(&state.view_camera))
+        editor_changed(state, "Saved viewport as scene camera")
+    elif action == 30:
+        applied := editor_apply_inspector(state, state.inspector_draft)
+    elif action == 31:
+        editor_rebuild_inspector(state)
+        state.revision = state.revision + 1
+        state.status = "Inspector reset to document values"
+    elif action >= 40 and action <= 42:
+        state.inspector_target = action - 40
+        state.inspector_page = 0
+        editor_rebuild_inspector(state)
+        state.revision = state.revision + 1
+    elif action >= 60 and action < 66:
+        index := state.inspector_page * 6 + action - 60
+        if index < state.inspector_fields.len() as i64:
+            choices := state.inspector_fields[index as usize].choices
+            next := 0
+            choice_index := 0
+            while choice_index < choices.len() as i64:
+                if choices[choice_index as usize] == state.inspector_draft[index as usize]:
+                    next = (choice_index + 1) % choices.len() as i64
+                choice_index = choice_index + 1
+            if choices.len() > 0:
+                state.inspector_draft[index as usize] = choices[next as usize]
+                state.revision = state.revision + 1
+    elif action == 43 or action == 44:
+        if action == 43 and state.inspector_page > 0:
+            state.inspector_page = state.inspector_page - 1
+        elif action == 44 and (state.inspector_page + 1) * 6 < state.inspector_fields.len() as i64:
+            state.inspector_page = state.inspector_page + 1
+        state.revision = state.revision + 1
+
+editor_inverse_rotate <- (q: Quat, v: Vec3) -> Vec3:
+    # Unit quaternion conjugate, applied without allocating a matrix.
+    tx := -2.0 * (q.y * v.z - q.z * v.y)
+    ty := -2.0 * (q.z * v.x - q.x * v.z)
+    tz := -2.0 * (q.x * v.y - q.y * v.x)
+    ret Vec3 {
+        x: v.x + q.w * tx - q.y * tz + q.z * ty,
+        y: v.y + q.w * ty - q.z * tx + q.x * tz,
+        z: v.z + q.w * tz - q.x * ty + q.y * tx,
+    }
+
+editor_ray_box <- (origin: Vec3, direction: Vec3, half: Vec3) -> f32:
+    origins := [origin.x, origin.y, origin.z]
+    directions := [direction.x, direction.y, direction.z]
+    extents := [half.x, half.y, half.z]
+    near := 0.0
+    far := 1000000.0
+    axis := 0
+    while axis < 3:
+        o := origins[axis as usize]
+        d := directions[axis as usize]
+        h := extents[axis as usize]
+        if f32::abs(d) < 0.0000001:
+            if o < -h or o > h:
+                ret -1.0
+        else:
+            a := (-h - o) / d
+            b := (h - o) / d
+            if a > b:
+                swap := a
+                a = b
+                b = swap
+            if a > near:
+                near = a
+            if b < far:
+                far = b
+            if near > far:
+                ret -1.0
+        axis = axis + 1
+    ret near
+
+# Pick the nearest oriented authoring bounds. The full window projection
+# matches the current renderer; side panels merely overlay that projection.
+pub editor_pick <- (state: &EditorState, mouse_x: f32, mouse_y: f32, width: f32, height: f32) -> i64:
+    if width <= 0.0 or height <= 0.0:
+        ret -1
+    camera := state.view_camera
+    sy := f32::sin(camera.yaw)
+    cy := f32::cos(camera.yaw)
+    sp := f32::sin(camera.pitch)
+    cp := f32::cos(camera.pitch)
+    tangent := f32::sin(camera.fov_y * 0.5) / f32::cos(camera.fov_y * 0.5)
+    px := (2.0 * mouse_x / width - 1.0) * width / height * tangent
+    py := (1.0 - 2.0 * mouse_y / height) * tangent
+    dx := sy * cp + cy * px - sy * sp * py
+    dy := sp + cp * py
+    dz := -cy * cp + sy * px + cy * sp * py
+    length := f32::sqrt(dx * dx + dy * dy + dz * dz)
+    dx = dx / length
+    dy = dy / length
+    dz = dz / length
+    closest := camera.far
+    picked := -1
+    index := 0
+    for object in state.document.objects:
+        q := euler_to_quaternion(Vec3 { x: object.rotation.x, y: object.rotation.y, z: object.rotation.z })
+        origin := editor_inverse_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 {
+            x: camera.position.x - object.translation.x, y: camera.position.y - object.translation.y, z: camera.position.z - object.translation.z,
+        })
+        direction := editor_inverse_rotate(Quat { x: q.x, y: q.y, z: q.z, w: q.w }, Vec3 { x: dx, y: dy, z: dz })
+        distance := editor_ray_box(origin, direction, Vec3 { x: object.half_extents.x, y: object.half_extents.y, z: object.half_extents.z })
+        if distance >= 0.0 and distance < closest:
+            closest = distance
+            picked = index
+        index = index + 1
+    ret picked

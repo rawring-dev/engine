@@ -11,11 +11,11 @@ mod narrowphase
 #
 # All gameplay physics happens in one Update system so the order is
 # deterministic even though trigger phases run systems concurrently:
-#   broadphase rebuild (conservative rotated AABBs) + gravity/integrate
-#   -> quaternion integration + oriented ground manifolds
-#   -> body-body narrowphase (OBB SAT / oriented capsule / sphere manifolds,
-#      each pair once) with contact impulses and angular velocity
-#   -> player movement/jump -> nearest-pickup acquire/release/hold
+#   gravity + quaternion integration + oriented ground manifolds for all bodies
+#   -> complete broadphase snapshot (conservative rotated AABBs)
+#   -> clipped box faces / oriented capsule / sphere contact constraints
+#   -> accumulated velocity impulses + split positional iterations for all bodies
+#   -> nearest-pickup acquire/release/hold
 #   -> camera look + player-follow -> (PostUpdate: Held marker sync, debug ray).
 # The step is fixed at 16 ms.  Quaternion authoritative orientation lives in
 # PhysicsWorld.quaternions (map body id -> [x,y,z,w]); the step publishes it to
@@ -75,8 +75,8 @@ pub PhysicsWorld <- struct
     # boxes stop sliding and stack instead of gliding.
     friction: f32
     friction_static: f32
-    # Deferred equal-and-opposite impulses for the earlier body in a pair
-    # (flattened dvx,dvy,dvz,dwx,dwy,dwz).  Applied in the next body pass.
+    # Reserved for compatibility with existing scene resource initializers.
+    # The contact solver now commits complete body states without deferred impulses.
     pending_impulses: map[i64, [f32]]
     # Per-body sleep state: [timer_seconds, sleeping_flag].  A supported body
     # with low linear/angular speed freezes after 0.35 s and wakes on contact or
@@ -444,12 +444,26 @@ pub physics_publish_orientation <- sys (
 # The fixed-step system
 # ---------------------------------------------------------------------------
 
+# Build immutable contact records; the solver owns their accumulated impulses.
+append_velocity_contact <- (contacts: [f32], a: i64, b: i64, normal: Vec3, point: Vec3, center_a: Vec3, center_b: Vec3) -> [f32]:
+    result := contacts
+    record := [a as f32, b as f32, normal.x, normal.y, normal.z,
+        point.x - center_a.x, point.y - center_a.y, point.z - center_a.z,
+        point.x - center_b.x, point.y - center_b.y, point.z - center_b.z,
+        0.0, 0.0, 0.0]
+    for value in record:
+        result = vec::push(result, value)
+    ret result
+
+
 @trigger(Update)
 pub physics_step <- sys (
     input: res &Input,
     world: res &mut PhysicsWorld,
     spatial: res &mut SpatialMap,
     bodies: select &mut Transform, &mut RigidBody, &BodyBounds, &BodyFlags from Components,
+    collision_bodies: select &mut Transform, &mut RigidBody, &BodyBounds, &BodyFlags from Components,
+    spatial_bodies: select &Transform, &RigidBody, &BodyBounds, &BodyFlags from Components,
     interaction_bodies: select &mut Transform, &mut RigidBody, &mut BodyFlags from Components,
     hold_bodies: select &mut Transform, &mut RigidBody, &mut BodyFlags from Components,
     cameras: select &mut Camera, &CameraController from Components,
@@ -462,10 +476,15 @@ pub physics_step <- sys (
     plane_y := world.plane_normal[1]
     plane_z := world.plane_normal[2]
     ground := world.plane_offset
+    plane_length := f32::sqrt(plane_x * plane_x + plane_y * plane_y + plane_z * plane_z)
+    if plane_length > 0.000001:
+        plane_x = plane_x / plane_length
+        plane_y = plane_y / plane_length
+        plane_z = plane_z / plane_length
+        ground = ground / plane_length
     world.grounded = false
     world.pending_impulses = map[i64, [f32]] {}
 
-    cells := map[i64, [i64]] {}
     ids: [i64] := []
     stored_bounds: [f32] := []
     stored_shapes: [i64] := []
@@ -497,7 +516,7 @@ pub physics_step <- sys (
                 sleeping = true
         supported := false
 
-        if not body.is_static and not sleeping:
+        if not body.is_static and flags.held_by == 0 and not sleeping:
             if body.rotation_locked:
                 body.angular_velocity[0] = 0.0
                 body.angular_velocity[1] = 0.0
@@ -526,21 +545,6 @@ pub physics_step <- sys (
             half := Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] }
             center := Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] }
             normal := Vec3 { x: plane_x, y: plane_y, z: plane_z }
-            world_inv_i := inverse_inertia_world(
-                flags.shape,
-                Vec3 { x: half.x, y: half.y, z: half.z },
-                flags.radius,
-                flags.half_height,
-                body.inv_mass,
-                Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-            )
-            if body.rotation_locked:
-                world_inv_i = Mat3 {
-                    m00: 0.0, m01: 0.0, m02: 0.0,
-                    m10: 0.0, m11: 0.0, m12: 0.0,
-                    m20: 0.0, m21: 0.0, m22: 0.0,
-                }
-
             if flags.shape == 0:
                 # Box-plane: corner contacts, deepest first (up to four).
                 points := box_plane_contacts(
@@ -563,37 +567,6 @@ pub physics_step <- sys (
                     transform.translation[0] = transform.translation[0] + normal.x * max_depth * 0.9
                     transform.translation[1] = transform.translation[1] + normal.y * max_depth * 0.9
                     transform.translation[2] = transform.translation[2] + normal.z * max_depth * 0.9
-                    index = 0
-                    while index < contact_count * 3:
-                        rx := points[index as usize] - transform.translation[0]
-                        ry := points[(index + 1) as usize] - transform.translation[1]
-                        rz := points[(index + 2) as usize] - transform.translation[2]
-                        result := contact_impulse(
-                            body.velocity[0], body.velocity[1], body.velocity[2],
-                            body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
-                            rx, ry, rz,
-                            normal.x, normal.y, normal.z,
-                            Mat3 {
-                                m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
-                                m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
-                                m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
-                            },
-                            body.inv_mass,
-                            world.friction,
-                            world.friction_static,
-                        )
-                        body.velocity[0] = result.vx
-                        body.velocity[1] = result.vy
-                        body.velocity[2] = result.vz
-                        if not body.rotation_locked:
-                            body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
-                            body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
-                            body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
-                        else:
-                            body.angular_velocity[0] = 0.0
-                            body.angular_velocity[1] = 0.0
-                            body.angular_velocity[2] = 0.0
-                        index = index + 3
                     on_ground = true
                     supported = true
             elif flags.shape == 2:
@@ -609,34 +582,6 @@ pub physics_step <- sys (
                     transform.translation[0] = transform.translation[0] + normal.x * ground_manifold.penetration * 0.9
                     transform.translation[1] = transform.translation[1] + normal.y * ground_manifold.penetration * 0.9
                     transform.translation[2] = transform.translation[2] + normal.z * ground_manifold.penetration * 0.9
-                    rx := ground_manifold.contact.x - transform.translation[0]
-                    ry := ground_manifold.contact.y - transform.translation[1]
-                    rz := ground_manifold.contact.z - transform.translation[2]
-                    result := contact_impulse(
-                        body.velocity[0], body.velocity[1], body.velocity[2],
-                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
-                        rx, ry, rz,
-                        normal.x, normal.y, normal.z,
-                        Mat3 {
-                            m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
-                            m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
-                            m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
-                        },
-                        body.inv_mass,
-                        world.friction,
-                        world.friction_static,
-                    )
-                    body.velocity[0] = result.vx
-                    body.velocity[1] = result.vy
-                    body.velocity[2] = result.vz
-                    if not body.rotation_locked:
-                        body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
-                        body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
-                        body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
-                    else:
-                        body.angular_velocity[0] = 0.0
-                        body.angular_velocity[1] = 0.0
-                        body.angular_velocity[2] = 0.0
                     on_ground = true
                     supported = true
             else:
@@ -651,47 +596,11 @@ pub physics_step <- sys (
                     transform.translation[0] = transform.translation[0] + normal.x * push_distance * 0.9
                     transform.translation[1] = transform.translation[1] + normal.y * push_distance * 0.9
                     transform.translation[2] = transform.translation[2] + normal.z * push_distance * 0.9
-                    contact_x := center.x - normal.x * flags.radius
-                    contact_y := center.y - normal.y * flags.radius
-                    contact_z := center.z - normal.z * flags.radius
-                    rx := contact_x - transform.translation[0]
-                    ry := contact_y - transform.translation[1]
-                    rz := contact_z - transform.translation[2]
-                    result := contact_impulse(
-                        body.velocity[0], body.velocity[1], body.velocity[2],
-                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
-                        rx, ry, rz,
-                        normal.x, normal.y, normal.z,
-                        Mat3 {
-                            m00: world_inv_i.m00, m01: world_inv_i.m01, m02: world_inv_i.m02,
-                            m10: world_inv_i.m10, m11: world_inv_i.m11, m12: world_inv_i.m12,
-                            m20: world_inv_i.m20, m21: world_inv_i.m21, m22: world_inv_i.m22,
-                        },
-                        body.inv_mass,
-                        world.friction,
-                        world.friction_static,
-                    )
-                    body.velocity[0] = result.vx
-                    body.velocity[1] = result.vy
-                    body.velocity[2] = result.vz
-                    if not body.rotation_locked:
-                        body.angular_velocity[0] = f32::clamp(result.wx, -12.0, 12.0)
-                        body.angular_velocity[1] = f32::clamp(result.wy, -12.0, 12.0)
-                        body.angular_velocity[2] = f32::clamp(result.wz, -12.0, 12.0)
-                    else:
-                        body.angular_velocity[0] = 0.0
-                        body.angular_velocity[1] = 0.0
-                        body.angular_velocity[2] = 0.0
                     on_ground = true
                     supported = true
             if on_ground:
-                world.grounded = true
-                # Small rolling/air resistance only; sliding friction is now
-                # handled by contact impulses.
-                if not body.rotation_locked:
-                    body.angular_velocity[0] = body.angular_velocity[0] * 0.998
-                    body.angular_velocity[1] = body.angular_velocity[1] * 0.998
-                    body.angular_velocity[2] = body.angular_velocity[2] * 0.998
+                if flags.is_player:
+                    world.grounded = true
 
             if flags.is_player:
                 yaw := world.camera_yaw
@@ -726,281 +635,10 @@ pub physics_step <- sys (
                 else:
                     body.velocity[0] = 0.0
                     body.velocity[2] = 0.0
-                capsule_bottom := ground + flags.radius + flags.half_height
-                player_on_ground := transform.translation[1] <= capsule_bottom + 0.02
                 if not input.jump_down:
                     world.jump_latched = false
-                if captured and input.jump_down and player_on_ground and not world.jump_latched:
-                    body.velocity[1] = 5.2
-                    world.jump_latched = true
-                    world.grounded = false
 
-        # Conservative world AABB for broadphase (uses the quaternion).
-        world_aabb := shape_aabb(
-            flags.shape,
-            Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
-            Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] },
-            flags.radius,
-            flags.half_height,
-            Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-        )
-        min_x := world_aabb.min.x
-        min_y := world_aabb.min.y
-        min_z := world_aabb.min.z
-        max_x := world_aabb.max.x
-        max_y := world_aabb.max.y
-        max_z := world_aabb.max.z
-        center_x := transform.translation[0]
-        center_y := transform.translation[1]
-        center_z := transform.translation[2]
-        half_x := body_bounds.half_extents[0]
-        half_y := body_bounds.half_extents[1]
-        half_z := body_bounds.half_extents[2]
-
-        candidates := query_cells(
-            &cells,
-            cell_size,
-            Vec3 { x: min_x, y: min_y, z: min_z },
-            Vec3 { x: max_x, y: max_y, z: max_z },
-        )
-        candidate_count := candidates.len() as i64
-        candidate := 0
-        while candidate < candidate_count:
-            other_id := candidates[candidate as usize]
-            candidate = candidate + 1
-            if sleeping:
-                cont
-            other_index := find_bound_index_local(ids, other_id)
-            if other_index < 0:
-                cont
-            other_shape := stored_shapes[other_index as usize]
-            if other_shape == 3:
-                cont
-            other_base := other_index * 6
-            other_min_x := stored_bounds[(other_base + 0) as usize]
-            other_min_y := stored_bounds[(other_base + 1) as usize]
-            other_min_z := stored_bounds[(other_base + 2) as usize]
-            other_max_x := stored_bounds[(other_base + 3) as usize]
-            other_max_y := stored_bounds[(other_base + 4) as usize]
-            other_max_z := stored_bounds[(other_base + 5) as usize]
-            other_center := Vec3 {
-                x: (other_min_x + other_max_x) * 0.5,
-                y: (other_min_y + other_max_y) * 0.5,
-                z: (other_min_z + other_max_z) * 0.5,
-            }
-            other_half_base := other_index * 3
-            other_half := Vec3 {
-                x: stored_half[(other_half_base + 0) as usize],
-                y: stored_half[(other_half_base + 1) as usize],
-                z: stored_half[(other_half_base + 2) as usize],
-            }
-            other_quat_base := other_index * 4
-            other_q := Quat {
-                x: stored_quats[(other_quat_base + 0) as usize],
-                y: stored_quats[(other_quat_base + 1) as usize],
-                z: stored_quats[(other_quat_base + 2) as usize],
-                w: stored_quats[(other_quat_base + 3) as usize],
-            }
-            other_obb := Obb {
-                center: Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                half_extents: Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
-                orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-            }
-            contact := pair_manifold(
-                flags.shape,
-                Vec3 { x: center_x, y: center_y, z: center_z },
-                Vec3 { x: half_x, y: half_y, z: half_z },
-                flags.radius,
-                flags.half_height,
-                Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                other_shape,
-                Vec3 { x: other_center.x, y: other_center.y, z: other_center.z },
-                Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
-                stored_radius[other_index as usize],
-                stored_half_height[other_index as usize],
-                Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-            )
-            if contact.hit and contact.penetration > 0.0:
-                if contact.normal.y > 0.5:
-                    supported = true
-                if stored_sleeping[other_index as usize] != 0:
-                    world.sleep_state[other_id] = [0.0, 0.0]
-                    stored_sleeping[other_index as usize] = 0
-                # Contact points: box-box uses clipped corner candidates, other
-                # shape pairs use the manifold's closest point.
-                points: [f32] := []
-                if flags.shape == 0 and other_shape == 0:
-                    points = obb_obb_contacts(
-                        Obb { center: Vec3 { x: center_x, y: center_y, z: center_z }, half_extents: Vec3 { x: half_x, y: half_y, z: half_z }, orientation: Quat { x: q.x, y: q.y, z: q.z, w: q.w } },
-                        Obb { center: Vec3 { x: other_obb.center.x, y: other_obb.center.y, z: other_obb.center.z }, half_extents: Vec3 { x: other_obb.half_extents.x, y: other_obb.half_extents.y, z: other_obb.half_extents.z }, orientation: Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w } },
-                    )
-                if points.len() == 0:
-                    points = vec::push(points, contact.contact.x)
-                    points = vec::push(points, contact.contact.y)
-                    points = vec::push(points, contact.contact.z)
-                transform.translation[0] = transform.translation[0] + contact.normal.x * contact.penetration * 0.85
-                transform.translation[1] = transform.translation[1] + contact.normal.y * contact.penetration * 0.85
-                transform.translation[2] = transform.translation[2] + contact.normal.z * contact.penetration * 0.85
-                collision_inv_i := inverse_inertia_world(
-                    flags.shape,
-                    Vec3 { x: half_x, y: half_y, z: half_z },
-                    flags.radius,
-                    flags.half_height,
-                    body.inv_mass,
-                    Quat { x: q.x, y: q.y, z: q.z, w: q.w },
-                )
-                if body.rotation_locked:
-                    collision_inv_i = Mat3 {
-                        m00: 0.0, m01: 0.0, m02: 0.0,
-                        m10: 0.0, m11: 0.0, m12: 0.0,
-                        m20: 0.0, m21: 0.0, m22: 0.0,
-                    }
-                other_inv_mass := stored_inv_mass[other_index as usize]
-                other_inv_i := inverse_inertia_world(
-                    other_shape,
-                    Vec3 { x: other_half.x, y: other_half.y, z: other_half.z },
-                    stored_radius[other_index as usize],
-                    stored_half_height[other_index as usize],
-                    other_inv_mass,
-                    Quat { x: other_q.x, y: other_q.y, z: other_q.z, w: other_q.w },
-                )
-                if stored_locked[other_index as usize] != 0:
-                    other_inv_i = Mat3 {
-                        m00: 0.0, m01: 0.0, m02: 0.0,
-                        m10: 0.0, m11: 0.0, m12: 0.0,
-                        m20: 0.0, m21: 0.0, m22: 0.0,
-                    }
-                other_vel_base := other_index * 3
-                b_vx := stored_vel[(other_vel_base + 0) as usize]
-                b_vy := stored_vel[(other_vel_base + 1) as usize]
-                b_vz := stored_vel[(other_vel_base + 2) as usize]
-                b_wx := stored_ang[(other_vel_base + 0) as usize]
-                b_wy := stored_ang[(other_vel_base + 1) as usize]
-                b_wz := stored_ang[(other_vel_base + 2) as usize]
-                pending_dvx := 0.0
-                pending_dvy := 0.0
-                pending_dvz := 0.0
-                pending_dwx := 0.0
-                pending_dwy := 0.0
-                pending_dwz := 0.0
-                point_index := 0
-                point_count := points.len()
-                while point_index < point_count:
-                    rx := points[point_index as usize] - transform.translation[0]
-                    ry := points[(point_index + 1) as usize] - transform.translation[1]
-                    rz := points[(point_index + 2) as usize] - transform.translation[2]
-                    brx := points[point_index as usize] - other_center.x
-                    bry := points[(point_index + 1) as usize] - other_center.y
-                    brz := points[(point_index + 2) as usize] - other_center.z
-                    result := pair_contact_impulse(
-                        body.velocity[0], body.velocity[1], body.velocity[2],
-                        body.angular_velocity[0], body.angular_velocity[1], body.angular_velocity[2],
-                        rx, ry, rz,
-                        b_vx, b_vy, b_vz,
-                        b_wx, b_wy, b_wz,
-                        brx, bry, brz,
-                        contact.normal.x, contact.normal.y, contact.normal.z,
-                        Mat3 {
-                            m00: collision_inv_i.m00, m01: collision_inv_i.m01, m02: collision_inv_i.m02,
-                            m10: collision_inv_i.m10, m11: collision_inv_i.m11, m12: collision_inv_i.m12,
-                            m20: collision_inv_i.m20, m21: collision_inv_i.m21, m22: collision_inv_i.m22,
-                        },
-                        Mat3 {
-                            m00: other_inv_i.m00, m01: other_inv_i.m01, m02: other_inv_i.m02,
-                            m10: other_inv_i.m10, m11: other_inv_i.m11, m12: other_inv_i.m12,
-                            m20: other_inv_i.m20, m21: other_inv_i.m21, m22: other_inv_i.m22,
-                        },
-                        body.inv_mass,
-                        other_inv_mass,
-                        world.friction,
-                        world.friction_static,
-                    )
-                    pending_dvx = pending_dvx + (result.bvx - b_vx)
-                    pending_dvy = pending_dvy + (result.bvy - b_vy)
-                    pending_dvz = pending_dvz + (result.bvz - b_vz)
-                    pending_dwx = pending_dwx + (result.bwx - b_wx)
-                    pending_dwy = pending_dwy + (result.bwy - b_wy)
-                    pending_dwz = pending_dwz + (result.bwz - b_wz)
-                    b_vx = result.bvx
-                    b_vy = result.bvy
-                    b_vz = result.bvz
-                    b_wx = result.bwx
-                    b_wy = result.bwy
-                    b_wz = result.bwz
-                    body.velocity[0] = result.avx
-                    body.velocity[1] = result.avy
-                    body.velocity[2] = result.avz
-                    if not body.rotation_locked:
-                        body.angular_velocity[0] = f32::clamp(result.awx, -12.0, 12.0)
-                        body.angular_velocity[1] = f32::clamp(result.awy, -12.0, 12.0)
-                        body.angular_velocity[2] = f32::clamp(result.awz, -12.0, 12.0)
-                    else:
-                        body.angular_velocity[0] = 0.0
-                        body.angular_velocity[1] = 0.0
-                        body.angular_velocity[2] = 0.0
-                    point_index = point_index + 3
-                pending := world.pending_impulses[other_id]
-                if pending.len() < 6:
-                    pending = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                pending[0] = pending[0] + pending_dvx
-                pending[1] = pending[1] + pending_dvy
-                pending[2] = pending[2] + pending_dvz
-                pending[3] = pending[3] + pending_dwx
-                pending[4] = pending[4] + pending_dwy
-                pending[5] = pending[5] + pending_dwz
-                world.pending_impulses[other_id] = pending
-
-        if supported and not body.rotation_locked:
-            # Inelastic resting contacts: remove unwanted upward bounce and
-            # bleed angular jitter once the body is essentially at rest.
-            # Contact is inelastic: no residual normal velocity while
-            # supported.  This removes the discrete-contact bouncing cycle.
-            body.velocity[1] = 0.0
-            horizontal_speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[2])
-            if horizontal_speed < 0.75:
-                body.velocity[0] = body.velocity[0] * 0.5
-                body.velocity[2] = body.velocity[2] * 0.5
-                body.angular_velocity[0] = body.angular_velocity[0] * 0.35
-                body.angular_velocity[1] = body.angular_velocity[1] * 0.35
-                body.angular_velocity[2] = body.angular_velocity[2] * 0.35
-                if f32::abs(body.angular_velocity[0]) < 0.02:
-                    body.angular_velocity[0] = 0.0
-                if f32::abs(body.angular_velocity[1]) < 0.02:
-                    body.angular_velocity[1] = 0.0
-                if f32::abs(body.angular_velocity[2]) < 0.02:
-                    body.angular_velocity[2] = 0.0
-
-        if not body.is_static and not sleeping and not flags.is_player:
-            linear_speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
-            angular_speed := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
-            if supported and linear_speed < 0.2 and angular_speed < 0.4:
-                sleep_timer = sleep_timer + dt
-                # Resting face contacts: bleed residual spin quickly instead of
-                # letting corner impulses pump angular velocity.
-                body.angular_velocity[0] = body.angular_velocity[0] * 0.5
-                body.angular_velocity[1] = body.angular_velocity[1] * 0.5
-                body.angular_velocity[2] = body.angular_velocity[2] * 0.5
-                body.velocity[0] = body.velocity[0] * 0.8
-                body.velocity[2] = body.velocity[2] * 0.8
-                if sleep_timer >= 0.35:
-                    sleeping = true
-                    sleep_timer = 0.0
-                    body.velocity[0] = 0.0
-                    body.velocity[1] = 0.0
-                    body.velocity[2] = 0.0
-                    body.angular_velocity[0] = 0.0
-                    body.angular_velocity[1] = 0.0
-                    body.angular_velocity[2] = 0.0
-            else:
-                sleep_timer = 0.0
-            sleep_flag := 0.0
-            if sleeping:
-                sleep_flag = 1.0
-            world.sleep_state[id] = [sleep_timer, sleep_flag]
-        elif sleeping:
-            world.sleep_state[id] = [0.0, 1.0]
-
-        # Store final broadphase/collision data (after push-out).
+        # Snapshot all integrated bodies before solving body-body contacts.
         final_aabb := shape_aabb(
             flags.shape,
             Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
@@ -1032,7 +670,10 @@ pub physics_step <- sys (
         stored_ang = vec::push(stored_ang, body.angular_velocity[0])
         stored_ang = vec::push(stored_ang, body.angular_velocity[1])
         stored_ang = vec::push(stored_ang, body.angular_velocity[2])
-        stored_inv_mass = vec::push(stored_inv_mass, body.inv_mass)
+        effective_mass := body.inv_mass
+        if body.is_static or flags.held_by != 0:
+            effective_mass = 0.0
+        stored_inv_mass = vec::push(stored_inv_mass, effective_mass)
         locked_value := 0
         if body.rotation_locked:
             locked_value = 1
@@ -1042,34 +683,258 @@ pub physics_step <- sys (
             sleeping_value = 1
         stored_sleeping = vec::push(stored_sleeping, sleeping_value)
         body_count = body_count + 1
-        broadphase_insert(
-            &mut cells,
-            cell_size,
-            id,
-            Vec3 { x: final_aabb.min.x, y: final_aabb.min.y, z: final_aabb.min.z },
-            Vec3 { x: final_aabb.max.x, y: final_aabb.max.y, z: final_aabb.max.z },
-        )
         if flags.is_player:
             world.player_x = transform.translation[0]
             world.player_y = transform.translation[1]
             world.player_z = transform.translation[2]
 
+    # Solve the whole contact network together, so gravity loads propagate
+    # through a stack into the floor instead of bouncing between pair visits.
+    solver_state: [f32] := []
+    solver_inertias: [f32] := []
+    velocity_contacts: [f32] := []
+    position_contacts: [f32] := []
+    solver_positions: [f32] := []
+    support_flags: [i64] := []
+    support_points := map[i64, [f32]] {}
+    ai := 0
+    while ai < body_count:
+        vb := ai * 3
+        qb := ai * 4
+        bb := ai * 6
+        ax := (stored_bounds[bb as usize] + stored_bounds[(bb + 3) as usize]) * 0.5
+        ay := (stored_bounds[(bb + 1) as usize] + stored_bounds[(bb + 4) as usize]) * 0.5
+        az := (stored_bounds[(bb + 2) as usize] + stored_bounds[(bb + 5) as usize]) * 0.5
+        solver_positions = vec::push(solver_positions, ax)
+        solver_positions = vec::push(solver_positions, ay)
+        solver_positions = vec::push(solver_positions, az)
+        support_flags = vec::push(support_flags, 0)
+        aq := Quat { x: stored_quats[qb as usize], y: stored_quats[(qb + 1) as usize], z: stored_quats[(qb + 2) as usize], w: stored_quats[(qb + 3) as usize] }
+        inertia := inverse_inertia_world(
+            stored_shapes[ai as usize],
+            Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] },
+            stored_radius[ai as usize], stored_half_height[ai as usize], stored_inv_mass[ai as usize],
+            Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w },
+        )
+        if stored_locked[ai as usize] != 0:
+            inertia = Mat3 { m00: 0.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 0.0, m12: 0.0, m20: 0.0, m21: 0.0, m22: 0.0 }
+        values: [f32] := [inertia.m00, inertia.m01, inertia.m02, inertia.m10, inertia.m11, inertia.m12, inertia.m20, inertia.m21, inertia.m22]
+        for value in values:
+            solver_inertias = vec::push(solver_inertias, value)
+        values = [stored_vel[vb as usize], stored_vel[(vb + 1) as usize], stored_vel[(vb + 2) as usize], stored_ang[vb as usize], stored_ang[(vb + 1) as usize], stored_ang[(vb + 2) as usize]]
+        for value in values:
+            solver_state = vec::push(solver_state, value)
+        if stored_inv_mass[ai as usize] > 0.0:
+            extent := shape_extent_along(stored_shapes[ai as usize],
+                Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] },
+                stored_radius[ai as usize], stored_half_height[ai as usize],
+                Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w }, Vec3 { x: plane_x, y: plane_y, z: plane_z },
+            )
+            record := [ai as f32, -1.0, plane_x, plane_y, plane_z, ground + extent]
+            for value in record:
+                position_contacts = vec::push(position_contacts, value)
+            if ax * plane_x + ay * plane_y + az * plane_z - extent <= ground + 0.006:
+                support_flags[ai as usize] = 1
+            points: [f32] := []
+            if stored_shapes[ai as usize] == 0:
+                points = box_plane_contacts(
+                    Vec3 { x: ax, y: ay, z: az },
+                    Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] },
+                    Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w },
+                    Vec3 { x: plane_x, y: plane_y, z: plane_z }, ground + 0.006, 4,
+                )
+            else:
+                extent := shape_extent_along(stored_shapes[ai as usize],
+                    Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] },
+                    stored_radius[ai as usize], stored_half_height[ai as usize],
+                    Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w }, Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                )
+                if ax * plane_x + ay * plane_y + az * plane_z - extent <= ground + 0.006:
+                    points = [ax - plane_x * extent, ay - plane_y * extent, az - plane_z * extent]
+            point := 0
+            while point < points.len() as i64:
+                patch := support_points[ai]
+                patch = vec::push(patch, points[point as usize])
+                patch = vec::push(patch, points[(point + 2) as usize])
+                support_points[ai] = patch
+                velocity_contacts = append_velocity_contact(velocity_contacts, ai, -1,
+                    Vec3 { x: plane_x, y: plane_y, z: plane_z },
+                    Vec3 { x: points[point as usize], y: points[(point + 1) as usize], z: points[(point + 2) as usize] },
+                    Vec3 { x: ax, y: ay, z: az }, Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+                )
+                point = point + 3
+        bi := 0
+        while bi < ai:
+            ob := bi * 6
+            ov := bi * 3
+            oq := bi * 4
+            if stored_shapes[ai as usize] == 3 or stored_shapes[bi as usize] == 3 or stored_inv_mass[ai as usize] + stored_inv_mass[bi as usize] <= 0.0:
+                bi = bi + 1
+                cont
+            if stored_bounds[bb as usize] > stored_bounds[(ob + 3) as usize] or stored_bounds[(bb + 3) as usize] < stored_bounds[ob as usize] or stored_bounds[(bb + 1) as usize] > stored_bounds[(ob + 4) as usize] or stored_bounds[(bb + 4) as usize] < stored_bounds[(ob + 1) as usize] or stored_bounds[(bb + 2) as usize] > stored_bounds[(ob + 5) as usize] or stored_bounds[(bb + 5) as usize] < stored_bounds[(ob + 2) as usize]:
+                bi = bi + 1
+                cont
+            bx := (stored_bounds[ob as usize] + stored_bounds[(ob + 3) as usize]) * 0.5
+            by := (stored_bounds[(ob + 1) as usize] + stored_bounds[(ob + 4) as usize]) * 0.5
+            bz := (stored_bounds[(ob + 2) as usize] + stored_bounds[(ob + 5) as usize]) * 0.5
+            bq := Quat { x: stored_quats[oq as usize], y: stored_quats[(oq + 1) as usize], z: stored_quats[(oq + 2) as usize], w: stored_quats[(oq + 3) as usize] }
+            manifold := pair_manifold(stored_shapes[ai as usize], Vec3 { x: ax, y: ay, z: az },
+                Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] },
+                stored_radius[ai as usize], stored_half_height[ai as usize], Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w },
+                stored_shapes[bi as usize], Vec3 { x: bx, y: by, z: bz },
+                Vec3 { x: stored_half[ov as usize], y: stored_half[(ov + 1) as usize], z: stored_half[(ov + 2) as usize] },
+                stored_radius[bi as usize], stored_half_height[bi as usize], Quat { x: bq.x, y: bq.y, z: bq.z, w: bq.w },
+            )
+            if manifold.hit:
+                if manifold.normal.y > 0.5:
+                    support_flags[ai as usize] = 1
+                if manifold.normal.y < -0.5:
+                    support_flags[bi as usize] = 1
+                separation := (ax - bx) * manifold.normal.x + (ay - by) * manifold.normal.y + (az - bz) * manifold.normal.z
+                record := [ai as f32, bi as f32, manifold.normal.x, manifold.normal.y, manifold.normal.z, separation + manifold.penetration]
+                for value in record:
+                    position_contacts = vec::push(position_contacts, value)
+                points: [f32] := []
+                if stored_shapes[ai as usize] == 0 and stored_shapes[bi as usize] == 0:
+                    points = obb_obb_contacts(
+                        Obb { center: Vec3 { x: ax, y: ay, z: az }, half_extents: Vec3 { x: stored_half[vb as usize], y: stored_half[(vb + 1) as usize], z: stored_half[(vb + 2) as usize] }, orientation: Quat { x: aq.x, y: aq.y, z: aq.z, w: aq.w } },
+                        Obb { center: Vec3 { x: bx, y: by, z: bz }, half_extents: Vec3 { x: stored_half[ov as usize], y: stored_half[(ov + 1) as usize], z: stored_half[(ov + 2) as usize] }, orientation: Quat { x: bq.x, y: bq.y, z: bq.z, w: bq.w } },
+                    )
+                if points.len() == 0:
+                    points = [manifold.contact.x, manifold.contact.y, manifold.contact.z]
+                point := 0
+                while point < points.len() as i64:
+                    if manifold.normal.y > 0.5:
+                        patch := support_points[ai]
+                        patch = vec::push(patch, points[point as usize])
+                        patch = vec::push(patch, points[(point + 2) as usize])
+                        support_points[ai] = patch
+                    if manifold.normal.y < -0.5:
+                        patch := support_points[bi]
+                        patch = vec::push(patch, points[point as usize])
+                        patch = vec::push(patch, points[(point + 2) as usize])
+                        support_points[bi] = patch
+                    velocity_contacts = append_velocity_contact(velocity_contacts, ai, bi,
+                        Vec3 { x: manifold.normal.x, y: manifold.normal.y, z: manifold.normal.z },
+                        Vec3 { x: points[point as usize], y: points[(point + 1) as usize], z: points[(point + 2) as usize] },
+                        Vec3 { x: ax, y: ay, z: az }, Vec3 { x: bx, y: by, z: bz },
+                    )
+                    point = point + 3
+            bi = bi + 1
+        ai = ai + 1
+    solved_velocities := solve_contact_velocities(solver_state, stored_inv_mass, solver_inertias, velocity_contacts, world.friction, world.friction_static, 128)
+    solved_positions := solve_contact_positions(solver_positions, stored_inv_mass, position_contacts, 24)
+
+    # Commit the solved body states. Each ECS pass owns a separate query cursor.
+    for (transform, body, body_bounds, flags) in collision_bodies:
+        id := flags.target_id
+        current_index := find_bound_index_local(ids, id)
+        if body.is_static or flags.held_by != 0:
+            cont
+        velocity_base := current_index * 6
+        body.velocity[0] = solved_velocities[velocity_base as usize]
+        body.velocity[1] = solved_velocities[(velocity_base + 1) as usize]
+        body.velocity[2] = solved_velocities[(velocity_base + 2) as usize]
+        body.angular_velocity[0] = solved_velocities[(velocity_base + 3) as usize]
+        body.angular_velocity[1] = solved_velocities[(velocity_base + 4) as usize]
+        body.angular_velocity[2] = solved_velocities[(velocity_base + 5) as usize]
+        q := quat_from_vec(world.quaternions[id])
+        sleep_entry := world.sleep_state[id]
+        sleep_timer := 0.0
+        sleeping := false
+        if sleep_entry.len() >= 2:
+            sleep_timer = sleep_entry[0]
+            sleeping = sleep_entry[1] > 0.5
+        wake_linear := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
+        wake_angular := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
+        if sleeping and (wake_linear > 0.03 or wake_angular > 0.08):
+            sleeping = false
+            sleep_timer = 0.0
+            world.sleep_state[id] = [0.0, 0.0]
+            stored_sleeping[current_index as usize] = 0
+        base := current_index * 3
+        transform.translation[0] = solved_positions[base as usize]
+        transform.translation[1] = solved_positions[(base + 1) as usize]
+        transform.translation[2] = solved_positions[(base + 2) as usize]
+        supported := support_flags[current_index as usize] != 0
+        stable_support := supported and support_polygon_contains(
+            support_points[current_index], transform.translation[0], transform.translation[2], flags.shape == 0,
+        )
+        if sleeping and not stable_support:
+            sleeping = false
+            sleep_timer = 0.0
+            world.sleep_state[id] = [0.0, 0.0]
+            stored_sleeping[current_index as usize] = 0
+        if sleeping:
+            body.velocity[0] = 0.0
+            body.velocity[1] = 0.0
+            body.velocity[2] = 0.0
+            body.angular_velocity[0] = 0.0
+            body.angular_velocity[1] = 0.0
+            body.angular_velocity[2] = 0.0
+        half_x := body_bounds.half_extents[0]
+        half_y := body_bounds.half_extents[1]
+        half_z := body_bounds.half_extents[2]
+
+        if flags.is_player:
+            world.grounded = supported and body.velocity[1] <= 0.0
+            if captured and input.jump_down and world.grounded and not world.jump_latched:
+                body.velocity[1] = 5.2
+                world.jump_latched = true
+                world.grounded = false
+            world.player_x = transform.translation[0]
+            world.player_y = transform.translation[1]
+            world.player_z = transform.translation[2]
+
+        if not body.is_static and not sleeping and not flags.is_player:
+            linear_speed := f32::abs(body.velocity[0]) + f32::abs(body.velocity[1]) + f32::abs(body.velocity[2])
+            angular_speed := f32::abs(body.angular_velocity[0]) + f32::abs(body.angular_velocity[1]) + f32::abs(body.angular_velocity[2])
+            if stable_support and linear_speed < 0.03 and angular_speed < 0.08:
+                sleep_timer = sleep_timer + dt
+                if sleep_timer >= 0.35:
+                    sleeping = true
+                    sleep_timer = 0.0
+                    body.velocity[0] = 0.0
+                    body.velocity[1] = 0.0
+                    body.velocity[2] = 0.0
+                    body.angular_velocity[0] = 0.0
+                    body.angular_velocity[1] = 0.0
+                    body.angular_velocity[2] = 0.0
+            else:
+                sleep_timer = 0.0
+            sleep_flag := 0.0
+            if sleeping:
+                sleep_flag = 1.0
+            world.sleep_state[id] = [sleep_timer, sleep_flag]
+        elif sleeping:
+            world.sleep_state[id] = [0.0, 1.0]
+
+        final_aabb := shape_aabb(
+            flags.shape,
+            Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+            Vec3 { x: half_x, y: half_y, z: half_z },
+            flags.radius, flags.half_height,
+            Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+        )
+        base = current_index * 6
+        stored_bounds[(base + 0) as usize] = final_aabb.min.x
+        stored_bounds[(base + 1) as usize] = final_aabb.min.y
+        stored_bounds[(base + 2) as usize] = final_aabb.min.z
+        stored_bounds[(base + 3) as usize] = final_aabb.max.x
+        stored_bounds[(base + 4) as usize] = final_aabb.max.y
+        stored_bounds[(base + 5) as usize] = final_aabb.max.z
+
     # ------------------------------------- wake sleeping bodies without support
-    # Sleeping bodies skip integration and body-body contact generation, so a
+    # Sleeping bodies skip integration and contacts with other sleeping bodies, so a
     # body whose support was removed (despawned supporting box, support moved
     # away by a pickup, body pushed off an edge) would stay frozen in mid-air.
     # Re-check every sleeping body against this step's final body state and
     # clear its sleep timer when nothing supports it.  Only sleeping bodies are
     # tested, so stable stacks keep sleeping; cheap vertical early-outs keep the
     # narrowphase tests limited to plausible supporting pairs.
-    plane_length := f32::sqrt(plane_x * plane_x + plane_y * plane_y + plane_z * plane_z)
     support_nx := plane_x
     support_ny := plane_y
     support_nz := plane_z
-    if plane_length > 0.000001:
-        support_nx = plane_x / plane_length
-        support_ny = plane_y / plane_length
-        support_nz = plane_z / plane_length
     sleep_index := 0
     while sleep_index < body_count:
         sleeper_sleeping := stored_sleeping[sleep_index as usize] != 0
@@ -1175,11 +1040,6 @@ pub physics_step <- sys (
                 world.sleep_state[sleeper_id] = [0.0, 0.0]
         sleep_index = sleep_index + 1
 
-    spatial.cells = cells
-    spatial.ids = ids
-    spatial.bounds = stored_bounds
-    spatial.count = body_count
-
     # ------------------------------------------------------- nearest pickup
     released := false
     released_id := 0
@@ -1209,18 +1069,7 @@ pub physics_step <- sys (
     hold_yaw := world.camera_yaw
     forward_x := f32::sin(hold_yaw)
     forward_z := 0.0 - f32::cos(hold_yaw)
-    pending_map := world.pending_impulses
     for (transform, body, flags) in hold_bodies:
-        pending := pending_map[flags.target_id]
-        if pending.len() >= 6:
-            world.sleep_state[flags.target_id] = [0.0, 0.0]
-            body.velocity[0] = body.velocity[0] + pending[0]
-            body.velocity[1] = body.velocity[1] + pending[1]
-            body.velocity[2] = body.velocity[2] + pending[2]
-            if not body.rotation_locked:
-                body.angular_velocity[0] = f32::clamp(body.angular_velocity[0] + pending[3], -12.0, 12.0)
-                body.angular_velocity[1] = f32::clamp(body.angular_velocity[1] + pending[4], -12.0, 12.0)
-                body.angular_velocity[2] = f32::clamp(body.angular_velocity[2] + pending[5], -12.0, 12.0)
         if not flags.is_pickup:
             cont
         if flags.target_id == pickup_state.held_id:
@@ -1239,7 +1088,37 @@ pub physics_step <- sys (
             flags.held_by = 0
         if released and flags.target_id == released_id and not body.rotation_locked:
             body.angular_velocity[1] = f32::clamp(body.angular_velocity[1] + 1.6, -10.0, 10.0)
-    world.pending_impulses = map[i64, [f32]] {}
+
+    # Publish spatial queries from committed transforms, including held bodies.
+    cells := map[i64, [i64]] {}
+    stored_bounds = []
+    for (transform, body, body_bounds, flags) in spatial_bodies:
+        q := quat_from_vec(world.quaternions[flags.target_id])
+        bounds := shape_aabb(
+            flags.shape,
+            Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] },
+            Vec3 { x: body_bounds.half_extents[0], y: body_bounds.half_extents[1], z: body_bounds.half_extents[2] },
+            flags.radius, flags.half_height,
+            Quat { x: q.x, y: q.y, z: q.z, w: q.w },
+        )
+        stored_bounds = vec::push(stored_bounds, bounds.min.x)
+        stored_bounds = vec::push(stored_bounds, bounds.min.y)
+        stored_bounds = vec::push(stored_bounds, bounds.min.z)
+        stored_bounds = vec::push(stored_bounds, bounds.max.x)
+        stored_bounds = vec::push(stored_bounds, bounds.max.y)
+        stored_bounds = vec::push(stored_bounds, bounds.max.z)
+        broadphase_insert(&mut cells, cell_size, flags.target_id,
+            Vec3 { x: bounds.min.x, y: bounds.min.y, z: bounds.min.z },
+            Vec3 { x: bounds.max.x, y: bounds.max.y, z: bounds.max.z },
+        )
+        if flags.is_player:
+            world.player_x = transform.translation[0]
+            world.player_y = transform.translation[1]
+            world.player_z = transform.translation[2]
+    spatial.cells = cells
+    spatial.ids = ids
+    spatial.bounds = stored_bounds
+    spatial.count = body_count
 
     # ------------------------------------------- camera look + follow (same step)
     for (camera, controller) in cameras:

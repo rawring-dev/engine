@@ -66,6 +66,9 @@ impl Gpu:
         e7_engine_scene_set_camera(gpu.scene, eye_x, eye_y, eye_z, yaw, pitch)
         ret
 
+    pub set_projection <- (gpu: &Gpu, fov_y: f32, near: f32, far: f32) -> nil:
+        e7_engine_scene_set_projection(gpu.scene, fov_y, near, far)
+
     pub set_light <- (
         gpu: &Gpu,
         x: i64,

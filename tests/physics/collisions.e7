@@ -1,0 +1,248 @@
+# End-to-end physics regressions, loaded by runtime/src/jit_tests.zig.
+# Uses the real engine modules without creating a window or Vulkan device.
+mod platform
+mod core
+mod physics
+use core::events::*;
+use core::ecs::*;
+use core::input::*;
+use physics::*;
+use physics::narrowphase::*;
+use physics::broadphase::*;
+
+@resource
+pub Probe <- struct
+    failures: i64
+    debug: [i64]
+
+pub Verify <- trigger
+
+near <- (a: f32, b: f32) -> bool:
+    ret f32::abs(a - b) < 0.002
+
+# Interior sphere must exit through the nearest face, even in a rotated box.
+test_interior_sphere <- () -> i64:
+    hit := sphere_obb_manifold(
+        Vec3 { x: 0.9, y: 0.0, z: 0.0 }, 0.2,
+        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 2.0, z: 3.0 }, orientation: quat_identity() },
+    )
+    if not hit.hit or not near(hit.normal.x, 1.0) or not near(hit.penetration, 0.3) or not near(hit.contact.x, 1.0):
+        ret 1
+    rotated := sphere_obb_manifold(
+        Vec3 { x: 0.0, y: 0.9, z: 0.0 }, 0.2,
+        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 2.0, z: 3.0 }, orientation: quat_from_euler(0.0, 0.0, 1.5707963268) },
+    )
+    if not rotated.hit or not near(rotated.normal.y, 1.0) or not near(rotated.penetration, 0.3):
+        ret 2
+    ret 0
+
+# The obstacle lies halfway between the old nine segment samples.
+test_capsule_thin_box <- () -> i64:
+    hit := capsule_obb_manifold(
+        Vec3 { x: 0.03, y: 0.0, z: 0.0 }, 0.05, 4.0, quat_identity(),
+        Obb { center: Vec3 { x: 0.0, y: 0.5, z: 0.0 }, half_extents: Vec3 { x: 0.01, y: 0.01, z: 0.2 }, orientation: quat_identity() },
+    )
+    if not hit.hit or not near(hit.penetration, 0.03) or not near(hit.normal.x, 1.0):
+        ret 1
+    miss := capsule_obb_manifold(
+        Vec3 { x: 0.08, y: 0.0, z: 0.0 }, 0.05, 4.0, quat_identity(),
+        Obb { center: Vec3 { x: 0.0, y: 0.5, z: 0.0 }, half_extents: Vec3 { x: 0.01, y: 0.01, z: 0.2 }, orientation: quat_identity() },
+    )
+    if miss.hit:
+        ret 2
+    ret 0
+
+# Unequal box dimensions must give the same SAT result in either order.
+test_unequal_boxes <- () -> i64:
+    forward := obb_obb_manifold(
+        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 0.1, y: 3.0, z: 3.0 }, orientation: quat_identity() },
+        Obb { center: Vec3 { x: 1.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 2.0, y: 3.0, z: 3.0 }, orientation: quat_identity() },
+    )
+    reverse := obb_obb_manifold(
+        Obb { center: Vec3 { x: 1.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 2.0, y: 3.0, z: 3.0 }, orientation: quat_identity() },
+        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 0.1, y: 3.0, z: 3.0 }, orientation: quat_identity() },
+    )
+    if not forward.hit or not reverse.hit:
+        ret 1
+    if not near(forward.penetration, 1.1) or not near(reverse.penetration, 1.1):
+        ret 2
+    if not near(forward.normal.x, -1.0) or not near(reverse.normal.x, 1.0):
+        ret 3
+    ret 0
+
+test_interior_capsule <- () -> i64:
+    hit := capsule_obb_manifold(
+        Vec3 { x: 0.9, y: 0.0, z: 0.0 }, 0.2, 4.0, quat_identity(),
+        Obb { center: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, half_extents: Vec3 { x: 1.0, y: 2.0, z: 3.0 }, orientation: quat_identity() },
+    )
+    if not hit.hit or not near(hit.normal.x, 1.0) or not near(hit.penetration, 0.3):
+        ret 1
+    ret 0
+
+# Off-centre impacts must still produce physical equal-and-opposite torque.
+test_offset_contact_spin <- () -> i64:
+    state: [f32] := [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    masses: [f32] := [1.0, 1.0]
+    inertias: [f32] := [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    contacts: [f32] := [0.0, 1.0, -1.0, 0.0, 0.0, 0.5, 0.25, 0.0, -0.5, 0.25, 0.0, 0.0, 0.0, 0.0]
+    solved := solve_contact_velocities(state, masses, inertias, contacts, 0.0, 0.0, 40)
+    if not near(solved[0] + solved[6], 1.0):
+        ret 1
+    if solved[5] < 0.1 or solved[11] > -0.1 or not near(solved[5] + solved[11], 0.0):
+        ret 2
+    ret 0
+
+pub Scene <- plugin
+    init <- sys (commands: &mut Commands):
+        commands.insert_resource(Probe { failures: 0, debug: [] })
+        commands.insert_resource(Input {
+            window: 0,
+            move_forward: false, move_backward: false, move_left: false, move_right: false,
+            move_up: false, move_down: false, sprint: false,
+            look_left: false, look_right: false, look_up: false, look_down: false,
+            look_dx: 0.0, look_dy: 0.0,
+            jump_pressed: false, jump_down: false, jump_was_down: false,
+            interact: false, interact_pressed: false, interact_was_down: false,
+        })
+        sleepers := map[i64, [f32]] {}
+        sleepers[41] = [1.0, 1.0]
+        sleepers[50] = [1.0, 1.0]
+        commands.insert_resource(PhysicsWorld {
+            gravity_y: 0.0, max_step: 0.05, grounded: false, jump_latched: false,
+            player_x: 0.0, player_y: 0.0, player_z: 0.0,
+            camera_yaw: 0.0, camera_pitch: 0.0, move_speed: 4.0,
+            quaternions: map[i64, [f32]] {},
+            plane_normal: [0.0, 2.0, 0.0], plane_offset: 0.0,
+            friction: 0.0, friction_static: 0.0,
+            pending_impulses: map[i64, [f32]] {}, sleep_state: sleepers,
+        })
+        group := 0
+        while group < 9:
+            index := 0
+            count := 2
+            if group == 7:
+                count = 3
+            while index < count:
+                x := (group as f32) * 10.0 + (index as f32) * 0.8
+                vx := 0.0
+                static := false
+                inv_mass := 1.0
+                if group == 0 or group == 1:
+                    static = index == group
+                    if group == 0:
+                        x = 0.8 - (index as f32) * 0.8
+                if group == 2 or group == 3:
+                    vx = 1.0 - (index as f32) * 2.0
+                    if group == 3:
+                        x = 30.8 - (index as f32) * 0.8
+                        vx = 0.0 - vx
+                if group == 4 or group == 5:
+                    if group == 4 and index == 0:
+                        vx = 1.0
+                    if group == 5:
+                        x = 50.8 - (index as f32) * 0.8
+                        if index == 1:
+                            vx = 1.0
+                if group == 6 and index == 1:
+                    inv_mass = 0.5
+                if group == 7:
+                    if index == 1:
+                        vx = -1.0
+                    if index == 2:
+                        x = 69.2
+                        vx = 1.0
+                y := 10.0
+                if group == 8 and index == 0:
+                    y = 0.4
+                transform := Transform { translation: [x, y, 0.0], rotation: [0.0, 0.0, 0.0], scale: [1.0, 1.0, 1.0] }
+                id := BodyId { id: group * 10 + index }
+                bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+                body := RigidBody {
+                    velocity: [vx, 0.0, 0.0], angular_velocity: [0.0, 0.0, 0.0], orientation: [0.0, 0.0, 0.0],
+                    inv_mass: inv_mass, gravity_scale: 0.0, rotation_locked: true, is_static: static,
+                }
+                flags := BodyFlags { shape: 1, radius: 0.5, half_height: 0.0, is_player: false, is_pickup: false, target_id: group * 10 + index, held_by: 0 }
+                commands.add_row(Components, { transform, id, bounds, body, flags })
+                index = index + 1
+            group = group + 1
+
+@trigger(Verify)
+pub verify <- sys (
+    probe: res &mut Probe,
+    world: res &PhysicsWorld,
+    spatial: res &SpatialMap,
+    rows: select &Transform, &RigidBody, &BodyId from Components,
+):
+    weighted_sum := 0.0
+    for (transform, body, id) in rows:
+        x := transform.translation[0]
+        failed := false
+        if id.id == 0:
+            failed = not near(x, 0.8)
+        if id.id == 1:
+            failed = x > -0.16 or not near(body.velocity[0], 0.0)
+        if id.id == 10:
+            failed = x > 9.84
+        if id.id == 11:
+            failed = not near(x, 10.8)
+        if id.id == 20 or id.id == 21 or id.id == 30 or id.id == 31:
+            failed = not near(body.velocity[0], 0.0)
+        if id.id == 20:
+            failed = failed or not near(x, 19.9005)
+        if id.id == 21:
+            failed = failed or not near(x, 20.8995)
+        if id.id == 40 or id.id == 41 or id.id == 50 or id.id == 51:
+            failed = not near(body.velocity[0], 0.5)
+        if id.id == 60:
+            failed = not near(x, 59.867333)
+        if id.id == 61:
+            failed = not near(x, 60.866333)
+        if id.id == 60 or id.id == 61:
+            weighted_sum = weighted_sum + x / body.inv_mass
+        if id.id == 70:
+            failed = not near(body.velocity[0], 0.0)
+        if id.id == 80:
+            # Scaling the plane normal must not scale the ground correction.
+            failed = not near(transform.translation[1], 0.499)
+        if failed:
+            probe.debug = vec::push(probe.debug, id.id)
+            probe.debug = vec::push(probe.debug, f32::to_milli(x))
+            probe.debug = vec::push(probe.debug, f32::to_milli(body.velocity[0]))
+            probe.failures = probe.failures + id.id + 1
+        # Published bounds must describe the committed transform.
+        at := 0
+        while at < spatial.count:
+            if spatial.ids[at as usize] == id.id:
+                if not near(spatial.bounds[(at * 6) as usize], x - 0.5):
+                    probe.failures = probe.failures + 1000
+            at = at + 1
+    if world.grounded:
+        # A non-player touching the ground does not ground the player.
+        probe.failures = probe.failures + 3000
+    if not near(weighted_sum, 181.6):
+        probe.failures = probe.failures + 2000
+
+main <- async () -> i32:
+    if test_interior_sphere() != 0:
+        ret 10001
+    if test_capsule_thin_box() != 0:
+        ret 10002
+    if test_unequal_boxes() != 0:
+        ret 10003
+    if test_interior_capsule() != 0:
+        ret 10004
+    if test_offset_contact_spin() != 0:
+        ret 10005
+    commands := await query &mut Commands
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(physics::narrowphase::NarrowphasePlugin)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(Scene)
+    disown commands
+    await Init()
+    await Update()
+    await Verify()
+    probe := await query &Probe
+    failures := probe.failures
+    disown probe
+    ret failures as i32

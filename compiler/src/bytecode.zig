@@ -162,6 +162,8 @@ pub const RuntimeFunction = enum(u8) {
     engine_write_asset,
     host_request_reload,
     host_take_reload_request,
+    host_reload_state,
+    host_set_reload_state,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -196,6 +198,8 @@ pub const RuntimeFunction = enum(u8) {
             .engine_write_asset => "e7_engine_write_asset",
             .host_request_reload => "e7_host_request_reload",
             .host_take_reload_request => "e7_host_take_reload_request",
+            .host_reload_state => "e7_host_reload_state",
+            .host_set_reload_state => "e7_host_set_reload_state",
             .host_headless => "e7_host_headless",
             .host_should_close => "e7_host_should_close",
             .host_note_frame => "e7_host_note_frame",
@@ -319,12 +323,14 @@ pub const RuntimeFunction = enum(u8) {
             .engine_read_shader => 1,
             .engine_list_dir => 1,
             .engine_write_asset => 2,
+            .host_set_reload_state => 1,
             .engine_time_now_ms,
             .host_headless,
             .host_should_close,
             .host_note_frame,
             .host_request_reload,
             .host_take_reload_request,
+            .host_reload_state,
             => 0,
             .host_capture => 3,
             .float_add, .float_sub, .float_mul, .float_div => 2,
