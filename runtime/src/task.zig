@@ -464,9 +464,10 @@ pub fn shutdownGlobal() void {
 pub export fn e7_task_create(entry: usize, argc: i64, args: [*]const i64) callconv(.c) i64 {
     const runtime = global_runtime orelse return 0;
     if (argc < 0 or argc > max_args) return 0;
-    const task = runtime.create(entry, args[0..@intCast(argc)]) catch return 0;
+    const resolved_entry = @import("code_dispatch.zig").resolve(entry);
+    const task = runtime.create(resolved_entry, args[0..@intCast(argc)]) catch return 0;
     if (inline_execution) {
-        task.result = callEntry(entry, @intCast(@intFromPtr(task)), task.args[0..task.argc]);
+        task.result = callEntry(resolved_entry, @intCast(@intFromPtr(task)), task.args[0..task.argc]);
         task.state = .done;
     }
     return @intCast(@intFromPtr(task));

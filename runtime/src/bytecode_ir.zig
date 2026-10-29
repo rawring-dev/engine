@@ -16,6 +16,16 @@ pub const Error = error{
     InvalidBytecode,
 };
 
+/// The same escaping is used by generated references and live symbol lookup.
+pub fn symbolNameAlloc(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const copy = try allocator.alloc(u8, name.len);
+    for (name, 0..) |byte, i| copy[i] = switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_', '.', '$', '-' => byte,
+        else => '_',
+    };
+    return copy;
+}
+
 pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) Error![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -25,6 +35,7 @@ pub fn translate(allocator: std.mem.Allocator, module: *const bytecode.Module) E
         .arena = arena.allocator(),
         .module = module,
     };
+    try translator.out.appendSlice(allocator, "declare i64 @e7_code_resolve(i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_task_create(ptr, i64, ptr)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_task_spawn(i64)\n");
     try translator.out.appendSlice(allocator, "declare i64 @e7_task_await(i64)\n");
@@ -197,8 +208,8 @@ const Translator = struct {
     }
 
     /// Emit one dispatch helper per argument count used by `call_indirect`:
-    /// `define i64 @e7_hof_dispatch_N(i64 %idx, i64 %arg0, ...)` with a switch
-    /// from the function index to a direct call of the matching functions.
+    /// Function values carry native addresses, resolved through the current
+    /// live generation at invocation. Null/default values still return zero.
     fn emitDispatchHelpers(self: *Translator) Error!void {
         var arities = std.AutoHashMapUnmanaged(u16, void).empty;
         defer arities.deinit(self.allocator);
@@ -220,68 +231,26 @@ const Translator = struct {
     fn emitDispatchHelper(self: *Translator, argc: u16) Error!void {
         var signature = std.ArrayList(u8).empty;
         defer signature.deinit(self.arena);
-        const argc_text = try std.fmt.allocPrint(self.arena, "{d}", .{argc});
-        try signature.appendSlice(self.arena, "define i64 @e7_hof_dispatch_");
-        try signature.appendSlice(self.arena, argc_text);
-        try signature.appendSlice(self.arena, "(i64 %idx");
-        var arg_index: u16 = 0;
-        while (arg_index < argc) : (arg_index += 1) {
-            const part = try std.fmt.allocPrint(self.arena, ", i64 %arg{d}", .{arg_index});
-            try signature.appendSlice(self.arena, part);
-        }
+        try signature.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "define i64 @e7_hof_dispatch_{d}(i64 %handle", .{argc}));
+        for (0..argc) |i| try signature.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, ", i64 %arg{d}", .{i}));
         try signature.appendSlice(self.arena, ") {");
         try self.line("{s}", .{signature.items});
         try self.line("{s}", .{"entry:"});
-
-        var case_count: usize = 0;
-        for (self.module.functions) |callee| {
-            if (callee.params == argc) case_count += 1;
+        try self.line("{s}", .{"  %resolved = call i64 @e7_code_resolve(i64 %handle)"});
+        try self.line("{s}", .{"  %valid = icmp ne i64 %resolved, 0"});
+        try self.line("{s}", .{"  br i1 %valid, label %invoke, label %bad"});
+        try self.line("{s}", .{"invoke:"});
+        try self.line("{s}", .{"  %fn = inttoptr i64 %resolved to ptr"});
+        var call = std.ArrayList(u8).empty;
+        defer call.deinit(self.arena);
+        try call.appendSlice(self.arena, "  %result = call i64 %fn(");
+        for (0..argc) |i| {
+            if (i > 0) try call.appendSlice(self.arena, ", ");
+            try call.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "i64 %arg{d}", .{i}));
         }
-        if (case_count == 0) {
-            try self.line("{s}", .{"  ret i64 0"});
-            try self.line("{s}", .{"}"});
-            try self.out.append(self.allocator, '\n');
-            return;
-        }
-
-        var switch_text = std.ArrayList(u8).empty;
-        defer switch_text.deinit(self.arena);
-        try switch_text.appendSlice(self.arena, "  switch i64 %idx, label %bad [ ");
-        for (self.module.functions, 0..) |callee, function_index| {
-            if (callee.params != argc) continue;
-            const entry = try std.fmt.allocPrint(self.arena, "i64 {d}, label %f{d} ", .{
-                function_index, function_index,
-            });
-            try switch_text.appendSlice(self.arena, entry);
-        }
-        try switch_text.appendSlice(self.arena, "]");
-        try self.out.appendSlice(self.allocator, switch_text.items);
-        try self.out.append(self.allocator, '\n');
-
-        for (self.module.functions, 0..) |callee, function_index| {
-            if (callee.params != argc) continue;
-            const block = try std.fmt.allocPrint(self.arena, "f{d}:", .{function_index});
-            try self.line("{s}", .{block});
-            var call_text = std.ArrayList(u8).empty;
-            defer call_text.deinit(self.arena);
-            const result = try std.fmt.allocPrint(self.arena, "%r{d}", .{function_index});
-            try call_text.appendSlice(self.arena, "  ");
-            try call_text.appendSlice(self.arena, result);
-            try call_text.appendSlice(self.arena, " = call i64 @");
-            try call_text.appendSlice(self.arena, self.symbolName(callee.name));
-            try call_text.appendSlice(self.arena, "(");
-            arg_index = 0;
-            while (arg_index < argc) : (arg_index += 1) {
-                if (arg_index > 0) try call_text.appendSlice(self.arena, ", ");
-                const part = try std.fmt.allocPrint(self.arena, "i64 %arg{d}", .{arg_index});
-                try call_text.appendSlice(self.arena, part);
-            }
-            try call_text.appendSlice(self.arena, ")");
-            try self.out.appendSlice(self.allocator, call_text.items);
-            try self.out.append(self.allocator, '\n');
-            const ret = try std.fmt.allocPrint(self.arena, "  ret i64 {s}", .{result});
-            try self.line("{s}", .{ret});
-        }
+        try call.appendSlice(self.arena, ")");
+        try self.line("{s}", .{call.items});
+        try self.line("{s}", .{"  ret i64 %result"});
         try self.line("{s}", .{"bad:"});
         try self.line("{s}", .{"  ret i64 0"});
         try self.line("{s}", .{"}"});
@@ -289,12 +258,7 @@ const Translator = struct {
     }
 
     fn symbolName(self: *Translator, name: []const u8) []const u8 {
-        const copy = self.arena.alloc(u8, name.len) catch unreachable;
-        for (name, 0..) |byte, i| copy[i] = switch (byte) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_', '.', '$', '-' => byte,
-            else => '_',
-        };
-        return copy;
+        return symbolNameAlloc(self.arena, name) catch unreachable;
     }
 
     fn emitFunction(self: *Translator, function: bytecode.Function) Error!void {
@@ -433,7 +397,9 @@ const Translator = struct {
             },
             .function_ref => |callee| {
                 if (callee >= self.module.functions.len) return error.InvalidBytecode;
-                try self.push(@intCast(callee));
+                const address = self.fresh();
+                try self.line("  {s} = ptrtoint ptr @{s} to i64", .{ address, self.symbolName(self.module.functions[callee].name) });
+                try self.pushValue(address);
             },
             .call_indirect => |argc| {
                 if (argc > 64) return error.InvalidBytecode;

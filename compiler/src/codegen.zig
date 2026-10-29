@@ -2934,6 +2934,11 @@ const Builder = struct {
         const path = call.callee.path;
         if (path.segments.len == 0) return false;
         const last_segment = path.segments[path.segments.len - 1];
+        if (path.segments.len == 2 and std.mem.eql(u8, path.segments[0].name, "ecs") and std.mem.eql(u8, last_segment.name, "component_catalog")) {
+            const catalog = self.analysis.jsonCallSchema(@intFromPtr(expr)) orelse return error.UnsupportedFeature;
+            try self.emit(.{ .string_lit = catalog });
+            return true;
+        }
         var is_encode = false;
         var is_decode = false;
         var is_schema = false;

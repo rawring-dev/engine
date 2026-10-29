@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    terminal(b, runtime);
     runtime.addImport("scheduler", scheduler);
     runtime.addImport("compiler", compiler);
     runtime.linkSystemLibrary("LLVM-23", .{});
@@ -28,9 +29,9 @@ pub fn build(b: *std.Build) void {
     runtime.linkSystemLibrary("blas", .{});
 
     // Runtime FFI backends: libcurl HTTP(S), ngtcp2 QUIC, libdatachannel
-    // WebRTC, and OpenSSL for QUIC's TLS 1.3 handshake.  SDL3 and Vulkan are
-    // deliberately absent: e7 platform code binds them at runtime through the
-    // generic C FFI.
+    // WebRTC, and OpenSSL for QUIC's TLS 1.3 handshake. SDL/Vulkan windows are
+    // owned by e7 platform code through generic C FFI. The embedded terminal
+    // additionally links SDL3/SDL3_ttf for rasterization, without owning a window.
     runtime.linkSystemLibrary("curl", .{});
     runtime.linkSystemLibrary("ssl", .{});
     runtime.linkSystemLibrary("crypto", .{});
@@ -58,6 +59,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    terminal(b, engine_run.root_module);
     engine_run.root_module.addImport("compiler", compiler);
     // The runtime's `Symbol` manifests live in intrinsics.zig, so the host
     // transitively references every FFI backend the runtime supports.
@@ -92,6 +94,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    terminal(b, editor_run.root_module);
     editor_run.root_module.addImport("compiler", compiler);
     editor_run.root_module.linkSystemLibrary("LLVM-23", .{});
     editor_run.root_module.linkSystemLibrary("lapack", .{});
@@ -121,4 +124,12 @@ pub fn build(b: *std.Build) void {
     run_tests.addArtifactArg(tests);
     run_tests.has_side_effects = true;
     test_step.dependOn(&run_tests.step);
+}
+
+fn terminal(b: *std.Build, module: *std.Build.Module) void {
+    module.addCSourceFile(.{ .file = b.path("src/editor_terminal.c"), .flags = &.{"-std=c11"} });
+    module.linkSystemLibrary("vterm", .{});
+    module.linkSystemLibrary("SDL3", .{});
+    module.linkSystemLibrary("SDL3_ttf", .{});
+    module.linkSystemLibrary("util", .{});
 }

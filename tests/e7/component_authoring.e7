@@ -1,0 +1,161 @@
+# e7-test-source: ../../engine/core/ecs.e7
+# e7-test-source: ../../engine/scene/document.e7
+# e7-test-source: ../../engine/editor/inspector.e7
+# e7-test-source: ../../engine/editor/components.e7
+# e7-test-source: ../../engine/editor/model.e7
+# e7-test-source: ../../engine/editor/authoring.e7
+
+# Production Material lives in gfx/gpu.e7; this fixture needs no window or GPU.
+@Components
+Material <- struct
+    texture: u64
+    tint: [f32; 3]
+
+CustomSettings <- struct
+    damage: f32
+
+# No derive or manual editor registration: @Components is sufficient.
+@Components
+GameplayStats <- struct
+    health: i64
+    enabled: bool
+    checkpoint: [f32; 3]
+    label: str
+    settings: CustomSettings
+
+@Components
+OtherComponent <- struct
+    count: i64
+
+component_test_state <- () -> EditorState:
+    state := editor_state(sample_scene(), ".zig-cache/component-authoring.scene.json")
+    state.component_mode = true
+    editor_select(&mut state, 1)
+    ret state
+
+saved_component_values <- (object: SceneObject) -> map[str, str]:
+    ret json::decode::<map[str, str]>(json::encode(object.components))
+
+test_component_add_edit_remove_and_undo <- () -> i64:
+    state := component_test_state()
+    assert_eq_i64(state.inspector_target, 3)
+    assert_str_eq(state.component_name, "Transform")
+    entries := editor_attached_components(&state)
+    assert_eq_i64(entries.len() as i64, 5)
+    assert_eq_bool(editor_component_add(&mut state, "GameplayStats"), true)
+    assert_str_eq(state.component_name, "GameplayStats")
+    assert_eq_i64(state.inspector_fields.len() as i64, 7)
+    assert_eq_bool(editor_component_add(&mut state, "GameplayStats"), false)
+    assert_eq_i64(state.undo_stack.len() as i64, 1)
+    values := state.inspector_draft
+    values[0] = "120"
+    values[1] = "true"
+    values[5] = "player stats"
+    values[6] = "4.5"
+    assert_eq_bool(editor_apply_inspector(&mut state, values), true)
+    updated := saved_component_values(state.document.objects[1])
+    assert_str_eq(updated["GameplayStats"], "{\"health\":120,\"enabled\":true,\"checkpoint\":[0,0,0],\"label\":\"player stats\",\"settings\":{\"damage\":4.5}}")
+    assert_eq_bool(editor_component_remove(&mut state), true)
+    removed := editor_attached_components(&state)
+    assert_eq_i64(removed["GameplayStats"].len() as i64, 0)
+    editor_undo(&mut state, false)
+    restored := editor_attached_components(&state)
+    assert_str_eq(restored["GameplayStats"], updated["GameplayStats"])
+    editor_undo(&mut state, true)
+    redone := editor_attached_components(&state)
+    assert_eq_i64(redone["GameplayStats"].len() as i64, 0)
+    ret 0
+
+test_component_persistence_and_duplicate_independence <- () -> i64:
+    state := component_test_state()
+    added := editor_component_add(&mut state, "GameplayStats")
+    assert_eq_bool(editor_save(&mut state, ".zig-cache/component-authoring.scene.json"), true)
+    document := load_scene(".zig-cache/component-authoring.scene.json")
+    loaded := editor_state(document, ".zig-cache/component-authoring.scene.json")
+    editor_select(&mut loaded, 1)
+    persisted := saved_component_values(loaded.document.objects[1])
+    assert_eq_bool(persisted["GameplayStats"].len() > 0, true)
+    editor_duplicate(&mut loaded)
+    copy_index := loaded.selected
+    editor_component_open(&mut loaded, "GameplayStats")
+    values := loaded.inspector_draft
+    values[0] = "99"
+    assert_eq_bool(editor_apply_inspector(&mut loaded, values), true)
+    copy := saved_component_values(loaded.document.objects[loaded.selected as usize])
+    editor_select(&mut loaded, 1)
+    original := saved_component_values(loaded.document.objects[1])
+    assert_str_eq(original["GameplayStats"], persisted["GameplayStats"])
+    assert_eq_bool(copy["GameplayStats"] != original["GameplayStats"], true)
+    editor_select(&mut loaded, copy_index)
+    transform := json::decode::<EditorTransformValue>(copy["Transform"])
+    assert_f32_near(transform.translation[0], 0.5, 0.000001)
+    ret 0
+
+test_component_removal_is_authoritative_and_unknown_types_survive <- () -> i64:
+    state := component_test_state()
+    editor_component_open(&mut state, "Renderable")
+    assert_eq_bool(editor_component_remove(&mut state), true)
+    components := editor_attached_components(&state)
+    assert_eq_i64(components["Renderable"].len() as i64, 0)
+    components["missing_module::SavedComponent"] = "{\"value\":42}"
+    object := copy_scene_object(state.document.objects[1])
+    object.components = json::decode::<?map[str, str]>(json::encode(&components))
+    state.document.objects[1] = object
+    roundtrip := scene_from_json(scene_to_json(&state.document))
+    preserved := editor_object_components(roundtrip.objects[1], &state.component_types)
+    assert_eq_i64(preserved["Renderable"].len() as i64, 0)
+    assert_str_eq(preserved["missing_module::SavedComponent"], "{\"value\":42}")
+    ret 0
+
+test_component_filter_and_invalid_transaction <- () -> i64:
+    state := component_test_state()
+    state.component_menu = 2
+    state.component_search = "gAmEpLaY"
+    entries := editor_component_menu_entries(&state)
+    assert_eq_i64(entries.len() as i64, 1)
+    assert_str_eq(entries[0], "GameplayStats")
+    editor_dispatch(&mut state, 200, [])
+    assert_str_eq(state.component_name, "GameplayStats")
+    before := json::encode(&state.document)
+    count := state.undo_stack.len() as i64
+    values := state.inspector_draft
+    values[0] = "1.5"
+    assert_eq_bool(editor_apply_inspector(&mut state, values), false)
+    assert_str_eq(scene_to_json(&state.document), before)
+    assert_eq_i64(state.undo_stack.len() as i64, count)
+    ret 0
+
+test_dynamic_component_values_reach_the_ecs <- () -> i64:
+    types := json::decode::<[ComponentType]>(ecs::component_catalog())
+    index := component_type_index(&types, "GameplayStats")
+    component := types[index as usize]
+    source := "{\"health\":120,\"enabled\":true,\"checkpoint\":[1,2,3],\"label\":\"runtime\",\"settings\":{\"damage\":4.5}}"
+    value := json::decode_value(component.schema, source)
+    assert_eq_bool(value != 0, true)
+    row := ecs::row_begin(1 as u64)
+    assert_eq_i64(ecs::row_add(row, component.id, value), 0)
+    assert_eq_i64(ecs::row_finish(row), 0)
+    assert_eq_i64(ecs::flush(1 as u64), 0)
+    actual := ecs::component(0, component.id)
+    assert_eq_bool(actual != 0, true)
+    assert_eq_i64(ptr::load_i64(actual), 120)
+    assert_eq_i64(ptr::load_i64(actual + 8), 1)
+    assert_str_eq(json::encode_value(component.schema, actual), source)
+    ret 0
+
+test_empty_entity_creation_and_component_undo <- () -> i64:
+    state := component_test_state()
+    editor_dispatch(&mut state, 26, [])
+    assert_str_eq(state.document.objects[4].name, "Entity 1")
+    entries := editor_attached_components(&state)
+    assert_eq_i64(entries.len() as i64, 0)
+    assert_eq_i64(state.undo_stack.len() as i64, 1)
+    added := editor_component_add(&mut state, "GameplayStats")
+    attached := editor_attached_components(&state)
+    assert_eq_i64(attached.len() as i64, 1)
+    editor_undo(&mut state, false)
+    undone := editor_attached_components(&state)
+    assert_eq_i64(undone.len() as i64, 0)
+    editor_undo(&mut state, false)
+    assert_eq_i64(state.document.objects.len() as i64, 4)
+    ret 0

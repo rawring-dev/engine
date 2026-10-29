@@ -1,7 +1,9 @@
 # Pure editor command tests; no window, SDL, or GPU is required.
 # e7-test-source: ../../engine/scene/document.e7
 # e7-test-source: ../../engine/editor/inspector.e7
+# e7-test-source: ../../engine/editor/components.e7
 # e7-test-source: ../../engine/editor/model.e7
+# e7-test-source: ../../engine/editor/authoring.e7
 
 test_editor_basics <- () -> i64:
     state := editor_state(sample_scene(), "test.scene.json")

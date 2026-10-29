@@ -162,3 +162,25 @@ schema expects `A<N>:...` or `[...]`.
   the call to `e7_json_encode` / `e7_json_decode`.
 * `runtime/src/json.zig` parses the schema, walks the aggregate representation,
   and implements the strict JSON reader/writer described above.
+
+## Dynamic component authoring
+
+`ecs::component_catalog()` is a compiler-generated JSON array of
+`{name, id, slots, schema}` entries for all compiled `@Components` structs.
+Catalogue generation can describe supported component fields without requiring
+extra derives on the component declaration. This does not bypass the derive
+requirements of ordinary typed `json::encode`, `json::decode`, or `json::schema`.
+An empty schema marks a component containing unsupported runtime-only fields.
+
+Tools can decode/encode a catalogue's trusted schema with
+`json::decode_value(schema, text) -> u64` and
+`json::encode_value(schema, handle) -> str`. Component records are structs, so
+handle zero unambiguously means invalid data. These methods reuse the existing
+JSON runtime; their handles are low-level values tied to the matching schema.
+Never apply a value with a different schema or an unrelated component id.
+
+The native `ecs::row_begin(ffi::handle(commands))`,
+`ecs::row_add(row, type_id, decoded_value)`, and `ecs::row_finish(row)` methods
+provide the existing deferred row builder for dynamic tooling. Values are copied
+on row_add and become visible on the usual command flush. Persist qualified type
+names, not numeric ids, which can change when modules/components are added.

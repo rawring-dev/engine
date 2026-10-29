@@ -1905,3 +1905,29 @@ test "JSON schema reflection validates types, derives, and arity" {
         \\bad <- () -> str = json::schema::<Unsupported>()
     , "must also derive Serialize");
 }
+
+test "component catalogue metadata does not bypass JSON derive validation" {
+    try expectClean(
+        \\@Components
+        \\Data <- struct
+        \\    value: i64
+        \\RuntimeOnly <- struct
+        \\    callback: () -> i64
+        \\@Components
+        \\Internal <- struct
+        \\    callback: () -> i64
+        \\catalog <- () -> str = ecs::component_catalog()
+    );
+    try expectDiagnostic(
+        \\Nested <- struct
+        \\    value: i64
+        \\@Components
+        \\@derive(Serialize)
+        \\Data <- struct
+        \\    nested: Nested
+        \\catalog <- () -> str = ecs::component_catalog()
+    , "must also derive Serialize");
+    try expectDiagnostic(
+        \\catalog <- () -> str = ecs::component_catalog(1)
+    , "takes no arguments");
+}

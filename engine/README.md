@@ -196,7 +196,7 @@ not perform swept collision detection, so sufficiently fast bodies can tunnel.
   the role): `UIRect`, `UIPanel`, `UILabel`, `UIButton { label, action }`,
   `UITextField { text, max_len, focused, revision, texture, ... }`.
   `UIState` tracks cursor/hover/focus/clicked action/font/text texture cache.
-  Mouse hit-testing and typing run in `@trigger(PreUpdate) ui_interact`;
+  Mouse hit-testing and typing run in `@trigger(UiInput) ui_interact`;
   `UIButtonPressed` is invoked from `main` when `clicked_action` is set.
   Buttons currently reset the cube stack (action 1) and toggle the light
   (action 2); the text field supports typing, Backspace, and Enter-to-blur.
@@ -300,9 +300,23 @@ so projection aspect and capture dimensions match the client area.
 Run `zig build run-editor` from the workspace root. The editor provides primitive
 creation, a paged scene hierarchy, viewport picking, transform/tint inspection,
 duplication/deletion, 64-step undo/redo, and save/open with unsaved-change checks.
-Inspector fields are generated from `json::schema::<T>()` for objects, cameras,
-and lights, including nested fields, enum choices, and paged drafts. Hold RMB
+The inspector has a component dropdown, searchable Add Component catalogue,
+and removal with undo/redo. Custom compiled `@Components` types are discovered
+automatically; their typed data is saved with the scene and instantiated in ECS.
+Nested fields, vector elements, enum choices, and paged drafts share the JSON
+inspector. Hold RMB
 and use WASD/QE to fly; F focuses selection. Inspector edits commit
 with Apply. Edit the path above the viewport to save another scene file.
-Reload code saves first and restores the active scene path, selection, and view.
+**Code** switches to embedded Neovim and the paged assets/scripts explorer;
+**Scene** returns to the viewport. Use `:w` to save and apply imported e7 scripts,
+or **Apply saved code** to recompile files already on disk. Failed compilation
+keeps the current session alive. **Play**, **Pause/Resume**, **Step**, and **Stop**
+run the scene, freeze/advance simulation, and restore authored data. Add a
+RigidBody to an object to simulate it; collider types supply physics metadata.
+Gameplay starts in `engine/gameplay.e7`; import new script modules there.
+Reload replaces future system/task code in the existing editor. Its window,
+renderer, entities, custom resources, physics state, authoring history, and
+Neovim buffers remain alive; Init/DeInit are not run again. Layout/import changes,
+function signature changes, or ECS registry changes are rejected without a
+restart. Save buffers before closing the application.
 See [the editor guide](../notes/design/editor.md) for controls and limitations.

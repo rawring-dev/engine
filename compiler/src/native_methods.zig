@@ -161,6 +161,22 @@ const ffi_methods = [_]Method{
     .{ .name = "call16", .params = &.{ any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_, any_ }, .result = u64_, .runtime = .ffi_call16 },
 };
 
+const editor_methods = [_]Method{
+    .{ .name = "apply", .params = &.{}, .result = i64_, .runtime = .editor_apply },
+    .{ .name = "initial_file", .params = &.{}, .result = str_, .runtime = .editor_initial_file },
+    .{ .name = "alive", .params = &.{}, .result = i64_, .runtime = .editor_alive },
+    .{ .name = "saved", .params = &.{}, .result = i64_, .runtime = .editor_saved },
+    .{ .name = "open", .params = &.{str_}, .result = i64_, .runtime = .editor_open },
+    .{ .name = "input", .params = &.{str_}, .result = unit_, .runtime = .editor_input },
+    .{ .name = "focus", .params = &.{i64_}, .result = unit_, .runtime = .editor_focus },
+    .{ .name = "event", .params = &.{any_}, .result = unit_, .runtime = .editor_event },
+    .{ .name = "resize", .params = &.{ i64_, i64_ }, .result = unit_, .runtime = .editor_resize },
+    .{ .name = "image", .params = &.{}, .result = u64_, .runtime = .editor_image },
+    .{ .name = "status", .params = &.{}, .result = str_, .runtime = .editor_status },
+    .{ .name = "check", .params = &.{}, .result = i64_, .runtime = .editor_check },
+    .{ .name = "diagnostic", .params = &.{}, .result = str_, .runtime = .editor_diagnostic },
+};
+
 const host_methods = [_]Method{
     .{ .name = "time_now_ms", .params = &.{}, .result = i64_, .runtime = .engine_time_now_ms },
     .{ .name = "read_shader", .params = &.{str_}, .result = str_, .runtime = .engine_read_shader },
@@ -201,13 +217,28 @@ const vec_methods = [_]Method{
     .{ .name = "push", .params = &.{ any_, any_ }, .result = any_, .runtime = .vec_push },
 };
 
+const json_dynamic_methods = [_]Method{
+    .{ .name = "encode_value", .params = &.{ str_, u64_ }, .result = str_, .runtime = .json_encode },
+    .{ .name = "decode_value", .params = &.{ str_, str_ }, .result = u64_, .runtime = .json_decode },
+};
+const ecs_dynamic_methods = [_]Method{
+    .{ .name = "flush", .params = &.{u64_}, .result = i64_, .runtime = .ecs_commands_flush },
+    .{ .name = "component", .params = &.{ i64_, i64_ }, .result = u64_, .runtime = .ecs_component_get },
+    .{ .name = "row_begin", .params = &.{u64_}, .result = u64_, .runtime = .ecs_commands_row_begin },
+    .{ .name = "row_add", .params = &.{ u64_, i64_, u64_ }, .result = i64_, .runtime = .ecs_commands_row_add },
+    .{ .name = "row_finish", .params = &.{u64_}, .result = i64_, .runtime = .ecs_commands_row_finish },
+};
+
 pub const namespaces = [_]Namespace{
+    .{ .name = "json", .methods = &json_dynamic_methods },
+    .{ .name = "ecs", .methods = &ecs_dynamic_methods },
     .{ .name = "f32", .methods = &f32_methods },
     .{ .name = "i64", .methods = &i64_methods },
     .{ .name = "str", .methods = &str_methods },
     .{ .name = "ptr", .methods = &ptr_methods },
     .{ .name = "ffi", .methods = &ffi_methods },
     .{ .name = "host", .methods = &host_methods },
+    .{ .name = "editor", .methods = &editor_methods },
     .{ .name = "image", .methods = &image_methods },
     .{ .name = "vec", .methods = &vec_methods },
 };

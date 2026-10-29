@@ -438,6 +438,7 @@ pub main <- async () -> i32:
     while not window.quit_requested:
         await FrameInit()
         await PreUpdate()
+        await UiInput()
         ui_state := await query &mut UIState
         if ui_state.clicked_action != 0:
             ui_state.action = ui_state.clicked_action

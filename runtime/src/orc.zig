@@ -75,9 +75,16 @@ pub const Jit = struct {
     }
 
     pub fn deinit(self: *Jit) void {
+        task.shutdownGlobal();
+        self.deinitCode();
+    }
+
+    /// Dispose code without stopping the shared scheduler. Only use when no
+    /// task or stored function pointer can still enter this JIT (or for an
+    /// unpublished candidate). Live code owners drain tasks before disposal.
+    pub fn deinitCode(self: *Jit) void {
         const err = c.LLVMOrcDisposeLLJIT(self.handle);
         if (err != null) disposeError(err);
-        task.shutdownGlobal();
         self.* = undefined;
     }
 
@@ -128,6 +135,8 @@ pub const Jit = struct {
     /// a fixed point, then add the optimized module to the JIT.
     pub fn addBytecode(self: *Jit, module: *const compiler.bytecode.Module, module_name: []const u8) Error!void {
         task.ensureGlobal(std.heap.c_allocator) catch return error.OutOfMemory;
+        const code_symbols = [_]Symbol{.{ .name = "e7_code_resolve", .address = @intFromPtr(&@import("code_dispatch.zig").e7_code_resolve) }};
+        try self.defineSymbols(&code_symbols);
         const task_symbols = task.symbols();
         try self.defineSymbols(&task_symbols);
         const lease_symbols = lease.symbols();
@@ -144,6 +153,8 @@ pub const Jit = struct {
         try self.defineSymbols(&image_symbols);
         const ffi_symbols = cbridge.symbols();
         try self.defineSymbols(&ffi_symbols);
+        const editor_symbols = @import("editor_host.zig").symbols();
+        try self.defineSymbols(&editor_symbols);
         const host_symbols = host.symbols();
         try self.defineSymbols(&host_symbols);
         const engine_symbols = host_engine.symbols();

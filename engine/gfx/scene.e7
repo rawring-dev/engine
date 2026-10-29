@@ -12,6 +12,7 @@ pub render_scene <- sys (
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
     ui_state: res &mut UIState,
+    images: select &UIRect, &UIImage from Components,
     widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
 ):
     # Follow window resizes before projecting so the swapchain and aspect
@@ -50,9 +51,9 @@ pub render_scene <- sys (
     for (transform, renderable, bounds, material, orientation) in renderables:
         # Physics bodies keep their visual size in BodyBounds; the procedural
         # meshes are unit-sized, so the scale is half-extent based.
-        sx := bounds.half_extents[0]
-        sy := bounds.half_extents[1]
-        sz := bounds.half_extents[2]
+        sx := bounds.half_extents[0] * transform.scale[0]
+        sy := bounds.half_extents[1] * transform.scale[1]
+        sz := bounds.half_extents[2] * transform.scale[2]
         if renderable.kind == 1:
             # Sphere: radius is the largest half-extent on every axis.
             radius := sx
@@ -124,6 +125,9 @@ pub render_scene <- sys (
     # end_frame.  The UI library owns textures/caches; scene owns submission.
     for (rect, panel, label, button, field) in widgets:
         draw_widget(gpu, ui_state, widgets.entity(), rect, panel, label, button, field)
+    for (rect, image) in images:
+        if image.texture != 0 and rect.w > 0.0 and rect.h > 0.0:
+            gpu.draw_ui_quad(image.texture, rect.x as i64, rect.y as i64, rect.w as i64, rect.h as i64, 255, 255, 255, 255)
     gpu.end_frame()
 
     window.quit_requested = window.should_close()

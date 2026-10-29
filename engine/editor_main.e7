@@ -10,6 +10,8 @@ mod gfx
 mod ui
 mod scene
 mod editor
+mod physics
+mod gameplay
 
 use core::ecs::*;
 use core::events::*;
@@ -17,6 +19,8 @@ use core::window::*;
 use core::input::*;
 use ui::*;
 use editor::*;
+use editor::workspace::*;
+use core::time::*;
 
 # Host entry point: `editor-run` looks up the project-level `main`.  The loop
 # lives at the project root so the compiled project exposes exactly one `main`;
@@ -33,6 +37,9 @@ pub main <- async () -> i32:
     commands.add_plugin(gfx::gpu::GfxPlugin)
     commands.add_plugin(core::camera::CameraPlugin)
     commands.add_plugin(ui::Ui)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(gameplay::Gameplay)
     commands.add_plugin(editor::Editor)
     disown commands
 
@@ -47,6 +54,7 @@ pub main <- async () -> i32:
     input.release_mouse()
     disown input
 
+    await WorkspaceRestore()
     # Spawn the initial scene rows from the loaded document.
     await EditorRefresh()
     state := await query &mut EditorState
@@ -55,12 +63,14 @@ pub main <- async () -> i32:
 
     while not window.quit_requested:
         await FrameInit()
-        await PreUpdate()
+        await WorkspaceTick()
+        await UiInput()
 
         ui_state := await query &mut UIState
         if ui_state.clicked_action != 0:
             ui_state.action = ui_state.clicked_action
             ui_state.clicked_action = 0
+            await WorkspaceButtons()
             await UIButtonPressed()
             ui_state.action = 0
 
@@ -71,17 +81,18 @@ pub main <- async () -> i32:
         disown editor
         if refresh:
             await EditorRefresh()
-        await Update()
-
-        await PostUpdate()
+        await workspace_simulate()
+        await EditorUpdate()
+        await WorkspaceCapture()
         await Render()
 
-        # Code hot-swap request: the host recompiles and starts a fresh JIT for
-        # the same project.  Shut the current code down first so window/audio
-        # resources are released; the editor document was saved by the action.
+        # Future tasks enter the new generation. The current main loop,
+        # window, renderer, UI, ECS rows/resources and Neovim stay alive.
         if host::take_reload_request() != 0:
-            await DeInit()
-            ret 42
+            applied := editor::apply()
+            state := await query &mut EditorState
+            state.status = editor::diagnostic()
+            disown state
 
     await DeInit()
     ret 0

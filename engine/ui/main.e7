@@ -22,6 +22,10 @@ pub UIRect <- struct
     h: f32
 
 @Components
+pub UIImage <- struct
+    texture: u64
+
+@Components
 pub UIPanel <- struct
     colour: [f32; 4]
 
@@ -51,6 +55,7 @@ pub UITextField <- struct
 # Button trigger: the main loop fires this after PreUpdate when a button has
 # set `clicked_action`.  The handler reads `UIState.action`.
 pub UIButtonPressed <- trigger
+pub UiInput <- trigger
 
 @plugin(Ui)
 @resource
@@ -159,7 +164,7 @@ ensure_field_texture <- (gpu: &mut Gpu, state: &mut UIState, field: &mut UITextF
 # ---------------------------------------------------------------------------
 
 @plugin(Ui)
-@trigger(PreUpdate)
+@trigger(UiInput)
 pub ui_interact <- sys (
     input: res &Input,
     gpu: res &mut Gpu,

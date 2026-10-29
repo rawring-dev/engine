@@ -1,0 +1,115 @@
+# Appended to the editor AST by the native integration test. The original main
+# continues across publication; only future phase/system tasks enter new code.
+workspace_fixture_version <- () -> i64 = 1
+
+WorkspaceProbe <- trigger
+@resource
+WorkspaceProbeState <- struct
+    y: f32
+    velocity: f32
+    version: i64
+    inits: i64
+    custom_value: i64
+
+@trigger(Init)
+workspace_probe_init <- sys (probe: res &mut WorkspaceProbeState):
+    probe.inits = probe.inits + 1
+
+@trigger(WorkspaceProbe)
+workspace_probe <- sys (probe: res &mut WorkspaceProbeState, rows: select &Transform, &RigidBody, &editor::EditorObject from Components):
+    probe.version = workspace_fixture_version()
+    for (transform, body, marker) in rows:
+        if marker.index == 1:
+            probe.y = transform.translation[1]
+            probe.velocity = body.velocity[1]
+
+main <- async () -> i32:
+    commands := await query &mut Commands
+    commands.add_plugin(core::window::WindowPlugin)
+    commands.add_plugin(core::input::InputPlugin)
+    commands.add_plugin(core::time::TimePlugin)
+    commands.add_plugin(gfx::gpu::GfxPlugin)
+    commands.add_plugin(core::camera::CameraPlugin)
+    commands.add_plugin(ui::Ui)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(gameplay::Gameplay)
+    commands.add_plugin(editor::Editor)
+    commands.insert_resource(WorkspaceProbeState { y: 0.0, velocity: 0.0, version: 0, inits: 0, custom_value: 123 })
+    disown commands
+    await Init()
+    window := await query &Window
+    gpu := await query &gfx::gpu::Gpu
+    window_handle := window.handle
+    scene_handle := gpu.scene
+    state := await query &mut EditorState
+    editor_select(state, 1)
+    editor_component_add(state, "core::ecs::RigidBody")
+    editor_nudge(state, 1, 3.0)
+    disown state
+    ui := await query &mut UIState
+    ui.action = 80
+    disown ui
+    await WorkspaceButtons()
+    await EditorRefresh()
+    await WorkspaceProbe()
+    probe := await query &WorkspaceProbeState
+    initial := probe.y
+    if probe.version != 1 or probe.inits != 1:
+        ret 10
+    await workspace_simulate()
+    await WorkspaceProbe()
+    if probe.y >= initial:
+        ret 20
+    controls := await query &mut UIState
+    controls.action = 81
+    disown controls
+    await WorkspaceButtons()
+    paused := probe.y
+    await workspace_simulate()
+    await WorkspaceProbe()
+    if probe.y != paused:
+        ret 21
+    step := await query &mut UIState
+    step.action = 82
+    disown step
+    await WorkspaceButtons()
+    await workspace_simulate()
+    await WorkspaceProbe()
+    if probe.y >= paused:
+        ret 22
+    position := probe.y
+    velocity := probe.velocity
+    apply := await query &mut UIState
+    apply.action = 11
+    disown apply
+    await WorkspaceButtons()
+    await WorkspaceCapture()
+    if host::take_reload_request() == 0:
+        ret 23
+    if editor::apply() == 0:
+        ret 24
+    await WorkspaceProbe()
+    if probe.version != 2 or probe.inits != 1 or probe.custom_value != 123:
+        ret 25
+    if probe.y != position or probe.velocity != velocity:
+        ret 26
+    if window.handle != window_handle or gpu.scene != scene_handle:
+        ret 27
+    workspace := await query &Workspace
+    if not workspace.playing or not workspace.paused:
+        ret 28
+    await workspace_simulate()
+    await WorkspaceProbe()
+    if probe.y != position:
+        ret 29
+    stop := await query &mut UIState
+    stop.action = 83
+    disown stop
+    await WorkspaceButtons()
+    await EditorRefresh()
+    document := await query &EditorState
+    if document.document.objects[1].translation.y != 3.5 or not document.dirty:
+        ret 30
+    await DeInit()
+    ret 0

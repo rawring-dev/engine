@@ -71,6 +71,7 @@ pub const ComponentInfo = struct {
     name: []const u8,
     id: i64,
     slots: usize,
+    schema: ?[]const u8 = null,
 };
 
 /// One `Name <- plugin` declaration with its optional `init` system.
@@ -313,6 +314,8 @@ const TypeDef = struct {
     derive_deserialize: bool = false,
     /// Compiler-generated JSON schema; null until validation succeeds.
     json_schema: ?[]const u8 = null,
+    json_schema_serialize_checked: bool = false,
+    json_schema_deserialize_checked: bool = false,
     /// Set when schema generation already reported a diagnostic, so later
     /// passes do not duplicate it.
     json_schema_failed: bool = false,
@@ -708,6 +711,7 @@ const Checker = struct {
         const callable = try self.allocator.create(Callable);
         callable.* = .{
             .name = decl.name,
+            .module_path = prefix,
             .kind = .sys,
             .is_async = true,
             .generics = decl.generics,
@@ -1055,7 +1059,12 @@ const Checker = struct {
     fn collectUses(self: *Checker, items: []*ast.Item, prefix: []const u8) Error!void {
         for (items) |item| {
             switch (item.kind) {
-                .use => |decl| try self.collectUseTree(decl.tree, prefix),
+                .use => |decl| {
+                    const previous = self.current_module;
+                    self.current_module = prefix;
+                    defer self.current_module = previous;
+                    try self.collectUseTree(decl.tree, "");
+                },
                 .mod => |m| if (m.items) |inner| {
                     try self.collectUses(inner, try self.childModule(prefix, m.name));
                 },
@@ -1127,7 +1136,8 @@ const Checker = struct {
     }
 
     fn addImport(self: *Checker, name: []const u8, target: ImportTarget) Error!void {
-        if (self.imports.get(name)) |existing| {
+        const key = try self.qualifiedName(self.current_module, name);
+        if (self.imports.get(key)) |existing| {
             const same = switch (existing) {
                 .type_def => |a| switch (target) {
                     .type_def => |b| a == b,
@@ -1141,7 +1151,42 @@ const Checker = struct {
             if (!same) try self.report("conflicting import `{s}`", .{name});
             return;
         }
-        try self.imports.put(self.allocator, name, target);
+        try self.imports.put(self.allocator, key, target);
+    }
+
+    // Walk lexical module scopes before the compatibility short-name fallback.
+    fn lexicalType(self: *Checker, name: []const u8) ?*TypeDef {
+        if (std.mem.indexOf(u8, name, "::") != null) return self.qualified_types.get(name);
+        var scope = self.current_module;
+        var buffer: [512]u8 = undefined;
+        while (true) {
+            const key = if (scope.len == 0) name else std.fmt.bufPrint(&buffer, "{s}::{s}", .{ scope, name }) catch return null;
+            if (self.qualified_types.get(key)) |def| return def;
+            if (self.imports.get(key)) |target| switch (target) {
+                .type_def => |def| return def,
+                .function => {},
+            };
+            if (scope.len == 0) break;
+            scope = if (std.mem.lastIndexOf(u8, scope, "::")) |at| scope[0..at] else "";
+        }
+        return null;
+    }
+
+    fn lexicalFunction(self: *Checker, name: []const u8) ?*Callable {
+        if (std.mem.indexOf(u8, name, "::") != null) return self.qualified_functions.get(name);
+        var scope = self.current_module;
+        var buffer: [512]u8 = undefined;
+        while (true) {
+            const key = if (scope.len == 0) name else std.fmt.bufPrint(&buffer, "{s}::{s}", .{ scope, name }) catch return null;
+            if (self.qualified_functions.get(key)) |function| return function;
+            if (self.imports.get(key)) |target| switch (target) {
+                .function => |function| return function,
+                .type_def => {},
+            };
+            if (scope.len == 0) break;
+            scope = if (std.mem.lastIndexOf(u8, scope, "::")) |at| scope[0..at] else "";
+        }
+        return null;
     }
 
     fn scopedKey(self: *Checker, name: []const u8, buffer: *[512]u8) ?[]const u8 {
@@ -1151,6 +1196,7 @@ const Checker = struct {
     }
 
     fn lookupTypeDef(self: *Checker, name: []const u8) ?*TypeDef {
+        if (self.lexicalType(name)) |def| return def;
         var buffer: [512]u8 = undefined;
         const key = self.scopedKey(name, &buffer) orelse name;
         if (self.qualified_types.get(key)) |def| return def;
@@ -1163,6 +1209,7 @@ const Checker = struct {
     }
 
     fn lookupQualifiedType(self: *Checker, name: []const u8) ?*TypeDef {
+        if (self.lexicalType(name)) |def| return def;
         var buffer: [512]u8 = undefined;
         const key = self.scopedKey(name, &buffer) orelse name;
         if (self.qualified_types.get(key)) |def| return def;
@@ -1177,6 +1224,7 @@ const Checker = struct {
     }
 
     fn lookupFunction(self: *Checker, name: []const u8) ?*Callable {
+        if (self.lexicalFunction(name)) |function| return function;
         var buffer: [512]u8 = undefined;
         const key = self.scopedKey(name, &buffer) orelse name;
         if (self.qualified_functions.get(key)) |function| return function;
@@ -1189,6 +1237,7 @@ const Checker = struct {
     }
 
     fn lookupQualifiedFunction(self: *Checker, name: []const u8) ?*Callable {
+        if (self.lexicalFunction(name)) |function| return function;
         var buffer: [512]u8 = undefined;
         const key = self.scopedKey(name, &buffer) orelse name;
         if (self.qualified_functions.get(key)) |function| return function;
@@ -1318,7 +1367,10 @@ const Checker = struct {
         context: []const u8,
     ) Error!?[]const u8 {
         _ = context;
-        if (def.json_schema) |schema| return schema;
+        if (def.json_schema) |schema| {
+            if ((!need_serialize or def.json_schema_serialize_checked) and
+                (!need_deserialize or def.json_schema_deserialize_checked)) return schema;
+        }
         if (def.json_schema_failed) return null;
         if (def.kind != .struct_ and def.kind != .enum_) {
             try self.report("@derive(...) is only supported on structs and enums, found `{s}`", .{def.qualified_name});
@@ -1413,6 +1465,8 @@ const Checker = struct {
             return null;
         }
         def.json_schema = try schema.toOwnedSlice(self.allocator);
+        def.json_schema_serialize_checked = def.json_schema_serialize_checked or need_serialize;
+        def.json_schema_deserialize_checked = def.json_schema_deserialize_checked or need_deserialize;
         return def.json_schema;
     }
 
@@ -1499,6 +1553,30 @@ const Checker = struct {
         const path = call.callee.path;
         if (path.segments.len == 0) return null;
         const last_segment = path.segments[path.segments.len - 1];
+        if (path.segments.len == 2 and std.mem.eql(u8, path.segments[0].name, "ecs") and std.mem.eql(u8, last_segment.name, "component_catalog")) {
+            if (last_segment.args.len != 0 or call.args.len != 0) try self.report("ecs::component_catalog takes no arguments", .{});
+            var visited = std.AutoHashMapUnmanaged(*TypeDef, void).empty;
+            defer visited.deinit(self.allocator);
+            for (self.components.items) |*component| {
+                const def = self.lookupTypeDef(component.name) orelse continue;
+                const diagnostic_mark = self.diagnostics.items.len;
+                component.schema = try self.buildJsonSchema(def, false, false, &visited, component.name);
+                // Non-serializable runtime components still appear in the
+                // catalogue, with an empty schema; tools cannot author them.
+                if (component.schema == null and !def.derive_serialize and !def.derive_deserialize) self.diagnostics.shrinkRetainingCapacity(diagnostic_mark);
+            }
+            const Entry = struct { name: []const u8, id: i64, slots: usize, schema: []const u8 };
+            const entries = try self.allocator.alloc(Entry, self.components.items.len);
+            for (self.components.items, entries) |component, *entry| entry.* = .{
+                .name = component.name,
+                .id = component.id,
+                .slots = component.slots,
+                .schema = component.schema orelse "",
+            };
+            const catalog = try std.json.Stringify.valueAlloc(self.allocator, entries, .{});
+            try self.json_call_schemas.put(self.allocator, @intFromPtr(expr), catalog);
+            return self.store.make(.string);
+        }
         var is_encode = false;
         var is_decode = false;
         var is_schema = false;
@@ -2162,6 +2240,14 @@ const Checker = struct {
         return resolved;
     }
 
+    // Field type syntax is lexically owned by its declaration, not its caller.
+    fn resolveDeclaredType(self: *Checker, def: *TypeDef, source: *ast.Type, env: ?*GenericEnv) Error!*types.Type {
+        const previous = self.current_module;
+        self.current_module = def.module_path;
+        defer self.current_module = previous;
+        return self.resolveTypeIn(source, env);
+    }
+
     fn fieldType(self: *Checker, ty: *types.Type, name: []const u8) !?*types.Type {
         const resolved = self.store.resolve(ty);
         switch (resolved.*) {
@@ -2174,7 +2260,7 @@ const Checker = struct {
                 var env = try self.envFor(def.generics, named.args);
                 for (def.fields) |field| {
                     if (std.mem.eql(u8, field.name, name)) {
-                        return try self.resolveTypeIn(field.ty, &env);
+                        return try self.resolveDeclaredType(def, field.ty, &env);
                     }
                 }
                 return null;
@@ -3365,7 +3451,7 @@ const Checker = struct {
             try env.put(self.allocator, generic.name, arg);
         }
         const params = try self.allocator.alloc(*types.Type, def.fields.len);
-        for (def.fields, 0..) |field, i| params[i] = try self.resolveTypeIn(field.ty, &env);
+        for (def.fields, 0..) |field, i| params[i] = try self.resolveDeclaredType(def, field.ty, &env);
         const result = try self.asyncTaskType(try self.store.make(.unit));
         return self.store.make(.{ .function = .{ .params = params, .result = result } });
     }
@@ -3509,7 +3595,7 @@ const Checker = struct {
             for (fields) |field| {
                 if (!std.mem.eql(u8, field.name, field_init.name)) continue;
                 found = true;
-                _ = try self.checkMoveExpr(field_init.value, try self.resolveTypeIn(field.ty, &env));
+                _ = try self.checkMoveExpr(field_init.value, try self.resolveDeclaredType(def, field.ty, &env));
                 break;
             }
             if (!found) try self.report("unknown field `{s}` in variant `{s}`", .{ field_init.name, variant_name });

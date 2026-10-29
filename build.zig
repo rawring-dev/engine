@@ -45,6 +45,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    e7_test_module.addCSourceFile(.{ .file = b.path("runtime/src/editor_terminal.c"), .flags = &.{"-std=c11"} });
+    inline for (.{ "vterm", "SDL3", "SDL3_ttf", "util" }) |library| e7_test_module.linkSystemLibrary(library, .{});
     e7_test_module.addImport("compiler", compiler);
     e7_test_module.linkSystemLibrary("LLVM-23", .{});
     // The JIT symbol manifests cover every runtime FFI backend, so the test

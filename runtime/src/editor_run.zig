@@ -4,29 +4,37 @@
 //!     zig build run-editor -- --frames 2 --headless --capture /tmp/editor.ppm
 //!     zig build run-editor -- --frames 3 --headless --reload-test
 //!
-//! The editor project (`engine/editor_main.e7`) is an ordinary e7 project built
-//! on the engine modules.  This host adds the one capability the engine demo
-//! does not need: an in-process code swap loop.  The e7 editor main returns
-//! code 42 when it sees a host reload request (`host::request_reload` /
-//! `host::take_reload_request`); the host then drops the current JIT, recompiles
-//! the project from disk, registers the (reset) ECS metadata, creates a fresh
-//! JIT, and starts the new `main`.  Scene state survives a reload because the
-//! editor saves its document before asking for the reload.
-//!
-//! `--reload-test` is a verification aid: the host requests one reload before
-//! the first run so the reload path executes exactly once in a headless run.
+//! The e7 editor owns its main loop and resources for the whole session.
+//! Successful edits are linked into resident JIT generations, then task entry
+//! redirects are published after Render. No Init/DeInit or ECS reset on reload.
+//! `--reload-test` requests one compatible reload while that same main runs.
 
 const std = @import("std");
 const compiler = @import("compiler");
-const orc = @import("orc.zig");
 const task = @import("task.zig");
-const ecs = @import("ecs.zig");
 const host = @import("host.zig");
 
 const default_project = "engine/editor_main.e7";
-/// e7 main return code meaning "reload this project".
-const reload_marker: i64 = 42;
-const max_reloads: i64 = 8;
+const editor_host = @import("editor_host.zig");
+const live_reload = @import("live_reload.zig");
+var active_program: ?*live_reload.Program = null;
+var active_project: []const u8 = default_project;
+
+fn prepareReload() bool {
+    const program = active_program orelse return false;
+    const success = program.stagePath(active_project);
+    editor_host.diagnostic = program.diagnostic;
+    return success;
+}
+
+fn applyReload() bool {
+    const program = active_program orelse return false;
+    // --reload-test can request publication directly, without a script save.
+    if (program.candidate == null and !prepareReload()) return false;
+    const success = program.commit();
+    editor_host.diagnostic = program.diagnostic;
+    return success;
+}
 
 const Options = struct {
     project: []const u8 = default_project,
@@ -36,11 +44,7 @@ const Options = struct {
     capture_path: ?[]const u8 = null,
     verbose: bool = false,
     reload_test: bool = false,
-};
-
-const Outcome = union(enum) {
-    exit: i64,
-    reload,
+    code_path: []const u8 = "",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -60,6 +64,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--project")) {
             options.project = args.next() orelse return usageError("--project requires a path");
             options.project_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--code")) {
+            options.code_path = args.next() orelse return usageError("--code requires a script path");
         } else if (std.mem.eql(u8, arg, "--reload-test")) {
             options.reload_test = true;
         } else if (std.mem.eql(u8, arg, "--verbose")) {
@@ -81,36 +87,26 @@ pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.c_allocator;
     const project_path = try resolveProjectPath(init.io, options);
 
-    // The host frame limiter and capture buffer live across reload cycles; only
-    // the compiled project and JIT are replaced.
+    // The editor main and all host/world resources live for this whole session.
+    active_project = project_path;
+    editor_host.initial_file = options.code_path;
+    editor_host.check_callback = prepareReload;
+    editor_host.apply_callback = applyReload;
+    defer {
+        editor_host.check_callback = null;
+        editor_host.apply_callback = null;
+        editor_host.close();
+    }
     host.reset();
     host.setHeadless(options.headless);
     host.setMaxFrames(options.frames);
     host.setCaptureEnabled(options.capture_path != null);
 
-    var reloads: i64 = 0;
-    var exit_code: i64 = 0;
-    while (true) {
-        // A pending request from the previous run would be consumed by the new
-        // e7 main loop; only `--reload-test` seeds one before the first run.
-        if (options.reload_test and reloads == 0) host.requestReload();
-
-        const outcome = try runProjectOnce(allocator, options, project_path, reloads);
-        switch (outcome) {
-            .reload => {
-                reloads += 1;
-                if (reloads > max_reloads) {
-                    std.debug.print("run-editor: stopped after {d} project reloads (limit {d})\n", .{ reloads, max_reloads });
-                    return error.TooManyReloads;
-                }
-                std.debug.print("run-editor: reloading project '{s}' (iteration {d})\n", .{ project_path, reloads });
-            },
-            .exit => |code| {
-                exit_code = code;
-                break;
-            },
-        }
-    }
+    if (options.reload_test) host.requestReload();
+    const outcome = try runProject(allocator, options, project_path);
+    const reloads = outcome.reloads;
+    const exit_code = outcome.code;
+    if (options.reload_test and reloads != 1) return error.ReloadVerificationFailed;
 
     if (options.capture_path) |path| {
         var capture = host.takeCapture() orelse {
@@ -137,15 +133,13 @@ pub fn main(init: std.process.Init) !void {
     if (exit_code != 0) return error.EditorMainFailed;
 }
 
-/// Compile, JIT, and run one generation of the project.  Returns `.reload` when
-/// the compiled e7 main requested a code swap, `.exit` otherwise.
-fn runProjectOnce(
+/// Run the editor main exactly once. Candidate JITs never execute main/setup.
+fn runProject(
     allocator: std.mem.Allocator,
     options: Options,
     project_path: []const u8,
-    reloads: i64,
-) !Outcome {
-    var compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
+) !struct { code: i64, reloads: usize } {
+    const compiled = compiler.pipeline.compileProject(allocator, project_path, .{}) catch |err| {
         if (err == error.SemanticFailed) {
             if (compiler.pipeline.loadProject(allocator, project_path)) |loaded| {
                 var project = loaded;
@@ -162,64 +156,20 @@ fn runProjectOnce(
         std.debug.print("run-editor: failed to compile project '{s}': {s}\n", .{ project_path, @errorName(err) });
         return error.ProjectCompileFailed;
     };
-    defer compiled.deinit();
-    if (!compiled.analysis.ok()) {
-        for (compiled.analysis.diagnostics) |diagnostic| {
-            std.debug.print("run-editor: {}:{}: {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
-        }
-        return error.ProjectSemanticFailed;
-    }
+    var program = try live_reload.Program.init(allocator, compiled);
+    defer program.deinit();
+    active_program = &program;
+    defer active_program = null;
     if (options.verbose) {
-        std.debug.print(
-            "run-editor: project '{s}' ({d} files): {d} functions, {d} resources, {d} components, {d} plugins (generation {d})\n",
-            .{
-                project_path,
-                compiled.owned_sources.len,
-                compiled.bytecode.functions.len,
-                compiled.analysis.resources.len,
-                compiled.analysis.components.len,
-                compiled.analysis.plugins.len,
-                reloads,
-            },
-        );
+        std.debug.print("run-editor: resident editor '{s}', {d} code entry points\n", .{ project_path, program.generations.items[0].entries.count() });
     }
-
-    // Reset the columnar world and re-register analysis metadata for this code
-    // generation.  Compiled `main` also installs the same ids via its synthetic
-    // `__e7_ecs_setup`, so this is host-side bookkeeping/validation only.
-    ecs.e7_ecs_reset();
-    for (compiled.analysis.resources) |resource| {
-        if (resource.plugin_id != null) continue;
-        if (ecs.e7_ecs_register_resource(resource.id, @intCast(resource.slots)) != 0) {
-            return error.EcsRegisterFailed;
-        }
-    }
-    for (compiled.analysis.components) |component| {
-        if (ecs.e7_ecs_register_component(component.id, @intCast(component.slots)) != 0) {
-            return error.EcsRegisterFailed;
-        }
-    }
-
-    const serialized = try compiler.bytecode.encode(allocator, &compiled.bytecode);
-    defer allocator.free(serialized);
-
-    var jit = try orc.Jit.init(allocator);
-    defer jit.deinit();
-    try jit.addBytecodeBytes(serialized, "editor-project");
-
-    const SetInline = *const fn (i64) callconv(.c) void;
-    const set_inline = try jit.get(SetInline, "e7_task_set_inline");
-    set_inline(1);
-    const MainCtor = *const fn () callconv(.c) i64;
-    const main_ctor = jit.get(MainCtor, "main") catch {
-        std.debug.print("run-editor: compiled project has no callable `main`\n", .{});
-        return error.MissingMain;
-    };
+    task.e7_task_set_inline(1);
+    defer task.e7_task_set_inline(0);
+    const main_ctor = try program.main();
     const handle = main_ctor();
     if (handle == 0) return error.MainTaskFailed;
     const result = task.e7_task_await(handle);
-    if (result == reload_marker) return .reload;
-    return .{ .exit = result };
+    return .{ .code = result, .reloads = program.reloads() };
 }
 
 fn resolveProjectPath(io: std.Io, options: Options) ![]const u8 {
@@ -251,7 +201,8 @@ fn printHelp() void {
         \\  --frames N       exit after N frames (enables the frame limiter)
         \\  --headless       hidden window (implied by --frames/--capture)
         \\  --capture PATH   write the last rendered frame as a PPM (P6) image
-        \\  --reload-test    request one code reload before the first run
+        \\  --code PATH      open the embedded Neovim workspace at PATH
+        \\  --reload-test    verify one live reload without leaving the editor main
         \\  --verbose        print project/metadata details per generation
         \\  -h, --help       show this help
         \\

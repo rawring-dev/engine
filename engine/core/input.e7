@@ -125,8 +125,7 @@ pub gather_input <- sys (input: res &mut Input, window: res &Window):
     input.interact_was_down = interact_down
 
 
-@trigger(PostUpdate)
-pub reset_input <- sys (input: res &mut Input):
+pub clear_input <- (input: &mut Input) -> nil:
     input.move_forward = false
     input.move_backward = false
     input.move_left = false
@@ -144,3 +143,7 @@ pub reset_input <- sys (input: res &mut Input):
     input.jump_down = false
     input.interact_pressed = false
 
+
+@trigger(PostUpdate)
+pub reset_input <- sys (input: res &mut Input):
+    clear_input(input)

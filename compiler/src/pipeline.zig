@@ -273,7 +273,17 @@ pub fn compileProject(
     root_path: []const u8,
     options: Options,
 ) (Error || ProjectError)!CompileResult {
-    var project = try loadProject(allocator, root_path);
+    return compileLoadedProject(allocator, try loadProject(allocator, root_path), options);
+}
+
+/// Compile a loaded/augmented AST and take ownership of the project on both
+/// success and failure. Embedders can add instrumentation without temp files.
+pub fn compileLoadedProject(
+    allocator: std.mem.Allocator,
+    owned_project: Project,
+    options: Options,
+) (Error || ProjectError)!CompileResult {
+    var project = owned_project;
     errdefer project.deinit();
 
     var analysis = try semantic.analyze(allocator, project.root_ast.module);
@@ -287,6 +297,7 @@ pub fn compileProject(
     try bytecode.verify(allocator, &module);
 
     var owned_sources = try allocator.alloc([]u8, project.files.len);
+    errdefer allocator.free(owned_sources);
     var owned_paths = try allocator.alloc([]u8, project.files.len);
     for (project.files, 0..) |file, index| {
         owned_sources[index] = file.source;
@@ -2176,4 +2187,47 @@ test "JSON schema reflection embeds the serialization schema as a constant" {
         };
     }
     try std.testing.expect(saw_schema);
+}
+
+test "module imports, system bodies and nested fields keep declaration scope" {
+    var compiled = try compile(std.testing.allocator,
+        \\mod physics {
+        \\    Vec <- struct
+        \\        x: f32
+        \\    Box <- struct
+        \\        center: Vec
+        \\    make <- () -> Vec = Vec { x: 2.0 }
+        \\    mod nested {
+        \\        @trigger(Tick)
+        \\        step <- sys ():
+        \\            point := make()
+        \\            box := Box { center: point }
+        \\            copy: Vec := box.center
+        \\    }
+        \\}
+        \\mod scene {
+        \\    Vec <- struct
+        \\        x: i64
+        \\    Box <- struct
+        \\        center: Vec
+        \\    make <- () -> Vec = Vec { x: 7 }
+        \\}
+        \\mod tools {
+        \\    use scene::*;
+        \\    run <- () -> i64:
+        \\        box := Box { center: make() }
+        \\        ret box.center.x
+        \\}
+        \\mod game {
+        \\    use physics::*;
+        \\    run <- () -> f32:
+        \\        box := Box { center: make() }
+        \\        ret box.center.x
+        \\}
+        \\Tick <- trigger
+        \\main <- () -> i64 = tools::run()
+    , .{});
+    defer compiled.deinit();
+    try std.testing.expect(compiled.analysis.ok());
+    try bytecode.verify(std.testing.allocator, &compiled.bytecode);
 }

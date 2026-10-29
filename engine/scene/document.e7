@@ -5,8 +5,8 @@
 # independent of ECS row ids: the editor maps objects to rows when loading and
 # rebuilds the document from component rows when saving.
 #
-# Wire example (one object; every field is required except none — writers must
-# emit a complete document, readers reject missing required fields):
+# Wire example (legacy object; `components` is optional for compatibility).
+# Writers emit complete documents; readers reject missing required fields.
 #
 #   {
 #     "format": "engine7-scene",
@@ -28,8 +28,10 @@
 #   }
 #
 # Compatibility policy: `format` must be "engine7-scene" and `version` must be
-# 1 for a document to load.  Unknown JSON fields are skipped by the decoder;
-# future versions bump `version` and add migration code here.
+# 1 for a document to load. The additive `components` field is optional: null
+# preserves legacy object mapping; a map explicitly lists component presence.
+# Keys are qualified type names and values are typed component JSON strings.
+# Unknown JSON fields are skipped; unavailable component records are retained.
 #
 # Textures use the AssetServer relative image key (e.g. "cube/cube.png") or an
 # empty string for the built-in white texture.
@@ -92,6 +94,8 @@ pub SceneObject <- struct
     colour: Colour
     # AssetServer image key, or "" for the built-in white texture.
     texture: str
+    # null means a legacy object; a map is its authoritative component set.
+    components: ?map[str, str]
 
 @derive(Serialize, Deserialize)
 pub SceneDocument <- struct
@@ -151,7 +155,7 @@ pub sample_scene <- () -> SceneDocument:
                 rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
                 half_extents: Vec3 { x: 8.0, y: 0.1, z: 8.0 },
                 colour: Colour { r: 0.42, g: 0.48, b: 0.42, a: 1.0 },
-                texture: "",
+                texture: "", components: nil,
             },
             SceneObject {
                 name: "cube",
@@ -160,7 +164,7 @@ pub sample_scene <- () -> SceneDocument:
                 rotation: Vec3 { x: 0.0, y: 20.0, z: 0.0 },
                 half_extents: Vec3 { x: 0.5, y: 0.5, z: 0.5 },
                 colour: Colour { r: 1.0, g: 0.55, b: 0.22, a: 1.0 },
-                texture: "",
+                texture: "", components: nil,
             },
             SceneObject {
                 name: "sphere",
@@ -169,7 +173,7 @@ pub sample_scene <- () -> SceneDocument:
                 rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
                 half_extents: Vec3 { x: 0.6, y: 0.6, z: 0.6 },
                 colour: Colour { r: 0.25, g: 0.6, b: 0.95, a: 1.0 },
-                texture: "",
+                texture: "", components: nil,
             },
             SceneObject {
                 name: "capsule",
@@ -178,7 +182,7 @@ pub sample_scene <- () -> SceneDocument:
                 rotation: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
                 half_extents: Vec3 { x: 0.4, y: 1.2, z: 0.4 },
                 colour: Colour { r: 0.35, g: 0.85, b: 0.45, a: 1.0 },
-                texture: "",
+                texture: "", components: nil,
             },
         ],
     }

@@ -164,6 +164,19 @@ pub const RuntimeFunction = enum(u8) {
     host_take_reload_request,
     host_reload_state,
     host_set_reload_state,
+    editor_open,
+    editor_input,
+    editor_focus,
+    editor_event,
+    editor_resize,
+    editor_image,
+    editor_status,
+    editor_check,
+    editor_apply,
+    editor_saved,
+    editor_initial_file,
+    editor_alive,
+    editor_diagnostic,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -200,6 +213,20 @@ pub const RuntimeFunction = enum(u8) {
             .host_take_reload_request => "e7_host_take_reload_request",
             .host_reload_state => "e7_host_reload_state",
             .host_set_reload_state => "e7_host_set_reload_state",
+            .editor_open => "e7_editor_open",
+            .editor_input => "e7_editor_input",
+            .editor_focus => "e7_editor_focus",
+            .editor_event => "e7_editor_event",
+            .editor_resize => "e7_editor_resize",
+            .editor_image => "e7_editor_image",
+            .editor_status => "e7_editor_status",
+            .editor_check => "e7_editor_check",
+            .editor_apply => "e7_editor_apply",
+            .editor_saved => "e7_editor_saved",
+            .editor_initial_file => "e7_editor_initial_file",
+            .editor_alive => "e7_editor_alive",
+            .editor_diagnostic => "e7_editor_diagnostic",
+
             .host_headless => "e7_host_headless",
             .host_should_close => "e7_host_should_close",
             .host_note_frame => "e7_host_note_frame",
@@ -301,14 +328,13 @@ pub const RuntimeFunction = enum(u8) {
             .ecs_reset, .ecs_entity_count, .ecs_commands => 0,
             .ecs_resource,
             .ecs_has_resource,
-            .ecs_component_get,
             .ecs_commands_row_begin,
             .ecs_commands_row_finish,
             .ecs_commands_flush,
             .ecs_plugin_active,
             .ecs_query_next,
             => 1,
-            .ecs_query_component => 2,
+            .ecs_query_component, .ecs_component_get => 2,
             .ecs_query_entity, .ecs_entity_despawn, .ecs_entity_alive => 1,
             .ecs_component_remove => 2,
             .ecs_commands_remove_component => 3,
@@ -324,6 +350,9 @@ pub const RuntimeFunction = enum(u8) {
             .engine_list_dir => 1,
             .engine_write_asset => 2,
             .host_set_reload_state => 1,
+            .editor_open, .editor_input, .editor_focus, .editor_event => 1,
+            .editor_resize => 2,
+            .editor_image, .editor_status, .editor_check, .editor_apply, .editor_diagnostic, .editor_saved, .editor_initial_file, .editor_alive => 0,
             .engine_time_now_ms,
             .host_headless,
             .host_should_close,
@@ -435,10 +464,10 @@ pub const Op = union(enum) {
     jump: u32,
     jump_if_false: u32,
     call: Call,
-    /// Push a stable bytecode function index as a first-class function value.
+    /// Push an opaque first-class value for the referenced bytecode function.
     function_ref: u16,
-    /// Pop a function index plus `argc` arguments and call that function.
-    /// The callee index is resolved through the uniform `i64(i64, ...)` ABI.
+    /// Pop a function value plus `argc` arguments and call that function.
+    /// The runtime resolves it through the uniform `i64(i64, ...)` ABI.
     call_indirect: u16,
     /// Call a runtime C-ABI intrinsic; arguments are popped like `call` and one
     /// `i64` result is pushed (the backend ignores results it does not use).

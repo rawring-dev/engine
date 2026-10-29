@@ -185,6 +185,7 @@ window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
 # Apply one polled SDL event to the window state.  Kept separate from
 # `window_pump` so engine tests can drive synthetic events without a device.
 window_handle_event <- (state: u64, event: u64) -> nil:
+    editor::event(event)
     kind := ptr::load_u32(event)
     # SDL3: QUIT=256, WINDOW_CLOSE_REQUESTED=528 (526 is FOCUS_GAINED).
     if kind == 256 or kind == 528:

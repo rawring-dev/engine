@@ -2,8 +2,12 @@
 # model.e7 and shared by the UI, shortcuts, and dependency-free regression tests.
 mod inspector
 use inspector::*;
+mod components
+use components::*;
 mod model
 use model::*;
+mod authoring
+use authoring::*;
 use core::ecs::*;
 use core::events::*;
 use core::window::*;
@@ -11,13 +15,19 @@ use core::input::*;
 use gfx::gpu::*;
 use ui::*;
 use scene::document::*;
+mod workspace_model
+use workspace_model::*;
+mod workspace
+use workspace::*;
 
 pub EditorRefresh <- trigger
 pub EditorInput <- trigger
+pub EditorUpdate <- trigger
 
 @Components
 pub EditorObject <- struct
     name: str
+    index: i64
 
 @Components
 pub EditorLabel <- struct
@@ -81,7 +91,10 @@ background <- (commands: &mut Commands, x: f32, y: f32, w: f32, h: f32, anchor: 
 pub Editor <- plugin
     editor_plugin_init <- sys (commands: &mut Commands):
         path := "engine/editor/scenes/sample.scene.json"
-        commands.insert_resource(editor_resume(load_scene(path), path))
+        state := editor_resume(load_scene(path), path)
+        state.component_mode = true
+        editor_first_component(&mut state)
+        editor_rebuild_inspector(&mut state)
         # This transparent world widget prevents the game UI from capturing
         # the mouse on selection clicks; the editor owns right-button capture.
         widget(commands, 174.0, 40.0, 466.0, 468.0, "", -1, 0, -1, 6)
@@ -90,16 +103,21 @@ pub Editor <- plugin
         background(commands, 640.0, 40.0, 320.0, 468.0, 4)
         background(commands, 0.0, 508.0, 960.0, 32.0, 5)
         widget(commands, 4.0, 4.0, 130.0, 30.0, "", 0, 0, -1, 0)
-        widget(commands, 146.0, 5.0, 58.0, 28.0, "New", -1, 20, -1, 0)
-        widget(commands, 210.0, 5.0, 58.0, 28.0, "Open", -1, 21, -1, 0)
-        widget(commands, 274.0, 5.0, 58.0, 28.0, "Save", -1, 10, -1, 0)
-        widget(commands, 346.0, 5.0, 58.0, 28.0, "Undo", -1, 14, -1, 0)
-        widget(commands, 410.0, 5.0, 58.0, 28.0, "Redo", -1, 15, -1, 0)
-        widget(commands, 480.0, 5.0, 70.0, 28.0, "Focus", -1, 24, -1, 0)
-        widget(commands, 560.0, 5.0, 120.0, 28.0, "Save view", -1, 25, -1, 1)
-        widget(commands, 786.0, 5.0, 164.0, 28.0, "Reload code", -1, 11, -1, 1)
+        widget(commands, 146.0, 5.0, 48.0, 28.0, "New", -1, 20, -1, 0)
+        widget(commands, 198.0, 5.0, 48.0, 28.0, "Open", -1, 21, -1, 0)
+        widget(commands, 250.0, 5.0, 48.0, 28.0, "Save", -1, 10, -1, 0)
+        widget(commands, 302.0, 5.0, 48.0, 28.0, "Undo", -1, 14, -1, 0)
+        widget(commands, 354.0, 5.0, 48.0, 28.0, "Redo", -1, 15, -1, 0)
+        widget(commands, 406.0, 5.0, 58.0, 28.0, "Focus", -1, 24, -1, 0)
+        widget(commands, 480.0, 5.0, 52.0, 28.0, "Play", -1, 80, -1, 0)
+        widget(commands, 536.0, 5.0, 60.0, 28.0, "Pause", -1, 81, -1, 0)
+        widget(commands, 600.0, 5.0, 52.0, 28.0, "Step", -1, 82, -1, 0)
+        widget(commands, 656.0, 5.0, 52.0, 28.0, "Stop", -1, 83, -1, 0)
+        widget(commands, 712.0, 5.0, 64.0, 28.0, "Code", -1, 84, -1, 0)
+        widget(commands, 786.0, 5.0, 164.0, 28.0, "Apply saved code", -1, 11, -1, 1)
         widget(commands, 184.0, 46.0, 442.0, 28.0, "", -1, 0, 0, 2)
-        widget(commands, 4.0, 47.0, 160.0, 24.0, "CREATE", -1, 0, -1, 0)
+        widget(commands, 4.0, 47.0, 80.0, 24.0, "CREATE", -1, 0, -1, 0)
+        widget(commands, 90.0, 44.0, 74.0, 26.0, "Empty", -1, 26, -1, 0)
         widget(commands, 10.0, 78.0, 74.0, 28.0, "Box", -1, 16, -1, 0)
         widget(commands, 90.0, 78.0, 74.0, 28.0, "Sphere", -1, 17, -1, 0)
         widget(commands, 10.0, 112.0, 74.0, 28.0, "Capsule", -1, 18, -1, 0)
@@ -116,9 +134,9 @@ pub Editor <- plugin
         widget(commands, 4.0, 468.0, 160.0, 24.0, "", 4, 0, -1, 0)
         widget(commands, 646.0, 47.0, 306.0, 24.0, "INSPECTOR", -1, 0, -1, 1)
         widget(commands, 646.0, 73.0, 306.0, 24.0, "", 1, 0, -1, 1)
-        widget(commands, 654.0, 100.0, 92.0, 26.0, "Object", -1, 40, -1, 1)
-        widget(commands, 754.0, 100.0, 92.0, 26.0, "Camera", -1, 41, -1, 1)
-        widget(commands, 854.0, 100.0, 92.0, 26.0, "Light", -1, 42, -1, 1)
+        widget(commands, 654.0, 100.0, 216.0, 26.0, "", 6, 70, -1, 1)
+        widget(commands, 878.0, 100.0, 68.0, 26.0, "Add +", -1, 71, -1, 1)
+        widget(commands, 654.0, 130.0, 292.0, 26.0, "", -1, 0, 7, 1)
         row := 0
         while row < 6:
             y := 130.0 + (row as f32) * 38.0
@@ -128,11 +146,13 @@ pub Editor <- plugin
         widget(commands, 654.0, 374.0, 74.0, 28.0, "<", -1, 43, -1, 1)
         widget(commands, 730.0, 374.0, 138.0, 28.0, "", 5, 0, -1, 1)
         widget(commands, 872.0, 374.0, 74.0, 28.0, ">", -1, 44, -1, 1)
-        widget(commands, 654.0, 418.0, 142.0, 30.0, "Apply", -1, 30, -1, 1)
-        widget(commands, 806.0, 418.0, 140.0, 30.0, "Reset fields", -1, 31, -1, 1)
-        widget(commands, 646.0, 460.0, 300.0, 24.0, "RMB + WASD/QE to fly", -1, 0, -1, 1)
+        widget(commands, 654.0, 418.0, 142.0, 30.0, "Apply", 8, 30, -1, 1)
+        widget(commands, 806.0, 418.0, 140.0, 30.0, "Reset fields", 9, 31, -1, 1)
+        widget(commands, 654.0, 460.0, 292.0, 24.0, "Remove Component", 16, 72, -1, 1)
         widget(commands, 646.0, 484.0, 300.0, 24.0, "F focus | Ctrl+S save", -1, 0, -1, 1)
         widget(commands, 4.0, 510.0, 948.0, 26.0, "", 3, 0, -1, 5)
+        workspace_init(commands, state.workspace_session)
+        commands.insert_resource(state)
 
 @trigger(FrameInit)
 pub layout_widgets <- sys (window: res &Window, rows: select &mut UIRect, &EditorWidget from Components):
@@ -155,10 +175,11 @@ pub layout_widgets <- sys (window: res &Window, rows: select &mut UIRect, &Edito
 @trigger(EditorRefresh)
 pub rebuild_scene <- sys (
     commands: &mut Commands,
-    state: res &EditorState,
+    state: res &mut EditorState,
+    workspace: res &Workspace,
     camera_rows: select &mut Camera from Components,
     light_rows: select &mut PointLight from Components,
-    object_rows: select &mut Renderable from Components,
+    object_rows: select &mut EditorObject from Components,
 ):
     for row in camera_rows:
         commands.despawn(camera_rows.entity())
@@ -167,7 +188,10 @@ pub rebuild_scene <- sys (
     for row in object_rows:
         commands.despawn(object_rows.entity())
 
+    types := state.component_types
     document := state.document
+    if workspace.playing and workspace.live_json.len() > 0:
+        document = scene_from_json(workspace.live_json)
     view := state.view_camera
     camera := Camera {
         position: [view.position.x, view.position.y, view.position.z],
@@ -177,7 +201,6 @@ pub rebuild_scene <- sys (
         near: view.near,
         far: view.far,
     }
-    commands.add_row(Components, { camera })
 
     light := PointLight {
         position: [document.light.position.x, document.light.position.y, document.light.position.z],
@@ -186,30 +209,47 @@ pub rebuild_scene <- sys (
     }
     commands.add_row(Components, { light })
 
+    marker_name := component_named(&types, "EditorObject")
+    marker_index := component_type_index(&types, marker_name)
+    object_index := 0
     for object in document.objects:
-        transform := Transform {
-            translation: [object.translation.x, object.translation.y, object.translation.z],
-            rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
-            scale: [1.0, 1.0, 1.0],
-        }
-        bounds := BodyBounds {
-            half_extents: [object.half_extents.x, object.half_extents.y, object.half_extents.z],
-        }
-        material := Material { texture: 0, tint: [object.colour.r, object.colour.g, object.colour.b] }
-        renderable := Renderable { kind: shape_kind_code(object.kind), colour: [object.colour.r, object.colour.g, object.colour.b] }
-        quaternion := euler_to_quaternion(object.rotation)
-        orientation := BodyOrientation { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w }
-        marker := EditorObject { name: object.name }
-        commands.add_row(Components, { transform, bounds, material, renderable, orientation, marker })
+        marker := EditorObject { name: object.name, index: object_index }
+        entries := workspace_components(object, &types, object_index, workspace.playing)
+        object_index = object_index + 1
+        row := ecs::row_begin(ffi::handle(commands))
+        for (name, data) in entries:
+            index := component_type_index(&types, name)
+            if index >= 0 and name != marker_name:
+                component := types[index as usize]
+                if component.schema.len() > 0:
+                    value := json::decode_value(component.schema, data)
+                    if value != 0:
+                        added := ecs::row_add(row, component.id, value)
+                    else:
+                        state.status = "Invalid component data kept in scene; runtime attachment skipped"
+                else:
+                    state.status = "Runtime-only component data kept in scene"
+            elif index < 0:
+                state.status = "Unavailable component data kept in scene"
+        if marker_index >= 0:
+            marker_added := ecs::row_add(row, types[marker_index as usize].id, ffi::handle(&marker))
+        ecs::row_finish(row)
+    # The editor view is the final camera so authored Camera components never
+    # hijack viewport navigation. They remain real components on their entities.
+    commands.add_row(Components, { camera })
     disown commands
 
 
 @trigger(UIButtonPressed)
-pub handle_editor_action <- sys (state: res &mut EditorState, ui: res &UIState, rows: select &UITextField, &EditorField from Components):
+pub handle_editor_action <- sys (state: res &mut EditorState, workspace: res &Workspace, ui: res &UIState, rows: select &UITextField, &EditorField from Components):
+    if ui.action == 11 or ui.action >= 80 and ui.action < 100 or ui.action >= 300 or workspace.playing:
+        ret
     fields: [str] := ["", "", "", "", "", "", ""]
     for (field, marker) in rows:
-        if marker.role >= 0:
+        if marker.role >= 0 and marker.role < 7:
             fields[marker.role as usize] = field.text
+        elif marker.role == 7 and state.component_menu == 2:
+            state.component_search = field.text
     editor_dispatch(state, ui.action, fields)
 
 invalidate_label <- (gpu: &mut Gpu, ui: &mut UIState, entity: i64) -> nil:
@@ -218,15 +258,16 @@ invalidate_label <- (gpu: &mut Gpu, ui: &mut UIState, entity: i64) -> nil:
         gpu.destroy_texture(entry[0] as u64)
     ui.textures[entity] = []
 
-@trigger(Update)
+@trigger(EditorUpdate)
 pub refresh_editor_widgets <- sys (
     state: res &EditorState, gpu: res &mut Gpu, ui: res &mut UIState,
     labels: select &mut UILabel, &mut EditorLabel from Components,
     fields: select &mut UITextField, &mut EditorField, &mut UIPanel, &mut UIButton from Components,
     hierarchy: select &mut UIButton, &mut UIPanel, &EditorHierarchy from Components,
+    headers: select &mut UIButton, &mut EditorLabel, &mut UIPanel from Components,
 ):
     for (label, marker) in labels:
-        if marker.role < 0:
+        if marker.role >= 40 or marker.role < 0 or marker.role == 6 or marker.role == 8 or marker.role == 9 or marker.role == 16:
             cont
         if marker.role >= 5 and marker.synced == state.revision:
             cont
@@ -246,23 +287,71 @@ pub refresh_editor_widgets <- sys (
                 desired = "Scene camera (radians)"
             elif state.inspector_target == 2:
                 desired = "Scene light"
+            elif state.inspector_target == 3:
+                if index >= 0:
+                    desired = state.document.objects[index as usize].name
         elif marker.role == 3:
             desired = state.status
         elif marker.role == 4:
             desired = fmt_i64(state.document.objects.len() as i64) + " objects"
         elif marker.role == 5:
             pages := (state.inspector_fields.len() as i64 + 5) / 6
+            page := state.inspector_page
+            if state.component_menu != 0:
+                entries := editor_component_menu_entries(state)
+                pages = (entries.len() as i64 + 4) / 5
+                page = state.component_menu_page
             desired = "No fields"
             if pages > 0:
-                desired = fmt_i64(state.inspector_page + 1) + " / " + fmt_i64(pages)
+                desired = fmt_i64(page + 1) + " / " + fmt_i64(pages)
         elif marker.role >= 10 and marker.role < 16:
             index := state.inspector_page * 6 + marker.role - 10
-            if index < state.inspector_fields.len() as i64:
+            if index < state.inspector_fields.len() as i64 and state.component_menu == 0:
                 field := state.inspector_fields[index as usize]
                 desired = field.path + " : " + inspect_type_hint(field.schema)
         if desired != label.text:
             invalidate_label(gpu, ui, labels.entity())
             label.text = desired
+    for (button, marker, panel) in headers:
+        if marker.role != 6 and marker.role != 8 and marker.role != 9 and marker.role != 16:
+            cont
+        if marker.synced == state.revision:
+            cont
+        if marker.role != 6:
+            title := "Apply"
+            action := 30
+            if marker.role == 9:
+                title = "Reset fields"
+                action = 31
+            elif marker.role == 16:
+                title = "Remove Component"
+                action = 72
+            panel.colour = [0.105, 0.14, 0.19, 0.98]
+            if state.component_menu != 0 or (marker.role == 16 and state.inspector_target != 3):
+                title = ""
+                action = 0
+                panel.colour = [0.0, 0.0, 0.0, 0.0]
+            if button.label != title:
+                invalidate_label(gpu, ui, headers.entity())
+                button.label = title
+            button.action = action
+            marker.synced = state.revision
+            cont
+        title := "Components v"
+        if state.component_menu == 2:
+            title = "Add Component v"
+        elif state.component_menu == 0 and state.inspector_target == 3 and state.component_name.len() > 0:
+            title = "v " + component_short_name(state.component_name)
+        elif state.component_menu == 0 and state.inspector_target == 0:
+            title = "v Object properties"
+        elif state.component_menu == 0 and state.inspector_target == 1:
+            title = "v Scene Camera"
+        elif state.component_menu == 0 and state.inspector_target == 2:
+            title = "v Scene Light"
+        if button.label != title:
+            invalidate_label(gpu, ui, headers.entity())
+            button.label = title
+        marker.synced = state.revision
     for (field, marker, panel, button) in fields:
         if marker.role < 0:
             cont
@@ -270,6 +359,21 @@ pub refresh_editor_widgets <- sys (
         if marker.role == 0:
             revision = state.path_revision
         if marker.synced == revision:
+            cont
+        if marker.role == 7:
+            field.max_len = 0
+            panel.colour = [0.0, 0.0, 0.0, 0.0]
+            if state.component_menu == 2:
+                field.max_len = 128
+                panel.colour = [0.105, 0.14, 0.19, 0.98]
+                if not field.focused:
+                    field.text = state.component_search
+                    field.revision = field.revision + 1
+            else:
+                field.focused = false
+                if ui.focused_entity == fields.entity():
+                    ui.focused_entity = 0
+            marker.synced = revision
             cont
         index := state.inspector_page * 6 + marker.role - 1
         field.max_len = 2048
@@ -285,6 +389,29 @@ pub refresh_editor_widgets <- sys (
                 field.max_len = 0
                 button.action = 60 + marker.role - 1
                 desired_button = state.inspector_draft[index as usize] + " >"
+        if state.component_menu != 0 and marker.role > 0:
+            field.max_len = 0
+            panel.colour = [0.0, 0.0, 0.0, 0.0]
+            desired_button = ""
+            button.action = 0
+            if marker.role >= 2:
+                entries := editor_component_menu_entries(state)
+                slot := marker.role - 2
+                menu_index := state.component_menu_page * 5 + slot
+                if menu_index < entries.len() as i64:
+                    name := entries[menu_index as usize]
+                    desired_button = name
+                    type_index := component_type_index(&state.component_types, name)
+                    if type_index >= 0 and state.component_types[type_index as usize].schema.len() == 0:
+                        desired_button = name + " (runtime only)"
+                    if name == "@Object":
+                        desired_button = "Object properties"
+                    elif name == "@Camera":
+                        desired_button = "Scene Camera"
+                    elif name == "@Light":
+                        desired_button = "Scene Light"
+                    button.action = 200 + slot
+                    panel.colour = [0.105, 0.14, 0.19, 0.98]
         if field.max_len == 0:
             field.focused = false
             if ui.focused_entity == fields.entity():
@@ -318,12 +445,19 @@ pub refresh_editor_widgets <- sys (
 
 @trigger(EditorInput)
 pub editor_input <- sys (
-    state: res &mut EditorState, input: res &Input, ui: res &UIState, window: res &Window,
+    state: res &mut EditorState, workspace: res &Workspace, input: res &Input, ui: res &UIState, window: res &Window,
     fields: select &UITextField, &EditorField from Components,
     cameras: select &mut Camera from Components,
 ):
+    if workspace.code:
+        ret
+    for (field, marker) in fields:
+        if marker.role == 7 and state.component_menu == 2 and field.focused and field.text != state.component_search:
+            state.component_search = field.text
+            state.component_menu_page = 0
+            state.revision = state.revision + 1
     action := 0
-    if ui.focused_entity == 0 and not state.camera_active:
+    if not workspace.playing and ui.focused_entity == 0 and not state.camera_active:
         if input.key_down(14):
             if input.key_down(1):
                 action = 10
@@ -344,13 +478,13 @@ pub editor_input <- sys (
     if action != 0 and action != state.last_shortcut:
         values: [str] := ["", "", "", "", "", "", ""]
         for (field, marker) in fields:
-            if marker.role >= 0:
+            if marker.role >= 0 and marker.role < 7:
                 values[marker.role as usize] = field.text
         editor_dispatch(state, action, values)
     state.last_shortcut = action
     inside := input.cursor_x() >= 174.0 and input.cursor_x() < (window.width as f32) - 320.0 and input.cursor_y() >= 78.0 and input.cursor_y() < (window.height as f32) - 32.0
     down := input.mouse_down(0)
-    if down and not state.pointer_down and inside and not state.camera_active:
+    if not workspace.playing and down and not state.pointer_down and inside and not state.camera_active:
         picked := editor_pick(state, input.cursor_x(), input.cursor_y(), window.width as f32, window.height as f32)
         if picked >= 0:
             editor_select(state, picked)

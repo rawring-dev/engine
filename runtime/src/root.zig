@@ -63,6 +63,9 @@ test {
     _ = float;
     _ = json;
     _ = image;
+    _ = @import("editor_host.zig");
+    _ = @import("editor_run.zig");
+    _ = @import("live_reload.zig");
 }
 
 test "compiles source to bytecode and executes it through LLJIT" {
@@ -3215,118 +3218,141 @@ test "host asset write/read round-trip and reload request flag" {
     try std.testing.expect(!host.takeReloadRequest());
 }
 
-test "JIT runs the e7 editor project, swaps code, and captures a frame" {
+const live_reload = @import("live_reload.zig");
+var test_live_program: ?*live_reload.Program = null;
+var test_live_project: []const u8 = "";
+var test_live_fixture: bool = false;
+var test_live_preserved: bool = false;
+
+fn stageTestLiveReload() bool {
+    const program = test_live_program orelse return false;
+    if (!test_live_fixture) return program.stagePath(test_live_project);
+    const replacement = compileWorkspaceFixture(std.testing.allocator, test_live_project, 2) catch return false;
+    const success = program.stage(replacement);
+    if (!success) std.debug.print("live fixture staging: {s}\n", .{program.diagnostic});
+    return success;
+}
+
+fn applyTestLiveReload() bool {
+    const program = test_live_program orelse return false;
+    const analysis = program.generations.items[0].compiled.analysis;
+    const window_id = (analysis.resource("core::window::Window") orelse return false).id;
+    const gpu_id = (analysis.resource("gfx::gpu::Gpu") orelse return false).id;
+    const window = ecs.e7_ecs_resource(window_id);
+    const gpu = ecs.e7_ecs_resource(gpu_id);
+    const window_handle = aggregate.e7_load_i64(window);
+    const scene_handle = aggregate.e7_load_i64(gpu);
+    const entities = ecs.e7_ecs_entity_count();
+    if (program.candidate == null and !stageTestLiveReload()) return false;
+    if (!program.commit()) return false;
+    test_live_preserved = window_handle != 0 and scene_handle != 0 and
+        window == ecs.e7_ecs_resource(window_id) and gpu == ecs.e7_ecs_resource(gpu_id) and
+        window_handle == aggregate.e7_load_i64(window) and scene_handle == aggregate.e7_load_i64(gpu) and
+        entities == ecs.e7_ecs_entity_count();
+    return test_live_preserved;
+}
+
+fn editorProjectPath() ![:0]u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, "engine/editor_main.e7", std.testing.allocator) catch
+        try std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, "../engine/editor_main.e7", std.testing.allocator);
+}
+
+test "editor reload keeps one main, window, renderer, ECS world and frame sequence" {
     host.reset();
     defer host.reset();
     host.setHeadless(true);
-    host.setMaxFrames(2);
+    host.setMaxFrames(5);
     host.setCaptureEnabled(true);
-
-    const candidates = [_][]const u8{
-        "engine/editor_main.e7",
-        "../engine/editor_main.e7",
-        "../../engine/editor_main.e7",
-    };
-    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    var root_path: []const u8 = "";
-    for (candidates) |candidate| {
-        var probe = std.Io.Dir.cwd().openFile(std.testing.io, candidate, .{}) catch continue;
-        probe.close(std.testing.io);
-        const absolute = std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, candidate, std.testing.allocator) catch continue;
-        @memcpy(path_buffer[0..absolute.len], absolute);
-        root_path = path_buffer[0..absolute.len];
-        std.testing.allocator.free(absolute);
-        break;
+    defer ecs.e7_ecs_reset();
+    const path = try editorProjectPath();
+    defer std.testing.allocator.free(path);
+    var program = try live_reload.Program.init(std.testing.allocator, try compiler.pipeline.compileProject(std.testing.allocator, path, .{}));
+    defer program.deinit();
+    const editor_host = @import("editor_host.zig");
+    test_live_program = &program;
+    test_live_project = path;
+    test_live_fixture = false;
+    test_live_preserved = false;
+    editor_host.check_callback = stageTestLiveReload;
+    editor_host.apply_callback = applyTestLiveReload;
+    defer {
+        editor_host.check_callback = null;
+        editor_host.apply_callback = null;
+        test_live_program = null;
     }
-    if (root_path.len == 0) return error.SkipZigTest;
-
-    // Seed an alternate scene path and selection; the input allocation can be
-    // freed before either JIT runs because the host owns a copy of the bytes.
-    const scene_path = try std.fs.path.join(std.testing.allocator, &.{ std.fs.path.dirname(root_path).?, "editor/scenes/sample.scene.json" });
-    defer std.testing.allocator.free(scene_path);
-    const scene_text = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, scene_path, std.testing.allocator, .limited(1024 * 1024));
-    defer std.testing.allocator.free(scene_text);
-    const session = try std.fmt.allocPrint(std.testing.allocator,
-        \\{{"document":{s},"scene_path":".zig-cache/reload-target.scene.json","selected":2,
-        \\"view_camera":{{"position":{{"x":0,"y":1.8,"z":6}},"yaw":0,"pitch":-0.15,"fov_y":1.0471975512,"near":0.1,"far":100}}}}
-    , .{scene_text});
-    defer std.testing.allocator.free(session);
-    const session_handle = makeTestString(session);
-    try std.testing.expectEqual(@as(i64, 0), host.e7_host_set_reload_state(session_handle));
-    aggregate.e7_free_ptr(session_handle);
-
-    // Generation 0 requests a code swap (host requests it before the first
-    // frame); generation 1 is a fresh compile + fresh JIT of the same project.
-    var reloads: usize = 0;
-    for (0..2) |generation| {
-        var compiled = compiler.pipeline.compileProject(std.testing.allocator, root_path, .{}) catch |err| {
-            std.debug.print("editor project compile failed: {s}\n", .{@errorName(err)});
-            return error.TestUnexpectedResult;
-        };
-        defer compiled.deinit();
-        if (!compiled.analysis.ok()) {
-            for (compiled.analysis.diagnostics) |diagnostic| {
-                std.debug.print("editor project semantic: {}:{} {s}\n", .{ diagnostic.span.line, diagnostic.span.column, diagnostic.message });
-            }
-            return error.TestUnexpectedResult;
-        }
-
-        ecs.e7_ecs_reset();
-        defer ecs.e7_ecs_reset();
-        for (compiled.analysis.resources) |resource| {
-            if (resource.plugin_id != null) continue;
-            try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_resource(resource.id, @intCast(resource.slots)));
-        }
-        for (compiled.analysis.components) |component| {
-            try std.testing.expectEqual(@as(i32, 0), ecs.e7_ecs_register_component(component.id, @intCast(component.slots)));
-        }
-
-        const bytes = try compiler.bytecode.encode(std.testing.allocator, &compiled.bytecode);
-        defer std.testing.allocator.free(bytes);
-        var jit = try orc.Jit.init(std.testing.allocator);
-        defer jit.deinit();
-        try jit.addBytecodeBytes(bytes, "editor-project");
-
-        const SetInline = *const fn (i64) callconv(.c) void;
-        const set_inline = try jit.get(SetInline, "e7_task_set_inline");
-        set_inline(1);
-        // Inline execution is process-global; restore it so later task
-        // scheduling tests do not inherit synchronous execution.
-        defer set_inline(0);
-
-        if (generation == 0) host.requestReload();
-        const MainCtor = *const fn () callconv(.c) i64;
-        const main_ctor = try jit.get(MainCtor, "main");
-        const handle = main_ctor();
-        try std.testing.expect(handle != 0);
-        const result = task.e7_task_await(handle);
-        var checked_session = false;
-        for (compiled.analysis.resources) |resource| {
-            if (!std.mem.endsWith(u8, resource.name, "EditorState")) continue;
-            const editor_state_ptr = ecs.e7_ecs_resource(resource.id);
-            try std.testing.expect(editor_state_ptr != 0);
-            const active_path = aggregate.e7_load_i64(editor_state_ptr + 8);
-            const active_path_data: [*]const u8 = @ptrFromInt(@as(usize, @intCast(active_path + 8)));
-            try std.testing.expectEqualStrings(".zig-cache/reload-target.scene.json", active_path_data[0..@intCast(aggregate.e7_str_len(active_path))]);
-            try std.testing.expectEqual(@as(i64, 2), aggregate.e7_load_i64(editor_state_ptr + 16));
-            checked_session = true;
-        }
-        try std.testing.expect(checked_session);
-        if (generation == 0) {
-            // Editor `main` returns 42 to request a host code swap.
-            try std.testing.expectEqual(@as(i64, 42), result);
-            reloads += 1;
-        } else {
-            try std.testing.expectEqual(@as(i64, 0), result);
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 1), reloads);
-    try std.testing.expect(host.frames() >= 2);
-
+    task.e7_task_set_inline(1);
+    defer task.e7_task_set_inline(0);
+    host.requestReload();
+    const main_ctor = try program.main();
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(main_ctor()));
+    try std.testing.expect(test_live_preserved);
+    try std.testing.expectEqual(@as(usize, 1), program.reloads());
+    try std.testing.expectEqual(@as(i64, 5), host.frames());
     var capture = host.takeCapture() orelse return error.TestUnexpectedResult;
     defer capture.deinit();
     try std.testing.expectEqual(@as(u32, 960), capture.width);
     try std.testing.expectEqual(@as(u32, 540), capture.height);
-    try std.testing.expectEqual(@as(usize, 960 * 540 * 4), capture.pixels.len);
     try std.testing.expect(host.captureHasContent(capture));
+}
+
+fn compileWorkspaceFixture(allocator: std.mem.Allocator, entry: []const u8, version: u8) !compiler.pipeline.CompileResult {
+    const fixture_source = readRepoTextForTest("tests/editor_workspace_flow.e7") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(fixture_source);
+    const changed = try std.mem.replaceOwned(u8, allocator, fixture_source, "workspace_fixture_version <- () -> i64 = 1", if (version == 1) "workspace_fixture_version <- () -> i64 = 1" else "workspace_fixture_version <- () -> i64 = 2");
+    defer allocator.free(changed);
+    const project = loaded: {
+        var loaded = try compiler.pipeline.loadProject(allocator, entry);
+        errdefer loaded.deinit();
+        const text = try loaded.root_ast.arena.allocator().dupe(u8, changed);
+        var fixture = switch (try compiler.parser.parse(allocator, text)) {
+            .ast => |tree| tree,
+            .diagnostic => return error.TestUnexpectedResult,
+        };
+        var fixture_owned = true;
+        errdefer if (fixture_owned) fixture.deinit();
+        const modules = try allocator.realloc(loaded.module_asts, loaded.module_asts.len + 1);
+        modules[modules.len - 1] = fixture;
+        loaded.module_asts = modules;
+        fixture_owned = false;
+        for (loaded.root_ast.module.items) |item| {
+            if (item.kind == .function and std.mem.eql(u8, item.kind.function.name, "main")) item.kind.function.name = "unused_editor_main";
+        }
+        const original = loaded.root_ast.module.items;
+        const items = try loaded.root_ast.arena.allocator().alloc(*compiler.ast.Item, original.len + fixture.module.items.len);
+        @memcpy(items[0..original.len], original);
+        @memcpy(items[original.len..], fixture.module.items);
+        loaded.root_ast.module.items = items;
+        break :loaded loaded;
+    };
+    return compiler.pipeline.compileLoadedProject(allocator, project, .{});
+}
+
+test "live editor applies script edits preserving play pause physics and custom resources" {
+    const allocator = std.testing.allocator;
+    host.reset();
+    defer host.reset();
+    host.setHeadless(true);
+    defer ecs.e7_ecs_reset();
+    const path = try editorProjectPath();
+    defer allocator.free(path);
+    var program = try live_reload.Program.init(allocator, try compileWorkspaceFixture(allocator, path, 1));
+    defer program.deinit();
+    const editor_host = @import("editor_host.zig");
+    test_live_program = &program;
+    test_live_project = path;
+    test_live_fixture = true;
+    test_live_preserved = false;
+    editor_host.check_callback = stageTestLiveReload;
+    editor_host.apply_callback = applyTestLiveReload;
+    defer {
+        editor_host.check_callback = null;
+        editor_host.apply_callback = null;
+        test_live_program = null;
+    }
+    task.e7_task_set_inline(1);
+    defer task.e7_task_set_inline(0);
+    const main_ctor = try program.main();
+    try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(main_ctor()));
+    try std.testing.expect(test_live_preserved);
+    try std.testing.expectEqual(@as(usize, 1), program.reloads());
 }

@@ -91,6 +91,10 @@ it through the iterative pass pipeline and LLJIT.
 - OpenSSL (`-lssl -lcrypto`) and ngtcp2 with its OpenSSL crypto adapter
   (`-lngtcp2 -lngtcp2_crypto_ossl`) for QUIC
 - libdatachannel (`-ldatachannel`) for WebRTC data channels
+- SDL3, SDL3_ttf, and libvterm development libraries for the embedded editor;
+  Neovim (`nvim` on PATH) and a DejaVu Sans Mono or Liberation Mono font
+  are needed to open scripts (the native integration test also starts Neovim).
+  The terminal host currently targets Linux/POSIX.
 - Slang (`slangc`, optional): validates the e7s shader transpiler output and
   the checked-in shader sources; it is not needed to build the workspace or
   run the Zig tests
@@ -625,8 +629,11 @@ limitations.
 
 `json::schema::<T>()` exposes the same derived type schema as a string constant.
 The scene editor uses it to generate paged object, camera, and light inspectors;
-new serializable fields appear without adding inspector field lists. Apply
-reuses typed JSON decoding before committing changes.
+new serializable fields appear without adding inspector field lists. The
+component dropdown and searchable Add Component menu discover compiled
+`@Components` types through `ecs::component_catalog()`. Component additions,
+removals, and edits persist in scene files and support undo/redo. Apply reuses
+typed JSON decoding before committing changes.
 
 The engine libraries now also include an `obj.e7` Wavefront parser,
 PNG/JPEG image-loading intrinsics (`e7_image_*`), an `AssetsPlugin`, and a
@@ -683,15 +690,25 @@ the scanned cube image/OBJ and keeps its fixed loads as fallback.  See
 [`notes/design/assetserver.md`](notes/design/assetserver.md) for the directory
 layout, callback contract, folder-key semantics, and lifetime rules.
 
-The e7 scene editor is its own e7 project
-(`engine/editor_main.e7`) run by the `editor-run` host: `zig build run-editor`
-(append `-- --frames 2 --headless --capture out.ppm` for a headless capture, or
-`-- --frames 3 --headless --reload-test` to exercise the in-process code swap).
-Create primitives, select from the hierarchy or viewport, edit transforms and
-tint, undo/redo, and save/open scene files. Hold RMB + WASD/QE to navigate;
-Focus frames selection. The scene file format, editing UI, and ECS mapping are described in
-[`notes/design/editor.md`](notes/design/editor.md); `zig build run-editor`
-renders the sample scene through the same engine renderer as the demo.
+The e7 scene editor is its own e7 project (`engine/editor_main.e7`), run with
+`zig build run-editor`. It includes a component inspector, scene hierarchy,
+undo/redo, save/open, a paged asset/script explorer, and embedded Neovim with e7
+highlighting. **Code** opens the script workspace; **Scene** returns to the game
+view. **Play**, **Pause/Resume**, **Step**, and **Stop** control the authored scene.
+Saving an imported e7 script with `:w` compiles and applies it; failed compilation
+keeps the existing editor/game alive. Compatible code reloads in place: the
+window, renderer, Neovim, ECS entities (including spawned entities), custom
+resources, physics, simulation time, selection, and undo history stay alive.
+Changes to type layouts, imports, function signatures, or ECS registry identities
+are rejected while the current code continues running.
+Stop restores the authored scene. See [the editor guide](notes/design/editor.md)
+for controls and reload limits.
+
+```sh
+zig build run-editor -- --code engine/gameplay.e7
+zig build run-editor -- --frames 12 --headless --code engine/gameplay.e7 --capture /tmp/editor.ppm
+zig build run-editor -- --frames 3 --headless --reload-test
+```
 
 ![engine scene](engine/scene-preview.png)
 

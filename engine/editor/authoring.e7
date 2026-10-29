@@ -1,0 +1,274 @@
+# Component transactions and scene/ECS adapters. The catalogue is compiler-owned;
+# custom @Components types need no editor-side switches or registration calls.
+@derive(Serialize, Deserialize)
+EditorTransformValue <- struct
+    translation: [f32; 3]
+    rotation: [f32; 3]
+    scale: [f32; 3]
+
+@derive(Serialize, Deserialize)
+EditorBoundsValue <- struct
+    half_extents: [f32; 3]
+
+@derive(Serialize, Deserialize)
+EditorRenderableValue <- struct
+    kind: i64
+    colour: [f32; 3]
+
+@derive(Serialize, Deserialize)
+EditorMaterialValue <- struct
+    texture: u64
+    tint: [f32; 3]
+
+pub editor_object_components <- (object: SceneObject, types: &[ComponentType]) -> map[str, str]:
+    encoded := json::encode(object.components)
+    if encoded != "null":
+        ret json::decode::<map[str, str]>(encoded)
+    entries: map[str, str] := map[str, str] {}
+    transform := EditorTransformValue {
+        translation: [object.translation.x, object.translation.y, object.translation.z],
+        rotation: [object.rotation.x, object.rotation.y, object.rotation.z], scale: [1.0, 1.0, 1.0],
+    }
+    bounds := EditorBoundsValue { half_extents: [object.half_extents.x, object.half_extents.y, object.half_extents.z] }
+    renderable := EditorRenderableValue { kind: shape_kind_code(object.kind) as i64, colour: [object.colour.r, object.colour.g, object.colour.b] }
+    material := EditorMaterialValue { texture: 0, tint: [object.colour.r, object.colour.g, object.colour.b] }
+    orientation := euler_to_quaternion(object.rotation)
+    names := ["Transform", "BodyBounds", "Renderable", "Material", "BodyOrientation"]
+    data := [json::encode(&transform), json::encode(&bounds), json::encode(&renderable), json::encode(&material), json::encode(&orientation)]
+    index := 0
+    while index < 5:
+        key := component_named(types, names[index as usize])
+        if key.len() > 0:
+            entries[key] = data[index as usize]
+        index = index + 1
+    ret entries
+
+pub editor_attached_components <- (state: &EditorState) -> map[str, str]:
+    at := selected_object_index(state)
+    if at < 0:
+        ret map[str, str] {}
+    ret editor_object_components(state.document.objects[at as usize], &state.component_types)
+
+pub editor_component_open <- (state: &mut EditorState, name: str) -> nil:
+    state.component_name = name
+    state.inspector_target = 3
+    state.component_menu = 0
+    state.inspector_page = 0
+    editor_rebuild_inspector(state)
+    state.revision = state.revision + 1
+
+pub editor_first_component <- (state: &mut EditorState) -> nil:
+    entries := editor_attached_components(state)
+    preferred := component_named(&state.component_types, "Transform")
+    state.component_name = ""
+    if entries[preferred].len() > 0:
+        state.component_name = preferred
+    else:
+        for (name, data) in entries:
+            if state.component_name.len() == 0:
+                state.component_name = name
+    state.inspector_target = 3
+    state.component_menu = 0
+    state.component_menu_page = 0
+
+# Keep legacy scene coordinates available for viewport picking/focus and old
+# clients. Presence and actual ECS values come exclusively from the map.
+pub editor_sync_object <- (object: SceneObject, entries: map[str, str], types: &[ComponentType], changed: str) -> SceneObject:
+    values := json::decode::<map[str, str]>(json::encode(&entries))
+    out := copy_scene_object(object)
+    transform_key := component_named(types, "Transform")
+    transform_json := values[transform_key]
+    if transform_json.len() > 0:
+        transform := json::decode::<EditorTransformValue>(transform_json)
+        if ffi::handle(&transform) != 0:
+            out.translation = Vec3 { x: transform.translation[0], y: transform.translation[1], z: transform.translation[2] }
+            out.rotation = Vec3 { x: transform.rotation[0], y: transform.rotation[1], z: transform.rotation[2] }
+    orientation_key := component_named(types, "BodyOrientation")
+    if changed == transform_key and values[orientation_key].len() > 0:
+        orientation := euler_to_quaternion(out.rotation)
+        values[orientation_key] = json::encode(&orientation)
+    bounds_json := values[component_named(types, "BodyBounds")]
+    if bounds_json.len() > 0:
+        bounds := json::decode::<EditorBoundsValue>(bounds_json)
+        if ffi::handle(&bounds) != 0:
+            out.half_extents = Vec3 { x: bounds.half_extents[0], y: bounds.half_extents[1], z: bounds.half_extents[2] }
+    renderable_json := values[component_named(types, "Renderable")]
+    if renderable_json.len() > 0:
+        renderable := json::decode::<EditorRenderableValue>(renderable_json)
+        if ffi::handle(&renderable) != 0:
+            out.kind = shape_kind_from_code(renderable.kind as i32)
+    material_json := values[component_named(types, "Material")]
+    if material_json.len() > 0:
+        material := json::decode::<EditorMaterialValue>(material_json)
+        if ffi::handle(&material) != 0:
+            out.colour = Colour { r: material.tint[0], g: material.tint[1], b: material.tint[2], a: out.colour.a }
+    out.components = json::decode::<?map[str, str]>(json::encode(&values))
+    ret out
+
+# Legacy document operations (nudge/duplicate/object properties) update only
+# components already present, preserving custom data and explicit removals.
+pub editor_update_legacy_components <- (object: SceneObject, types: &[ComponentType]) -> SceneObject:
+    out := copy_scene_object(object)
+    encoded := json::encode(out.components)
+    if encoded != "null":
+        entries := json::decode::<map[str, str]>(encoded)
+        key := component_named(types, "Transform")
+        if entries[key].len() > 0:
+            transform := json::decode::<EditorTransformValue>(entries[key])
+            transform_valid := ffi::handle(&transform) != 0
+            if transform_valid:
+                updated_transform := EditorTransformValue {
+                    translation: [out.translation.x, out.translation.y, out.translation.z],
+                    rotation: [out.rotation.x, out.rotation.y, out.rotation.z], scale: transform.scale,
+                }
+                entries[key] = json::encode(&updated_transform)
+        key = component_named(types, "BodyBounds")
+        if entries[key].len() > 0:
+            bounds := EditorBoundsValue { half_extents: [out.half_extents.x, out.half_extents.y, out.half_extents.z] }
+            entries[key] = json::encode(&bounds)
+        key = component_named(types, "Renderable")
+        if entries[key].len() > 0:
+            renderable := EditorRenderableValue { kind: shape_kind_code(out.kind) as i64, colour: [out.colour.r, out.colour.g, out.colour.b] }
+            entries[key] = json::encode(&renderable)
+        key = component_named(types, "Material")
+        if entries[key].len() > 0:
+            material := json::decode::<EditorMaterialValue>(entries[key])
+            material_valid := ffi::handle(&material) != 0
+            if material_valid:
+                updated_material := EditorMaterialValue { texture: material.texture, tint: [out.colour.r, out.colour.g, out.colour.b] }
+                entries[key] = json::encode(&updated_material)
+        key = component_named(types, "BodyOrientation")
+        if entries[key].len() > 0:
+            orientation := euler_to_quaternion(out.rotation)
+            entries[key] = json::encode(&orientation)
+        out.components = json::decode::<?map[str, str]>(json::encode(&entries))
+    ret out
+
+pub editor_component_apply <- (state: &mut EditorState, source: str) -> bool:
+    at := selected_object_index(state)
+    index := component_type_index(&state.component_types, state.component_name)
+    if at < 0 or index < 0:
+        state.status = "Component type is unavailable; data preserved"
+        ret false
+    canonical := component_canonical(state.component_types[index as usize].schema, source)
+    if canonical.len() == 0:
+        state.status = "Invalid component values; nothing changed"
+        ret false
+    entries := editor_attached_components(state)
+    if entries[state.component_name] == canonical:
+        state.status = "Properties unchanged"
+        ret true
+    entries[state.component_name] = canonical
+    object := editor_sync_object(state.document.objects[at as usize], entries, &state.component_types, state.component_name)
+    editor_begin_edit(state)
+    state.document.objects[at as usize] = object
+    editor_changed(state, "Applied " + component_short_name(state.component_name))
+    ret true
+
+pub editor_component_add <- (state: &mut EditorState, name: str) -> bool:
+    at := selected_object_index(state)
+    index := component_type_index(&state.component_types, name)
+    if at < 0 or index < 0 or component_short_name(name) == "EditorObject":
+        state.status = "Select an object and an available component"
+        ret false
+    component := state.component_types[index as usize]
+    if component.schema.len() == 0:
+        state.status = "Component has fields unsupported by JSON authoring"
+        ret false
+    entries := editor_attached_components(state)
+    if entries[name].len() > 0:
+        state.status = "Component already attached"
+        ret false
+    data := component_canonical(component.schema, component_initial(component))
+    if data.len() == 0:
+        state.status = "Could not construct component defaults"
+        ret false
+    entries[name] = data
+    object := editor_sync_object(state.document.objects[at as usize], entries, &state.component_types, name)
+    editor_begin_edit(state)
+    state.document.objects[at as usize] = object
+    editor_component_open(state, name)
+    editor_changed(state, "Added " + component_short_name(name))
+    ret true
+
+pub editor_component_remove <- (state: &mut EditorState) -> bool:
+    at := selected_object_index(state)
+    if at < 0 or state.inspector_target != 3:
+        ret false
+    entries := editor_attached_components(state)
+    if entries[state.component_name].len() == 0:
+        ret false
+    remaining: map[str, str] := map[str, str] {}
+    for (name, data) in entries:
+        if name != state.component_name:
+            remaining[name] = data
+    object := copy_scene_object(state.document.objects[at as usize])
+    object.components = json::decode::<?map[str, str]>(json::encode(&remaining))
+    editor_begin_edit(state)
+    state.document.objects[at as usize] = object
+    editor_first_component(state)
+    editor_changed(state, "Removed component (Undo to restore)")
+    ret true
+
+pub component_search_match <- (name: str, query: str) -> bool:
+    # ASCII case folding keeps qualified type names searchable without relying
+    # on locale or a second registry. Empty query matches the full catalogue.
+    upper := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower := "abcdefghijklmnopqrstuvwxyz"
+    folded := ""
+    for c in name:
+        letter := c
+        i := 0
+        while i < 26:
+            if c == upper.slice(i as usize, (i + 1) as usize):
+                letter = lower.slice(i as usize, (i + 1) as usize)
+            i = i + 1
+        folded = folded + letter
+    folded_query := ""
+    for c in query:
+        letter := c
+        i := 0
+        while i < 26:
+            if c == upper.slice(i as usize, (i + 1) as usize):
+                letter = lower.slice(i as usize, (i + 1) as usize)
+            i = i + 1
+        folded_query = folded_query + letter
+    at := 0
+    while at + folded_query.len() as i64 <= folded.len() as i64:
+        if folded.slice(at as usize, (at + folded_query.len() as i64) as usize) == folded_query:
+            ret true
+        at = at + 1
+    ret false
+
+pub editor_component_menu_entries <- (state: &EditorState) -> [str]:
+    result: [str] := []
+    entries := editor_attached_components(state)
+    if state.component_menu == 1:
+        for (name, data) in entries:
+            result = vec::push(result, name)
+        result = vec::push(result, "@Object")
+        result = vec::push(result, "@Camera")
+        result = vec::push(result, "@Light")
+    elif state.component_menu == 2:
+        index := 0
+        while index < state.component_types.len() as i64:
+            component := state.component_types[index as usize]
+            short := component_short_name(component.name)
+            if entries[component.name].len() == 0 and component.name != "editor::EditorObject" and component.name != "editor::EditorLabel" and component.name != "editor::EditorField" and component.name != "editor::EditorHierarchy" and component.name != "editor::EditorWidget" and component.name != "EditorObject":
+                if component_search_match(component.name, state.component_search):
+                    result = vec::push(result, component.name)
+            index = index + 1
+    ret result
+
+pub editor_add_empty <- (state: &mut EditorState) -> nil:
+    # Reuse creation's single undo snapshot, then replace the primitive defaults
+    # before a refresh is requested by the main loop.
+    editor_add(state, ShapeKind::Box)
+    at := selected_object_index(state)
+    object := copy_scene_object(state.document.objects[at as usize])
+    object.name = editor_unique_name(state.document.objects, "Entity")
+    object.translation = Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    object.components = json::decode::<?map[str, str]>("{}")
+    state.document.objects[at as usize] = object
+    editor_first_component(state)
+    editor_changed(state, "Created empty entity; use Add Component")

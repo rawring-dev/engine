@@ -27,6 +27,7 @@ mod narrowphase
 use core::ecs::*;
 use core::events::*;
 use core::time::*;
+use physics::narrowphase::*;
 
 pub Vec3 <- struct
     x: f32
@@ -47,6 +48,7 @@ pub RayHit <- struct
     point: Vec3
 
 @resource
+@derive(Serialize, Deserialize)
 pub PhysicsWorld <- struct
     gravity_y: f32
     max_step: f32
@@ -84,6 +86,7 @@ pub PhysicsWorld <- struct
     sleep_state: map[i64, [f32]]
 
 @resource
+@derive(Serialize, Deserialize)
 pub RaycastState <- struct
     hit: bool
     distance: f32
@@ -92,6 +95,7 @@ pub RaycastState <- struct
     point_z: f32
 
 @resource
+@derive(Serialize, Deserialize)
 pub PickupState <- struct
     # Body id held by the player, or 0 for none.
     held_id: i64
