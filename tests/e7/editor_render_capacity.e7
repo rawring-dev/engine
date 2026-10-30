@@ -3,41 +3,42 @@
 # e7-test-source: ../../engine/platform/vulkan.e7
 # e7-test-source: ../../engine/platform/scene.e7
 
-test_editor_records_objects_and_ui_without_overwriting_resource_tables <- () -> i64:
-    scene := ptr::alloc(2048) as u64
-    extra := ptr::alloc(66944) as u64
-    uniform := ptr::alloc(256 * 320) as u64
-    vertices := ptr::alloc(256 * 6 * 32) as u64
+test_editor_records_objects_and_ui_without_overwriting_resource_tables <- (
+) -> i64:
+    scene <- ptr::alloc(2048) as u64
+    extra <- ptr::alloc(99328) as u64
+    uniform <- ptr::alloc(512 * 4608) as u64
+    vertices <- ptr::alloc(256 * 6 * 32) as u64
     ptr::store_u64(scene + 1280, extra)
     ptr::store_u64(scene + 152, uniform)
     ptr::store_u64(scene + 1224, vertices)
     ptr::store_u64(scene + 1192, 1)
     ptr::store_u32(scene + 88, 960)
     ptr::store_u32(scene + 92, 540)
-    ptr::store_u64(extra + 40960, 12345)
+    ptr::store_u64(extra + 61440, 12345)
     index := 0
-    while index < 257:
+    while index < 513:
         scene_draw_box(scene, 0, 0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 0)
         index = index + 1
-    assert_eq_i64(ptr::load_u32(scene + 1300), 256)
+    assert_eq_i64(ptr::load_u32(scene + 1300), 512)
     index = 0
     while index < 257:
         scene_ui_quad(scene, 0 as u64, 0, 0, 20, 20, 255, 255, 255, 255)
         index = index + 1
-    assert_eq_i64(ptr::load_u32(scene + 1300), 512)
+    assert_eq_i64(ptr::load_u32(scene + 1300), 768)
     assert_eq_i64(ptr::load_u32(scene + 1232), 256)
-    assert_eq_i64(ptr::load_u64(extra + 40960), 12345)
+    assert_eq_i64(ptr::load_u64(extra + 61440), 12345)
     ptr::store_u32(scene + 1288, 256)
-    ptr::store_u64(extra + 40960 + 255 * 96 + 32, 9876)
+    ptr::store_u64(extra + 61440 + 255 * 96 + 32, 9876)
     assert_eq_i64(texture_set(scene, 256), 9876)
-    ptr::store_u64(extra + 66560, 2468)
+    ptr::store_u64(extra + 87040, 2468)
     index = 0
     while index < 257:
         push_texture_free(scene, index)
         index = index + 1
     assert_eq_i64(ptr::load_u32(scene + 1292), 256)
-    assert_eq_i64(ptr::load_u32(extra + 65536 + 255 * 4), 255)
-    assert_eq_i64(ptr::load_u64(extra + 66560), 2468)
+    assert_eq_i64(ptr::load_u32(extra + 86016 + 255 * 4), 255)
+    assert_eq_i64(ptr::load_u64(extra + 87040), 2468)
     ptr::free(vertices)
     ptr::free(uniform)
     ptr::free(extra)
@@ -45,8 +46,8 @@ test_editor_records_objects_and_ui_without_overwriting_resource_tables <- () -> 
     ret 0
 
 test_authored_camera_projection_changes_the_render_uniform <- () -> i64:
-    scene := ptr::alloc(2048) as u64
-    uniform := ptr::alloc(320) as u64
+    scene <- ptr::alloc(2048) as u64
+    uniform <- ptr::alloc(320) as u64
     ptr::store_u64(scene + 152, uniform)
     ptr::store_u32(scene + 88, 128)
     ptr::store_u32(scene + 92, 64)
@@ -58,5 +59,50 @@ test_authored_camera_projection_changes_the_render_uniform <- () -> i64:
     scene_set_projection(scene, 0.0, 0.5, 10.0)
     assert_f32_near(ptr::load_f32(uniform + 128), 0.5, 0.000001)
     ptr::free(uniform)
+    ptr::free(scene)
+    ret 0
+
+test_skin_palette_is_copied_to_the_aligned_draw_slot <- () -> i64:
+    scene <- ptr::alloc(2048) as u64
+    extra <- ptr::alloc(99328) as u64
+    uniform <- ptr::alloc(2 * 4608) as u64
+    palette <- ptr::alloc(4096) as u64
+    ptr::store_u64(scene + 1280, extra)
+    ptr::store_u64(scene + 152, uniform)
+    ptr::store_u32(scene + 1296, 1)
+    ptr::store_u64(scene + 1392, 123)
+    ptr::store_u64(scene + 1400, 456)
+    ptr::store_u64(extra + 87040, 789)
+    ptr::store_u32(extra + 87040 + 32, 3)
+    ptr::store_u32(extra + 87040 + 36, 1)
+    ptr::store_u64(extra + 87040 + 40, palette)
+    matrix <- [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 2.0,3.0,4.0,1.0]
+    scene_mesh_set_joint(scene,1 as u64,0,matrix)
+    scene_draw_box(scene,0,0,0,1000,1000,1000,1000,1000,1000,0)
+    scene_draw_matrix(scene,1 as u64,0,matrix,[1.0,1.0,1.0],0 as u64)
+    assert_eq_i64(ptr::load_u64(extra + 80),123)
+    assert_eq_i64(ptr::load_u32(extra + 80 + 60),4608)
+    assert_f32_near(ptr::load_f32(uniform + 4608 + 320 + 48),2.0,0.0001)
+    assert_f32_near(ptr::load_f32(uniform + 4608 + 320 + 52),3.0,0.0001)
+    assert_f32_near(ptr::load_f32(uniform + 4608 + 320 + 56),4.0,0.0001)
+    ptr::free(palette)
+    ptr::free(uniform)
+    ptr::free(extra)
+    ptr::free(scene)
+    ret 0
+
+test_skin_upload_rejects_invalid_joint_attributes <- () -> i64:
+    scene <- ptr::alloc(2048) as u64
+    extra <- ptr::alloc(99328) as u64
+    ptr::store_u64(scene + 1280, extra)
+    indices <- [0 as i32,0 as i32,0 as i32]
+    vertex <- [0.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0]
+    joints: [i64] := [64,0,0,0]
+    weights: [f32] := [1.0,0.0,0.0,0.0]
+    assert_eq_i64(scene_mesh_upload_skinned(scene,vertex,indices,joints,weights),0)
+    joints[0] = 0
+    weights[0] = 0.0
+    assert_eq_i64(scene_mesh_upload_skinned(scene,vertex,indices,joints,weights),0)
+    ptr::free(extra)
     ptr::free(scene)
     ret 0

@@ -27,8 +27,9 @@ use ui::*;
 
 # Demo animation belongs to the demo, not to the shared scene renderer.
 @trigger(Update)
-pub update_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
-    angle := time.elapsed * 0.7 + 0.8
+pub update_light <- sys (lights: select &mut PointLight from Components,
+time: res &Time):
+    angle <- time.elapsed * 0.7 + 0.8
     for light in lights:
         light.position[0] = 2.8 * f32::cos(angle)
         light.position[1] = 3.0
@@ -69,7 +70,7 @@ default_field <- () -> UITextField:
 # Demo-specific content: the scene entity rows, cube collider, and light.
 pub DemoPlugin <- plugin
     demo_plugin_init <- sys (commands: &mut Commands):
-        settings := DemoSettings {
+        settings <- DemoSettings {
             window_width: 960,
             window_height: 540,
             move_speed: 4.0,
@@ -78,11 +79,11 @@ pub DemoPlugin <- plugin
         }
         # Exercise derive/JSON in the demo: round-trip the configuration and
         # keep the decoded resource.
-        settings_json := json_encode(settings)
-        decoded := json_decode::<DemoSettings>(settings_json)
+        settings_json <- json_encode(settings)
+        decoded <- json_decode::<DemoSettings>(settings_json)
         commands.insert_resource(decoded)
 
-        camera := Camera {
+        camera <- Camera {
             position: [0.0, 1.8, 5.5]
             yaw: 0.0
             pitch: -0.14
@@ -90,11 +91,11 @@ pub DemoPlugin <- plugin
             near: 0.1
             far: 100.0
         }
-        controller := CameraController {
+        controller <- CameraController {
             move_speed: 4.0,
             look_speed: 0.0025,
         }
-        camera_track := Transform {
+        camera_track <- Transform {
             translation: [0.0, 1.5, 6.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
@@ -102,14 +103,14 @@ pub DemoPlugin <- plugin
         commands.add_row(Components, { camera, controller, camera_track })
 
         # Flat static ground plane at y=0.
-        plane_transform := Transform {
+        plane_transform <- Transform {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
         }
-        plane_id := BodyId { id: 1 }
-        plane_bounds := BodyBounds { half_extents: [50.0, 0.1, 50.0] }
-        plane_body := RigidBody {
+        plane_id <- BodyId { id: 1 }
+        plane_bounds <- BodyBounds { half_extents: [50.0, 0.1, 50.0] }
+        plane_body <- RigidBody {
             velocity: [0.0, 0.0, 0.0],
             angular_velocity: [0.0, 0.0, 0.0],
             orientation: [0.0, 0.0, 0.0],
@@ -118,8 +119,8 @@ pub DemoPlugin <- plugin
             rotation_locked: true,
             is_static: true,
         }
-        plane_collider := PlaneCollider { normal: [0.0, 1.0, 0.0], offset: 0.0 }
-        plane_flags := BodyFlags {
+        plane_collider <- PlaneCollider { normal: [0.0, 1.0, 0.0], offset: 0.0 }
+        plane_flags <- BodyFlags {
             shape: 3,
             radius: 0.0,
             half_height: 0.0,
@@ -128,11 +129,11 @@ pub DemoPlugin <- plugin
             target_id: 1,
             held_by: 0,
         }
-        plane_renderable := Renderable { kind: 3, colour: [0.42, 0.48, 0.42] }
-        plane_material := Material { texture: 0, tint: [0.42, 0.48, 0.42] }
+        plane_renderable <- Renderable { kind: 3, colour: [0.42, 0.48, 0.42] }
+        plane_material <- Material { texture: 0, tint: [0.42, 0.48, 0.42] }
         # Render orientation is a quaternion; the physics step publishes the
         # authoritative orientation and the renderer builds the matrix from it.
-        plane_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        plane_orientation <- BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
         commands.add_row(Components, {
             plane_transform,
             plane_id,
@@ -146,14 +147,14 @@ pub DemoPlugin <- plugin
         })
 
         # Pickable dynamic ball (unlocked rotation; collisions impart spin).
-        ball_transform := Transform {
+        ball_transform <- Transform {
             translation: [-1.2, 2.0, 3.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
         }
-        ball_id := BodyId { id: 3 }
-        ball_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
-        ball_body := RigidBody {
+        ball_id <- BodyId { id: 3 }
+        ball_bounds <- BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+        ball_body <- RigidBody {
             velocity: [0.0, 0.0, 0.0],
             # Start at rest rotationally; friction/contacts add spin later.
             angular_velocity: [0.0, 0.0, 0.0],
@@ -163,8 +164,8 @@ pub DemoPlugin <- plugin
             rotation_locked: false,
             is_static: false,
         }
-        ball_collider := SphereCollider { radius: 0.5 }
-        ball_flags := BodyFlags {
+        ball_collider <- SphereCollider { radius: 0.5 }
+        ball_flags <- BodyFlags {
             shape: 1,
             radius: 0.5,
             half_height: 0.0,
@@ -173,10 +174,10 @@ pub DemoPlugin <- plugin
             target_id: 3,
             held_by: 0,
         }
-        ball_pickup := Pickup { body_id: 3 }
-        ball_renderable := Renderable { kind: 1, colour: [1.0, 0.55, 0.22] }
-        ball_material := Material { texture: 0, tint: [1.0, 0.55, 0.22] }
-        ball_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        ball_pickup <- Pickup { body_id: 3 }
+        ball_renderable <- Renderable { kind: 1, colour: [1.0, 0.55, 0.22] }
+        ball_material <- Material { texture: 0, tint: [1.0, 0.55, 0.22] }
+        ball_orientation <- BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
         commands.add_row(Components, {
             ball_transform,
             ball_id,
@@ -191,19 +192,19 @@ pub DemoPlugin <- plugin
         })
 
         # Three dynamic cubes stacked vertically (unlocked rotation).
-        cube_x := -2.0
+        cube_x <- -2.0
         cube_y := 0.5
         stack_index := 0
         while stack_index < 3:
-            cube_transform := Transform {
+            cube_transform <- Transform {
                 translation: [cube_x, cube_y, 0.0],
                 rotation: [0.0, 0.0, 0.0],
                 scale: [1.0, 1.0, 1.0],
             }
-            cube_body_id := 4 + stack_index
-            cube_id := BodyId { id: cube_body_id }
-            cube_bounds := BodyBounds { half_extents: [0.5, 0.5, 0.5] }
-            cube_body := RigidBody {
+            cube_body_id <- 4 + stack_index
+            cube_id <- BodyId { id: cube_body_id }
+            cube_bounds <- BodyBounds { half_extents: [0.5, 0.5, 0.5] }
+            cube_body <- RigidBody {
                 velocity: [0.0, 0.0, 0.0],
                 angular_velocity: [0.0, 0.0, 0.0],
                 orientation: [0.0, 0.0, 0.0],
@@ -212,8 +213,8 @@ pub DemoPlugin <- plugin
                 rotation_locked: false,
                 is_static: false,
             }
-            cube_collider := BoxCollider { half_extents: [0.5, 0.5, 0.5] }
-            cube_flags := BodyFlags {
+            cube_collider <- BoxCollider { half_extents: [0.5, 0.5, 0.5] }
+            cube_flags <- BodyFlags {
                 shape: 0,
                 radius: 0.0,
                 half_height: 0.0,
@@ -222,12 +223,15 @@ pub DemoPlugin <- plugin
                 target_id: 4 + stack_index,
                 held_by: 0,
             }
-            cube_tint := (stack_index) as f32
-            cube_colour := [0.95 - cube_tint * 0.2, 0.85 + cube_tint * 0.05, 0.65 + cube_tint * 0.2]
-            cube_renderable := Renderable { kind: 0, colour: cube_colour }
-            cube_material := Material { texture: 0, tint: cube_colour }
-            cube_pickup := Pickup { body_id: 4 + stack_index }
-            cube_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+            cube_tint <- (stack_index) as f32
+            cube_colour <-
+                [0.95 - cube_tint * 0.2, 0.85 + cube_tint * 0.05, 0.65 +
+                    cube_tint * 0.2]
+            cube_renderable <- Renderable { kind: 0, colour: cube_colour }
+            cube_material <- Material { texture: 0, tint: cube_colour }
+            cube_pickup <- Pickup { body_id: 4 + stack_index }
+            cube_orientation <-
+                BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
             commands.add_row(Components, {
                 cube_transform,
                 cube_id,
@@ -245,14 +249,14 @@ pub DemoPlugin <- plugin
 
         # Rotation-locked capsule player, processed last so its capsule
         # narrowphase sees every other body in the broadphase grid.
-        player_transform := Transform {
+        player_transform <- Transform {
             translation: [-2.0, 1.2, 4.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
         }
-        player_id := BodyId { id: 2 }
-        player_bounds := BodyBounds { half_extents: [0.4, 1.0, 0.4] }
-        player_body := RigidBody {
+        player_id <- BodyId { id: 2 }
+        player_bounds <- BodyBounds { half_extents: [0.4, 1.0, 0.4] }
+        player_body <- RigidBody {
             velocity: [0.0, 0.0, 0.0],
             angular_velocity: [0.0, 0.0, 0.0],
             orientation: [0.0, 0.0, 0.0],
@@ -261,8 +265,8 @@ pub DemoPlugin <- plugin
             rotation_locked: true,
             is_static: false,
         }
-        player_capsule := CapsuleCollider { radius: 0.4, half_height: 0.6 }
-        player_flags := BodyFlags {
+        player_capsule <- CapsuleCollider { radius: 0.4, half_height: 0.6 }
+        player_flags <- BodyFlags {
             shape: 2,
             radius: 0.4,
             half_height: 0.6,
@@ -271,7 +275,7 @@ pub DemoPlugin <- plugin
             target_id: 2,
             held_by: 0,
         }
-        player := Player { body_id: 2 }
+        player <- Player { body_id: 2 }
         # First-person: the player capsule is physics-only (the eye is inside).
         commands.add_row(Components, {
             player_transform,
@@ -283,7 +287,7 @@ pub DemoPlugin <- plugin
             player,
         })
 
-        light := PointLight {
+        light <- PointLight {
             position: [2.0, 3.0, 4.0],
             colour: [1.0, 0.9, 0.8],
             intensity: 2.8,
@@ -292,21 +296,22 @@ pub DemoPlugin <- plugin
 
         # Custom OBJ mesh entity: engine/assets/cube.obj uploaded to the GPU by
         # AssetsPlugin's FrameInit system and drawn with the sample texture.
-        obj_transform := Transform {
+        obj_transform <- Transform {
             translation: [-0.8, 0.6, 1.0],
             rotation: [0.0, 0.4, 0.0],
             scale: [0.8, 0.8, 0.8],
         }
-        obj_renderer := MeshRenderer {
+        obj_renderer <- MeshRenderer {
             mesh: 0,
             pipeline: 0,
             colour: [1.0, 1.0, 1.0, 1.0],
         }
-        obj_material := Material { texture: 0, tint: [0.85, 0.9, 1.0] }
+        obj_material <- Material { texture: 0, tint: [0.85, 0.9, 1.0] }
         # Static mesh: its authored Y rotation is converted to this quaternion
         # once by the physics Init hook, then rendered without Euler angles.
-        obj_orientation := BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
-        commands.add_row(Components, { obj_transform, obj_renderer, obj_material, obj_orientation })
+        obj_orientation <- BodyOrientation { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
+        commands.add_row(Components, { obj_transform, obj_renderer,
+            obj_material, obj_orientation })
 
 
         # ---------------------------------------------------------------- UI
@@ -322,7 +327,8 @@ pub DemoPlugin <- plugin
         commands.add_row(Components, {
             UIRect { x: 48.0, y: 34.0, w: 300.0, h: 30.0 },
             UIPanel { colour: [0.0, 0.0, 0.0, 0.0] },
-            UILabel { text: "engine7 UI", size: 20, colour: [1.0, 0.95, 0.82, 1.0] },
+            UILabel { text: "engine7 UI", size: 20, colour: [1.0, 0.95, 0.82,
+                1.0] },
             default_button(),
             default_field(),
         })
@@ -381,13 +387,13 @@ pub demo_ui_actions <- sys (
         for (transform, body, id) in bodies:
             if id.id < 4 or id.id > 6:
                 cont
-            index := id.id - 4
+            index <- id.id - 4
             transform.translation[0] = -2.0
             transform.translation[1] = 0.5 + (index) as f32
             transform.translation[2] = 0.0
             # Orientation is quaternion-only: reset the authoritative physics
             # quaternion and let physics_publish_orientation refresh the render
-            # component.  Transform.rotation and the legacy RigidBody.orientation
+            # component. Transform.rotation and the legacy RigidBody.orientation
             # Euler mirror are not part of the rotation path.
             body.velocity[0] = 0.0
             body.velocity[1] = 0.0
@@ -411,8 +417,8 @@ pub demo_ui_actions <- sys (
 # to a silent system when none is available.  The plugin also inserts the
 # `AudioSystem` resource used for one-shot playback.
 
-pub main <- async () -> i32:
-    commands := await query &mut Commands
+pub main <- async() -> i32:
+    commands <- await query & mut Commands
 
     commands.add_plugin(core::window::WindowPlugin)
     commands.add_plugin(core::input::InputPlugin)
@@ -428,7 +434,7 @@ pub main <- async () -> i32:
     commands.add_plugin(ui::Ui)
     disown commands
 
-    window := await query &Window
+    window <- await query & Window
 
     await Init()
     if window.handle == 0:
@@ -439,13 +445,14 @@ pub main <- async () -> i32:
         await FrameInit()
         await PreUpdate()
         await UiInput()
-        ui_state := await query &mut UIState
+        ui_state := await query & mut UIState
         if ui_state.clicked_action != 0:
             ui_state.action = ui_state.clicked_action
             ui_state.clicked_action = 0
             await UIButtonPressed()
         await Update()
         await PostUpdate()
+        await PrepareRender()
         await Render()
 
     await DeInit()

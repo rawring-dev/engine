@@ -1,6 +1,6 @@
 # Pure workspace path and scene-to-runtime transformations.
 pub workspace_parent <- (path: str) -> str:
-    parts := str::split(path, "/")
+    parts <- str::split(path, "/")
     result := ""
     index := 0
     while index + 1 < parts.len() as i64:
@@ -13,27 +13,49 @@ pub workspace_parent <- (path: str) -> str:
     ret result
 
 pub workspace_text_file <- (name: str) -> bool:
-    parts := str::split(name, ".")
-    ext := parts[(parts.len() as i64 - 1) as usize]
-    ret ext == "e7" or ext == "tri" or ext == "engine7" or ext == "e7s" or ext == "json" or ext == "md" or ext == "txt" or ext == "obj" or ext == "toml" or ext == "zig" or ext == "vim" or ext == "lua" or ext == "bib" or ext == "ebnf"
+    parts <- str::split(name, ".")
+    ext <- parts[(parts.len() as i64 - 1) as usize]
+    ret (ext == "e7" or ext == "tri" or ext == "engine7" or ext == "e7s" or
+        ext == "json" or ext == "md" or ext == "txt" or ext == "obj" or ext ==
+        "toml" or ext == "zig" or ext == "vim" or ext == "lua" or ext ==
+        "bib" or ext == "ebnf")
+
+pub workspace_scene_file <- (name: str) -> bool:
+    suffix <- ".scene.json"
+    if (name.len() as i64) < suffix.len() as i64:
+        ret false
+    ret name.slice((name.len() as i64-suffix.len() as i64) as usize,name.len() as usize) == suffix
 
 pub workspace_scan <- (directory: str) -> [str]:
-    listing := str::lines(host::list_dir(directory))
+    listing <- str::lines(host::list_dir(directory))
     result: [str] := []
     # Directories first; keep the native alphabetical order within each group.
     for entry in listing:
-        if entry.len() > 0 and entry.slice((entry.len() as i64 - 1) as usize, entry.len() as usize) == "/" and entry != ".git/" and entry != ".zig-cache/" and entry != "zig-out/" and entry != "node_modules/":
+        if (entry.len() > 0 and entry.slice((entry.len() as i64 - 1) as usize,
+            entry.len() as usize) == "/" and entry != ".git/" and entry !=
+            ".zig-cache/" and entry != "zig-out/" and entry != "node_modules/"):
             result = vec::push(result, entry)
     for entry in listing:
-        if entry.len() > 0 and entry.slice((entry.len() as i64 - 1) as usize, entry.len() as usize) != "/":
+        if entry.len() > 0 and entry.slice((entry.len() as i64 - 1) as usize,
+            entry.len() as usize) != "/":
             result = vec::push(result, entry)
     ret result
 
 # Public collider components determine physics metadata; users do not have to
 # hand-author BodyFlags/BodyId when adding a RigidBody in the inspector.
-pub workspace_components <- (object: SceneObject, types: &[ComponentType], index: i64, playing: bool) -> map[str, str]:
+pub workspace_components <- (object: SceneObject, types: &[ComponentType],
+index: i64, playing: bool) -> map[str, str]:
     entries := editor_object_components(object, types)
-    rigid_name := component_named(types, "RigidBody")
+    rigid_name <- component_named(types, "RigidBody")
+    if playing and entries[rigid_name].len() > 0 and workspace_physics_needs_world_transform(&entries,types):
+        # Physics currently integrates world-space TRS. Do not silently apply
+        # those results in a parent's local space (or under an affine base).
+        safe: map[str,str] := map[str,str] {}
+        for (name,value) in entries:
+            short <- component_short_name(name)
+            if short != "BodyId" and short != "BodyFlags":
+                safe[name] = value
+        ret safe
     if playing and entries[rigid_name].len() > 0:
         shape := 0
         radius := "0.5"
@@ -49,21 +71,41 @@ pub workspace_components <- (object: SceneObject, types: &[ComponentType], index
         if shape == 2:
             collider_data = entries[component_named(types, "CapsuleCollider")]
         if shape == 1 or shape == 2:
-            collider_schema := "{\"struct\":[{\"name\":\"radius\",\"schema\":\"f32\"}]}"
+            collider_schema :=
+                "{\"struct\":[{\"name\":\"radius\",\"schema\":\"f32\"}]}"
             # Actual component schemas drive the field traversal.
-            component_index := component_type_index(types, component_named(types, "SphereCollider"))
+            component_index :=
+                component_type_index(types, component_named(types,
+                    "SphereCollider"))
             if shape == 2:
-                component_index = component_type_index(types, component_named(types, "CapsuleCollider"))
+                component_index =
+                    component_type_index(types, component_named(types,
+                        "CapsuleCollider"))
             if component_index >= 0:
                 collider_schema = types[component_index as usize].schema
-                fields := inspect_fields(collider_schema, collider_data)
+                fields <- inspect_fields(collider_schema, collider_data)
                 for field in fields:
                     if field.path == "radius":
                         radius = field.text
                     if field.path == "half_height":
                         half_height = field.text
-        id := fmt_i64(index + 1)
+        id <- fmt_i64(index + 1)
         entries[component_named(types, "BodyId")] = "{\"id\":" + id + "}"
-        entries[component_named(types, "BodyFlags")] = "{\"shape\":" + fmt_i64(shape) + ",\"radius\":" + radius + ",\"half_height\":" + half_height + ",\"is_player\":false,\"is_pickup\":false,\"target_id\":" + id + ",\"held_by\":0}"
+        entries[component_named(types, "BodyFlags")] =
+            ("{\"shape\":" + fmt_i64(shape) + ",\"radius\":" + radius +
+                ",\"half_height\":" + half_height +
+                ",\"is_player\":false,\"is_pickup\":false,\"target_id\":" + id +
+                ",\"held_by\":0}")
     ret entries
 
+# A child or an imported affine base needs physics world/local conversion,
+# which the current rigid-body solver does not yet implement.
+pub workspace_physics_needs_world_transform <- (entries: &map[str,str], types: &[ComponentType]) -> bool:
+    if entries[component_named(types,"LocalMatrix")].len() > 0:
+        ret true
+    data <- entries[component_named(types,"Hierarchy")]
+    if data.len() > 0:
+        node <- json::decode::<SceneHierarchyValue>(data)
+        if ffi::handle(&node) != 0 and node.parent.len() > 0:
+            ret true
+    ret false

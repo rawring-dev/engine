@@ -1,0 +1,1061 @@
+# glTF 2.0 scene and node-animation import. Parsing, validation, hierarchy and overlay
+# policy lives in e7. See CITATIONS.bib, khronosGltf2.
+@derive(Serialize, Deserialize)
+GltfAssetInfo <- struct
+    version: str
+@derive(Serialize, Deserialize)
+GltfExtras <- struct
+    engine7_id: ?str
+@derive(Serialize, Deserialize)
+GltfNodeData <- struct
+    name: ?str
+    mesh: ?i64
+    children: ?[i64]
+    translation: ?[f32; 3]
+    rotation: ?[f32; 4]
+    scale: ?[f32; 3]
+    matrix: ?[f32; 16]
+    skin: ?i64
+    extras: ?GltfExtras
+@derive(Serialize, Deserialize)
+GltfPrimitive <- struct
+    attributes: map[str, i64]
+    indices: ?i64
+    material: ?i64
+    mode: ?i64
+    targets: ?[map[str, i64]]
+@derive(Serialize, Deserialize)
+GltfMeshData <- struct
+    primitives: [GltfPrimitive]
+@derive(Serialize, Deserialize)
+GltfBuffer <- struct
+    uri: ?str
+    byteLength: i64
+@derive(Serialize, Deserialize)
+GltfView <- struct
+    buffer: i64
+    byteOffset: ?i64
+    byteLength: i64
+    byteStride: ?i64
+@derive(Serialize, Deserialize)
+GltfAccessor <- struct
+    bufferView: ?i64
+    byteOffset: ?i64
+    componentType: i64
+    count: i64
+    type: str
+    normalized: ?bool
+    sparse: ?GltfExtras
+@derive(Serialize, Deserialize)
+GltfPbr <- struct
+    baseColorFactor: ?[f32; 4]
+    baseColorTexture: ?GltfTextureInfo
+@derive(Serialize, Deserialize)
+GltfTextureInfo <- struct
+    index: i64
+    texCoord: ?i64
+@derive(Serialize, Deserialize)
+GltfTextureData <- struct
+    source: ?i64
+@derive(Serialize, Deserialize)
+GltfImageData <- struct
+    uri: ?str
+    bufferView: ?i64
+    mimeType: ?str
+@derive(Serialize, Deserialize)
+GltfMaterial <- struct
+    pbrMetallicRoughness: ?GltfPbr
+@derive(Serialize, Deserialize)
+GltfSceneData <- struct
+    nodes: [i64]
+@derive(Serialize, Deserialize)
+GltfAnimationSampler <- struct
+    input: i64
+    output: i64
+    interpolation: ?str
+@derive(Serialize, Deserialize)
+GltfAnimationTarget <- struct
+    node: ?i64
+    path: str
+@derive(Serialize, Deserialize)
+GltfAnimationChannel <- struct
+    sampler: i64
+    target: GltfAnimationTarget
+@derive(Serialize, Deserialize)
+GltfAnimation <- struct
+    samplers: [GltfAnimationSampler]
+    channels: [GltfAnimationChannel]
+@derive(Serialize, Deserialize)
+GltfAnimationValue <- struct
+    times: [f32]
+    translations: [f32]
+    rotations: [f32]
+    scales: [f32]
+    time: f32
+    speed: f32
+    looping: bool
+    playing: bool
+@derive(Serialize, Deserialize)
+GltfSkinData <- struct
+    joints: [i64]
+    inverseBindMatrices: ?i64
+
+@derive(Serialize, Deserialize)
+GltfSkinValue <- struct
+    joints: [str]
+    inverse_bind: [f32]
+    vertices: [f32]
+    joint_indices: [i64]
+    weights: [f32]
+
+@derive(Serialize, Deserialize)
+GltfRoot <- struct
+    asset: GltfAssetInfo
+    animations: ?[GltfAnimation]
+    skins: ?[GltfSkinData]
+    nodes: ?[GltfNodeData]
+    meshes: ?[GltfMeshData]
+    buffers: ?[GltfBuffer]
+    bufferViews: ?[GltfView]
+    accessors: ?[GltfAccessor]
+    materials: ?[GltfMaterial]
+    textures: ?[GltfTextureData]
+    images: ?[GltfImageData]
+    scenes: ?[GltfSceneData]
+    scene: ?i64
+    extensionsRequired: ?[str]
+@derive(Serialize, Deserialize)
+pub SceneHierarchyValue <- struct
+    id: str
+    parent: str
+
+pub GltfGeometry <- struct
+    mesh: i64
+    primitive: i64
+    vertices: [f32]
+    indices: [i32]
+    joint_indices: [i64]
+    weights: [f32]
+pub GltfImport <- struct
+    document: SceneDocument
+    geometry: [GltfGeometry]
+    images: [str]
+    error: str
+
+pub gltf_int <- (value: ?i64, fallback: i64) -> i64:
+    text <- json::encode(value)
+    if text == "null":
+        ret fallback
+    ret i64::parse(text)
+
+pub gltf_string <- (value: &?str) -> str:
+    text <- json::encode(value)
+    if text == "null":
+        ret ""
+    ret json::decode::<str>(text)
+
+gltf_decimal <- (value: i64) -> str:
+    ret json::encode(value)
+
+pub gltf_file <- (path: str) -> bool:
+    parts <- str::split(path, ".")
+    ext <- parts[(parts.len() as i64 - 1) as usize]
+    ret ext == "gltf" or ext == "glb"
+
+gltf_directory <- (path: str) -> str:
+    parts <- str::split(path, "/")
+    result := ""
+    index := 0
+    while index + 1 < parts.len() as i64:
+        result = result + parts[index as usize] + "/"
+        index = index + 1
+    ret result
+
+gltf_error <- (message: str) -> GltfImport:
+    ret GltfImport { document: empty_document(), geometry: [], images: [],
+    error: message }
+
+gltf_byte <- (bytes: str, at: i64) -> i64:
+    if at < 0 or at >= bytes.len() as i64:
+        ret -1
+    ret ptr::load_u8((str::data(bytes) as i64) + at)
+
+gltf_u32 <- (bytes: str, at: i64) -> i64:
+    if at < 0 or at + 4 > bytes.len() as i64:
+        ret -1
+    ret gltf_byte(bytes, at) + gltf_byte(bytes, at + 1) * 256 + gltf_byte(bytes,
+        at + 2) * 65536 + gltf_byte(bytes, at + 3) * 16777216
+
+gltf_base64_digit <- (c: i64) -> i64:
+    if c >= 65 and c <= 90:
+        ret c - 65
+    if c >= 97 and c <= 122:
+        ret c - 97 + 26
+    if c >= 48 and c <= 57:
+        ret c - 48 + 52
+    if c == 43:
+        ret 62
+    if c == 47:
+        ret 63
+    ret -1
+
+# Decode only the glTF buffer data URI media types defined by the spec.
+gltf_data_uri <- (uri: str) -> str:
+    parts <- str::split(uri, ",")
+    if parts.len() != 2:
+        ret ""
+    if parts[0] != "data:application/octet-stream;base64" and parts[
+        0] != "data:application/gltf-buffer;base64" and parts[
+        0] != "data:image/png;base64" and parts[0] != "data:image/jpeg;base64":
+        ret ""
+    encoded <- parts[1]
+    memory <- ptr::alloc(encoded.len() as i64) as i64
+    count := 0
+    accumulator := 0
+    bits := 0
+    valid := encoded.len() as i64 % 4 == 0
+    padding := false
+    padding_count := 0
+    for at in 0..encoded.len() as i64:
+        c <- gltf_byte(encoded, at)
+        if c == 61:
+            padding = true
+            padding_count = padding_count + 1
+        else:
+            digit <- gltf_base64_digit(c)
+            if digit < 0 or padding:
+                valid = false
+            else:
+                accumulator = accumulator * 64 + digit
+                bits = bits + 6
+                if bits >= 8:
+                    bits = bits - 8
+                    divisor := 1
+                    for bit in 0..bits:
+                        divisor = divisor * 2
+                    ptr::store_u8(memory + count, accumulator / divisor)
+                    count = count + 1
+                    accumulator = accumulator % divisor
+    if padding_count > 2 or accumulator != 0:
+        valid = false
+    if (padding_count == 0 and bits != 0) or (padding_count == 1 and bits !=
+        2) or (padding_count == 2 and bits != 4):
+        valid = false
+    result := ""
+    if valid:
+        result = str::from_bytes(memory as i64, count)
+    ptr::free(memory)
+    ret result
+
+# Resolve percent-encoded relative file URIs as emitted by Blender.
+gltf_hex <- (c: i64) -> i64:
+    if c >= 48 and c <= 57:
+        ret c - 48
+    if c >= 65 and c <= 70:
+        ret c - 65 + 10
+    if c >= 97 and c <= 102:
+        ret c - 97 + 10
+    ret -1
+
+gltf_unescape_uri <- (uri: str) -> str:
+    memory <- ptr::alloc(uri.len() as i64) as i64
+    index := 0
+    count := 0
+    valid := true
+    while index < uri.len() as i64:
+        c := gltf_byte(uri, index)
+        if c == 37:
+            high <- gltf_hex(gltf_byte(uri, index + 1))
+            low <- gltf_hex(gltf_byte(uri, index + 2))
+            if high < 0 or low < 0:
+                valid = false
+                break
+            c = high * 16 + low
+            index = index + 2
+        if c == 0:
+            valid = false
+            break
+        ptr::store_u8(memory + count, c)
+        count = count + 1
+        index = index + 1
+    result := ""
+    if valid:
+        result = str::from_bytes(memory, count)
+    ptr::free(memory)
+    ret result
+
+# A validated accessor is a bounded byte span with explicit stride/type.
+pub GltfSpan <- struct
+    data: str
+    offset: i64
+    stride: i64
+    count: i64
+    component: i64
+    width: i64
+    valid: bool
+
+gltf_empty_span <- () -> GltfSpan:
+    ret GltfSpan { data: "", offset: 0, stride: 0, count: 0, component: 0,
+    width: 0, valid: false }
+
+gltf_span <- (accessor: &GltfAccessor, views: &[GltfView], buffers: &[str],
+expected: str) -> GltfSpan:
+    result := gltf_empty_span()
+    view_index <- gltf_int(accessor.bufferView, -1)
+    if view_index < 0 or view_index >= views.len(
+    ) as i64 or accessor.type != expected or json::encode(
+        accessor.sparse) != "null":
+        ret gltf_empty_span()
+    view <- views[view_index as usize]
+    if view.buffer < 0 or view.buffer >= buffers.len() as i64:
+        ret gltf_empty_span()
+    bytes := 0
+    if accessor.componentType == 5121:
+        bytes = 1
+    if accessor.componentType == 5123:
+        bytes = 2
+    if accessor.componentType == 5125 or accessor.componentType == 5126:
+        bytes = 4
+    width := 1
+    if expected == "VEC2":
+        width = 2
+    if expected == "VEC3":
+        width = 3
+    if expected == "VEC4":
+        width = 4
+    if expected == "MAT4":
+        width = 16
+    stride <- gltf_int(view.byteStride, bytes * width)
+    offset <- gltf_int(accessor.byteOffset, 0)
+    base <- gltf_int(view.byteOffset, 0)
+    data <- buffers[view.buffer as usize]
+    if (bytes == 0 or accessor.count <= 0 or accessor.count > 1000000 or
+        offset < 0 or base < 0 or view.byteLength < 0 or stride < bytes *
+        width or stride > 252):
+        ret gltf_empty_span()
+    # Subtraction-first bounds checks avoid integer overflow on hostile offsets.
+    if base > data.len() as i64 or view.byteLength > (data.len() as i64) - base:
+        ret gltf_empty_span()
+    if offset > view.byteLength or bytes * width > view.byteLength - offset:
+        ret gltf_empty_span()
+    if (accessor.count - 1) * stride > view.byteLength - offset - bytes * width:
+        ret gltf_empty_span()
+    if (base + offset) % bytes != 0 or stride % bytes != 0:
+        ret gltf_empty_span()
+    if json::encode(accessor.normalized) == "true":
+        ret gltf_empty_span()
+    result =
+        GltfSpan { data: data, offset: base + offset, stride: stride,
+        count: accessor.count, component: accessor.componentType, width: width,
+        valid: true }
+    ret result
+
+gltf_float <- (span: &GltfSpan, index: i64, channel: i64) -> f32:
+    location <- (str::data(
+        span.data) as i64) + span.offset + index * span.stride + channel * 4
+    ret ptr::load_f32(location)
+
+gltf_component_uint <- (span: &GltfSpan, index: i64, channel: i64) -> i64:
+    bytes := 1
+    if span.component == 5123:
+        bytes = 2
+    at <- span.offset + index*span.stride + channel*bytes
+    if bytes == 1:
+        ret gltf_byte(span.data, at)
+    ret gltf_byte(span.data, at) + gltf_byte(span.data, at+1)*256
+
+gltf_index <- (span: &GltfSpan, index: i64) -> i64:
+    at <- span.offset + index * span.stride
+    if span.component == 5121:
+        ret gltf_byte(span.data, at)
+    if span.component == 5123:
+        ret gltf_byte(span.data, at) + gltf_byte(span.data, at + 1) * 256
+    ret gltf_u32(span.data, at)
+
+gltf_node_matrix <- (node: &GltfNodeData) -> [f32; 16]:
+    encoded <- json::encode(&node.matrix)
+    if encoded != "null":
+        ret json::decode::<[f32; 16]>(encoded)
+    t: [f32; 3] := [0.0, 0.0, 0.0]
+    q: [f32; 4] := [0.0, 0.0, 0.0, 1.0]
+    s: [f32; 3] := [1.0, 1.0, 1.0]
+    if json::encode(&node.translation) != "null":
+        t = json::decode::<[f32; 3]>(json::encode(&node.translation))
+    if json::encode(&node.rotation) != "null":
+        q = json::decode::<[f32; 4]>(json::encode(&node.rotation))
+    if json::encode(&node.scale) != "null":
+        s = json::decode::<[f32; 3]>(json::encode(&node.scale))
+    ret matrix_trs(t, q, s)
+
+gltf_object <- (name: str, id: str, parent: str, matrix: [
+f32; 16]) -> SceneObject:
+    entries: map[str, str] := map[str, str] {}
+    entries["core::ecs::Hierarchy"] =
+        json::encode(SceneHierarchyValue { id: id, parent: parent })
+    entries["core::ecs::LocalMatrix"] =
+        "{\"matrix\":" + json::encode(matrix) + "}"
+    entries["core::ecs::Transform"] =
+        "{\"translation\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}"
+    entries["core::ecs::BodyOrientation"] = "{\"x\":0,\"y\":0,\"z\":0,\"w\":1}"
+    ret SceneObject { name: name, kind: ShapeKind::Box, translation: vec3(0.0,
+        0.0, 0.0), rotation: vec3(0.0, 0.0, 0.0), half_extents: vec3(0.5, 0.5,
+        0.5), colour: colour4(1.0, 1.0, 1.0, 1.0), texture: "",
+    components: json::decode::<?map[str, str]>(json::encode(entries)) }
+
+pub gltf_load <- (path: str) -> GltfImport:
+    bytes <- host::read_asset(path)
+    text := bytes
+    binary := ""
+    if gltf_u32(bytes, 0) == 1179937895:
+        if gltf_u32(bytes, 4) != 2 or gltf_u32(bytes, 8) != bytes.len() as i64:
+            ret gltf_error("Invalid GLB header")
+        json_size <- gltf_u32(bytes, 12)
+        if gltf_u32(bytes,
+            16) != 1313821514 or json_size < 0 or 20 + json_size > bytes.len(
+        ) as i64:
+            ret gltf_error("Invalid GLB JSON chunk")
+        text = bytes.slice(20, (20 + json_size) as usize)
+        at := 20 + json_size
+        while at < bytes.len() as i64:
+            size <- gltf_u32(bytes, at)
+            if size < 0 or at + 8 + size > bytes.len() as i64:
+                ret gltf_error("Invalid GLB chunk length")
+            if gltf_u32(bytes, at + 4) == 5130562:
+                binary =
+                    bytes.slice((at + 8) as usize, (at + 8 + size) as usize)
+            at = at + 8 + size
+    root <- json::decode::<GltfRoot>(text)
+    if ffi::handle(&root) == 0:
+        ret gltf_error("Invalid glTF JSON")
+    if root.asset.version != "2.0" or (json::encode(&root.extensionsRequired) !=
+        "null" and json::encode(&root.extensionsRequired) != "[]"):
+        ret gltf_error("Unsupported glTF version or required extension")
+    nodes: [GltfNodeData] := []
+    meshes: [GltfMeshData] := []
+    views: [GltfView] := []
+    accessors: [GltfAccessor] := []
+    materials: [GltfMaterial] := []
+    if json::encode(&root.nodes) != "null":
+        nodes = json::decode::<[GltfNodeData]>(json::encode(&root.nodes))
+    if json::encode(&root.meshes) != "null":
+        meshes = json::decode::<[GltfMeshData]>(json::encode(&root.meshes))
+    if json::encode(&root.bufferViews) != "null":
+        views = json::decode::<[GltfView]>(json::encode(&root.bufferViews))
+    if json::encode(&root.accessors) != "null":
+        accessors =
+            json::decode::<[GltfAccessor]>(json::encode(&root.accessors))
+    if json::encode(&root.materials) != "null":
+        materials =
+            json::decode::<[GltfMaterial]>(json::encode(&root.materials))
+    buffers: [str] := []
+    if json::encode(&root.buffers) != "null":
+        descriptions <-
+            json::decode::<[GltfBuffer]>(json::encode(&root.buffers))
+        for buffer in descriptions:
+            uri <- gltf_string(&buffer.uri)
+            data := binary
+            if uri.len() > 0:
+                if uri.len() >= 5 and uri.slice(0, 5) == "data:":
+                    data = gltf_data_uri(uri)
+                else:
+                    data =
+                        host::read_asset(gltf_directory(path) +
+                            gltf_unescape_uri(uri))
+            if buffer.byteLength < 0 or (data.len() as i64) < buffer.byteLength:
+                ret gltf_error("Missing or truncated glTF buffer")
+            buffers = vec::push(buffers, data)
+    images: [str] := []
+    if json::encode(&root.images) != "null":
+        image_descriptions <-
+            json::decode::<[GltfImageData]>(json::encode(&root.images))
+        for description in image_descriptions:
+            uri <- gltf_string(&description.uri)
+            data := ""
+            if uri.len() > 0:
+                if uri.len() >= 5 and uri.slice(0, 5) == "data:":
+                    data = gltf_data_uri(uri)
+                else:
+                    data =
+                        host::read_asset(gltf_directory(path) +
+                            gltf_unescape_uri(uri))
+            else:
+                view_index <- gltf_int(description.bufferView, -1)
+                if view_index < 0 or view_index >= views.len() as i64:
+                    ret gltf_error("Invalid image bufferView")
+                view <- views[view_index as usize]
+                if view.buffer < 0 or view.buffer >= buffers.len() as i64:
+                    ret gltf_error("Invalid image buffer")
+                offset <- gltf_int(view.byteOffset, 0)
+                buffer <- buffers[view.buffer as usize]
+                if offset < 0 or view.byteLength < 0 or offset > buffer.len(
+                ) as i64:
+                    ret gltf_error("Invalid image bufferView range")
+                if view.byteLength > (buffer.len() as i64) - offset:
+                    ret gltf_error("Invalid image bufferView range")
+                data =
+                    buffer.slice(offset as usize, (offset +
+                        view.byteLength) as usize)
+            if data.len() == 0:
+                ret gltf_error("Missing glTF image")
+            images = vec::push(images, data)
+    textures: [GltfTextureData] := []
+    if json::encode(&root.textures) != "null":
+        textures =
+            json::decode::<[GltfTextureData]>(json::encode(&root.textures))
+    geometry: [GltfGeometry] := []
+    mesh_number := 0
+    for mesh_index in 0..meshes.len() as i64:
+        mesh <- meshes[mesh_index as usize]
+        primitive_number := 0
+        for primitive in mesh.primitives:
+            if gltf_int(primitive.mode, 4) != 4 or json::encode(
+                &primitive.targets) != "null":
+                ret gltf_error("Only static TRIANGLES primitives are supported")
+            position_index := -1
+            normal_index := -1
+            uv_index := -1
+            joints_index := -1
+            weights_index := -1
+            for (name, index) in primitive.attributes:
+                if name == "POSITION":
+                    position_index = index
+                if name == "NORMAL":
+                    normal_index = index
+                if name == "TEXCOORD_0":
+                    uv_index = index
+                if name == "JOINTS_0":
+                    joints_index = index
+                if name == "WEIGHTS_0":
+                    weights_index = index
+                if name == "JOINTS_1" or name == "WEIGHTS_1":
+                    ret gltf_error("Only four skin influences per vertex are supported")
+            if position_index < 0 or position_index >= accessors.len() as i64:
+                ret gltf_error("Missing POSITION accessor")
+            accessor_positions <- accessors[position_index as usize]
+            positions <-
+                gltf_span(&accessor_positions, &views, &buffers, "VEC3")
+            if not positions.valid or positions.component != 5126:
+                ret gltf_error("Invalid POSITION accessor")
+            vertices: [f32] := []
+            normals := gltf_empty_span()
+            uvs := gltf_empty_span()
+            if normal_index >= 0:
+                if normal_index >= accessors.len() as i64:
+                    ret gltf_error("Invalid NORMAL index")
+                accessor_normals <- accessors[normal_index as usize]
+                normals = gltf_span(&accessor_normals, &views, &buffers, "VEC3")
+                if (not normals.valid or normals.component != 5126 or
+                    normals.count != positions.count):
+                    ret gltf_error("Invalid NORMAL accessor")
+            if uv_index >= 0:
+                if uv_index >= accessors.len() as i64:
+                    ret gltf_error("Invalid TEXCOORD index")
+                accessor_uvs <- accessors[uv_index as usize]
+                uvs = gltf_span(&accessor_uvs, &views, &buffers, "VEC2")
+                if (not uvs.valid or uvs.component != 5126 or uvs.count !=
+                    positions.count):
+                    ret gltf_error(
+                        "Only float TEXCOORD_0 accessors are supported")
+            for vertex in 0..positions.count:
+                for channel in 0..3:
+                    vertices =
+                        vec::push(vertices, gltf_float(&positions, vertex,
+                            channel))
+                for channel in 0..3:
+                    normal: f32 := 0.0
+                    if channel == 1:
+                        normal = 1.0
+                    if normal_index >= 0:
+                        normal = gltf_float(&normals, vertex, channel)
+                    vertices = vec::push(vertices, normal)
+                for channel in 0..2:
+                    uv: f32 := 0.0
+                    if uv_index >= 0:
+                        uv = gltf_float(&uvs, vertex, channel)
+                    vertices = vec::push(vertices, uv)
+            joint_indices: [i64] := []
+            weights: [f32] := []
+            if (joints_index >= 0) != (weights_index >= 0):
+                ret gltf_error("Skin joints and weights must occur together")
+            if joints_index >= 0:
+                if joints_index >= accessors.len() as i64 or weights_index >= accessors.len() as i64:
+                    ret gltf_error("Invalid skin attribute accessor")
+                ja <- accessors[joints_index as usize]
+                wa := accessors[weights_index as usize]
+                weight_normalized <- json::encode(&wa.normalized) == "true"
+                wa.normalized = nil
+                js <- gltf_span(&ja, &views, &buffers, "VEC4")
+                ws <- gltf_span(&wa, &views, &buffers, "VEC4")
+                if not js.valid or not ws.valid or js.count != positions.count or ws.count != positions.count or (js.component != 5121 and js.component != 5123):
+                    ret gltf_error("Invalid skin joint attributes")
+                if ws.component != 5126 and ((ws.component != 5121 and ws.component != 5123) or not weight_normalized):
+                    ret gltf_error("Invalid skin weights")
+                for vertex in 0..positions.count:
+                    total: f32 := 0.0
+                    for channel in 0..4:
+                        joint <- gltf_component_uint(&js, vertex, channel)
+                        weight := 0.0
+                        if ws.component == 5126:
+                            weight = gltf_float(&ws, vertex, channel)
+                        elif ws.component == 5121:
+                            weight = (gltf_component_uint(&ws, vertex, channel) as f32) / 255.0
+                        else:
+                            weight = (gltf_component_uint(&ws, vertex, channel) as f32) / 65535.0
+                        if weight < 0.0:
+                            ret gltf_error("Negative skin weight")
+                        total = total + weight
+                        joint_indices = vec::push(joint_indices, joint)
+                        weights = vec::push(weights, weight)
+                    if total <= 0.000001:
+                        ret gltf_error("Skin weights cannot sum to zero")
+                    for channel in 0..4:
+                        at <- vertex*4+channel
+                        weights[at as usize] = weights[at as usize]/total
+            indices: [i32] := []
+            index_index <- gltf_int(primitive.indices, -1)
+            if index_index >= 0:
+                if index_index >= accessors.len() as i64:
+                    ret gltf_error("Invalid indices index")
+                accessor_span <- accessors[index_index as usize]
+                span <- gltf_span(&accessor_span, &views, &buffers, "SCALAR")
+                if not span.valid or span.component == 5126:
+                    ret gltf_error("Invalid indices accessor")
+                for index in 0..span.count:
+                    value <- gltf_index(&span, index)
+                    if value < 0 or value >= positions.count:
+                        ret gltf_error("Triangle index exceeds vertex count")
+                    indices = vec::push(indices, value as i32)
+            else:
+                for index in 0..positions.count:
+                    indices = vec::push(indices, index as i32)
+            if indices.len() as i64 % 3 != 0:
+                ret gltf_error("Incomplete triangle")
+            geometry =
+                vec::push(geometry, GltfGeometry { mesh: mesh_number,
+                    primitive: primitive_number, vertices: vertices,
+                    indices: indices, joint_indices: joint_indices, weights: weights })
+            primitive_number = primitive_number + 1
+        mesh_number = mesh_number + 1
+    ids: [str] := []
+    parents: map[i64, i64] := map[i64, i64] {}
+    seen: map[str, bool] := map[str, bool] {}
+    node_number := 0
+    for node_index in 0..nodes.len() as i64:
+        node <- nodes[node_index as usize]
+        matrix_text <- json::encode(&node.matrix)
+        if matrix_text != "null":
+            if json::encode(&node.translation) != "null" or json::encode(
+                &node.rotation) != "null" or json::encode(
+                &node.scale) != "null":
+                ret gltf_error("A node cannot define both matrix and TRS")
+            matrix <- json::decode::<[f32; 16]>(matrix_text)
+            if matrix[3] != 0.0 or matrix[7] != 0.0 or matrix[
+                11] != 0.0 or matrix[15] != 1.0:
+                ret gltf_error("Node matrix must be affine")
+        name <- gltf_string(&node.name)
+        id := name
+        if id.len() == 0:
+            id = "node-" + gltf_decimal(node_number)
+        if json::encode(&node.extras) != "null":
+            extras <- json::decode::<GltfExtras>(json::encode(&node.extras))
+            custom <- gltf_string(&extras.engine7_id)
+            if custom.len() > 0:
+                id = custom
+        id = "gltf/" + id
+        if seen[id]:
+            ret gltf_error("Duplicate node identity; give nodes unique names or extras.engine7_id")
+        seen[id] = true
+        ids = vec::push(ids, id)
+        node_number = node_number + 1
+    node_number = 0
+    for node_index in 0..nodes.len() as i64:
+        node <- nodes[node_index as usize]
+        if json::encode(&node.children) != "null":
+            children <- json::decode::<[i64]>(json::encode(&node.children))
+            for child in children:
+                if child < 0 or child >= nodes.len() as i64 or parents[
+                    child] != 0:
+                    ret gltf_error("Invalid or multiply parented glTF node")
+                parents[child] = node_number + 1
+        node_number = node_number + 1
+    active: map[i64, bool] := map[i64, bool] {}
+    scenes_text <- json::encode(&root.scenes)
+    if scenes_text != "null":
+        scenes <- json::decode::<[GltfSceneData]>(scenes_text)
+        scene_index <- gltf_int(root.scene, 0)
+        if scene_index < 0 or scene_index >= scenes.len() as i64:
+            ret gltf_error("Invalid default scene")
+        for index in scenes[scene_index as usize].nodes:
+            if index < 0 or index >= nodes.len() as i64 or parents[index] != 0:
+                ret gltf_error("Invalid scene root")
+            active[index] = true
+    else:
+        for index in 0..nodes.len() as i64:
+            active[index] = parents[index] == 0
+    for pass in 0..nodes.len() as i64:
+        for index in 0..nodes.len() as i64:
+            if parents[index] > 0 and active[parents[index] - 1]:
+                active[index] = true
+    # The first clip is imported into components; reject unsupported tracks
+    # rather than silently playing a different animation.
+    tracks: map[i64, str] := map[i64, str] {}
+    if json::encode(&root.animations) != "null":
+        clips <- json::decode::<[GltfAnimation]>(json::encode(&root.animations))
+        if clips.len() > 0:
+            clip <- clips[0]
+            for channel in clip.channels:
+                target <- gltf_int(channel.target.node, -1)
+                if target < 0 or target >= nodes.len() as i64 or channel.sampler < 0 or channel.sampler >= clip.samplers.len() as i64:
+                    ret gltf_error("Invalid animation target or sampler")
+                sampler <- clip.samplers[channel.sampler as usize]
+                interpolation <- gltf_string(&sampler.interpolation)
+                if interpolation != "" and interpolation != "LINEAR":
+                    ret gltf_error("Only LINEAR node animation is supported")
+                if sampler.input < 0 or sampler.input >= accessors.len() as i64 or sampler.output < 0 or sampler.output >= accessors.len() as i64:
+                    ret gltf_error("Invalid animation accessor")
+                path <- channel.target.path
+                width := 3
+                expected := "VEC3"
+                if path == "rotation":
+                    width = 4
+                    expected = "VEC4"
+                if path != "translation" and path != "rotation" and path != "scale":
+                    ret gltf_error("Unsupported animation target")
+                input <- accessors[sampler.input as usize]
+                output <- accessors[sampler.output as usize]
+                ts <- gltf_span(&input, &views, &buffers, "SCALAR")
+                vs <- gltf_span(&output, &views, &buffers, expected)
+                if not ts.valid or not vs.valid or ts.component != 5126 or vs.component != 5126 or ts.count != vs.count:
+                    ret gltf_error("Invalid animation data")
+                track := GltfAnimationValue { times: [], translations: [], rotations: [], scales: [], time: 0.0, speed: 1.0, looping: true, playing: true }
+                if tracks[target].len() > 0:
+                    track = json::decode::<GltfAnimationValue>(tracks[target])
+                if (path == "translation" and track.translations.len() > 0) or (path == "rotation" and track.rotations.len() > 0) or (path == "scale" and track.scales.len() > 0):
+                    ret gltf_error("Duplicate animation channel")
+                times: [f32] := []
+                values: [f32] := []
+                previous := -1.0
+                for key in 0..ts.count:
+                    t <- gltf_float(&ts, key, 0)
+                    if t < 0.0 or (key > 0 and t <= previous):
+                        ret gltf_error("Invalid animation key times")
+                    previous = t
+                    times = vec::push(times, t)
+                    for axis in 0..width:
+                        values = vec::push(values, gltf_float(&vs, key, axis))
+                if track.times.len() > 0 and json::encode(&track.times) != json::encode(&times):
+                    ret gltf_error("Animation channels must share key times")
+                track.times = times
+                if path == "translation":
+                    track.translations = values
+                if path == "rotation":
+                    track.rotations = values
+                if path == "scale":
+                    track.scales = values
+                tracks[target] = json::encode(&track)
+    skins: [GltfSkinData] := []
+    if json::encode(&root.skins) != "null":
+        skins = json::decode::<[GltfSkinData]>(json::encode(&root.skins))
+    objects: [SceneObject] := []
+    for index in 0..nodes.len() as i64:
+        ancestor := index
+        for depth in 0..nodes.len() as i64:
+            if parents[ancestor] > 0:
+                ancestor = parents[ancestor] - 1
+                if ancestor == index:
+                    ret gltf_error("Cycle in glTF hierarchy")
+        if not active[index]:
+            cont
+        node <- nodes[index as usize]
+        id <- ids[index as usize]
+        parent := ""
+        if parents[index] > 0:
+            parent = ids[(parents[index] - 1) as usize]
+        name := gltf_string(&node.name)
+        if name.len() == 0:
+            name = id
+        object := gltf_object(name, id, parent, gltf_node_matrix(&node))
+        if tracks[index].len() > 0:
+            if json::encode(&node.matrix) != "null":
+                ret gltf_error("Animated nodes cannot use a matrix")
+            t: [f32;3] := [0.0,0.0,0.0]
+            q: [f32;4] := [0.0,0.0,0.0,1.0]
+            s: [f32;3] := [1.0,1.0,1.0]
+            if json::encode(&node.translation) != "null":
+                t = json::decode::<[f32;3]>(json::encode(&node.translation))
+            if json::encode(&node.rotation) != "null":
+                q = json::decode::<[f32;4]>(json::encode(&node.rotation))
+            if json::encode(&node.scale) != "null":
+                s = json::decode::<[f32;3]>(json::encode(&node.scale))
+            entries := json::decode::<map[str, str]>(json::encode(object.components))
+            entries["core::ecs::LocalMatrix"] = "{\"matrix\":" + json::encode(matrix_identity()) + "}"
+            entries["core::ecs::Transform"] = "{\"translation\":" + json::encode(&t) + ",\"rotation\":[0,0,0],\"scale\":" + json::encode(&s) + "}"
+            entries["core::ecs::BodyOrientation"] = "{\"x\":" + json::encode(q[0]) + ",\"y\":" + json::encode(q[1]) + ",\"z\":" + json::encode(q[2]) + ",\"w\":" + json::encode(q[3]) + "}"
+            entries["core::ecs::TransformAnimation"] = tracks[index]
+            object.components = json::decode::<?map[str, str]>(json::encode(entries))
+        objects = vec::push(objects, object)
+        mesh_index <- gltf_int(node.mesh, -1)
+        if json::encode(&node.skin) != "null" and (gltf_int(node.skin, -1) < 0 or mesh_index < 0):
+            ret gltf_error("Skin requires a valid index and a mesh")
+        if mesh_index >= 0:
+            if mesh_index >= meshes.len() as i64:
+                ret gltf_error("Invalid node mesh")
+            primitive_index := 0
+            for primitive in meshes[mesh_index as usize].primitives:
+                object :=
+                    gltf_object(name + " mesh " + gltf_decimal(primitive_index),
+                        "primitive/" + id + "/" + gltf_decimal(primitive_index),
+                        id, matrix_identity())
+                entries :=
+                    json::decode::<map[str, str]>(json::encode(
+                        object.components))
+                entries["core::ecs::GltfMesh"] =
+                    "{\"path\":" + json::encode(
+                        path) + ",\"mesh\":" + gltf_decimal(
+                        mesh_index) + ",\"primitive\":" + gltf_decimal(
+                        primitive_index) + "}"
+                for geometry_index in 0..geometry.len() as i64:
+                    item <- geometry[geometry_index as usize]
+                    if (item.mesh == mesh_index and item.primitive ==
+                        primitive_index):
+                        skin_index <- gltf_int(node.skin, -1)
+                        if skin_index >= 0:
+                            if skin_index >= skins.len() as i64 or item.joint_indices.len() == 0:
+                                ret gltf_error("Invalid skin or missing skin attributes")
+                            skin <- skins[skin_index as usize]
+                            if skin.joints.len() == 0 or skin.joints.len() > 64:
+                                ret gltf_error("Skin must have between 1 and 64 joints")
+                            joint_ids: [str] := []
+                            for joint in skin.joints:
+                                if joint < 0 or joint >= nodes.len() as i64 or not active[joint]:
+                                    ret gltf_error("Invalid or inactive skin joint")
+                                joint_ids = vec::push(joint_ids, ids[joint as usize])
+                            for joint in item.joint_indices:
+                                if joint < 0 or joint >= joint_ids.len() as i64:
+                                    ret gltf_error("Skin vertex joint exceeds skin size")
+                            inverse_bind: [f32] := []
+                            inverse_index <- gltf_int(skin.inverseBindMatrices, -1)
+                            if inverse_index >= 0:
+                                if inverse_index >= accessors.len() as i64:
+                                    ret gltf_error("Invalid inverse bind accessor")
+                                inverse_accessor <- accessors[inverse_index as usize]
+                                inverse_span <- gltf_span(&inverse_accessor, &views, &buffers, "MAT4")
+                                if not inverse_span.valid or inverse_span.component != 5126 or inverse_span.count != joint_ids.len() as i64:
+                                    ret gltf_error("Invalid inverse bind matrices")
+                                for joint in 0..inverse_span.count:
+                                    for element in 0..16:
+                                        inverse_bind = vec::push(inverse_bind, gltf_float(&inverse_span, joint, element))
+                            else:
+                                identity <- matrix_identity()
+                                for joint in 0..joint_ids.len() as i64:
+                                    for element in 0..16:
+                                        inverse_bind = vec::push(inverse_bind, identity[element as usize])
+                            value <- GltfSkinValue { joints: joint_ids, inverse_bind: inverse_bind, vertices: item.vertices, joint_indices: item.joint_indices, weights: item.weights }
+                            entries["core::ecs::GltfSkin"] = json::encode(&value)
+                        minimum: [f32; 3] :=
+                            [item.vertices[0], item.vertices[1], item.vertices[
+                                2]]
+                        maximum := minimum
+                        for vertex in 0..item.vertices.len() as i64 / 8:
+                            for axis in 0..3:
+                                value <-
+                                    item.vertices[(vertex * 8 + axis) as usize]
+                                if value < minimum[axis as usize]:
+                                    minimum[axis as usize] = value
+                                if value > maximum[axis as usize]:
+                                    maximum[axis as usize] = value
+                        entries["core::ecs::GeometryBounds"] =
+                            "{\"minimum\":" + json::encode(
+                                minimum) + ",\"maximum\":" + json::encode(
+                                maximum) + "}"
+                tint: [f32; 4] := [1.0, 1.0, 1.0, 1.0]
+                material <- gltf_int(primitive.material, -1)
+                if material >= 0:
+                    if material >= materials.len() as i64:
+                        ret gltf_error("Invalid material index")
+                    pbr_text <-
+                        json::encode(materials[
+                            material as usize].pbrMetallicRoughness)
+                    if pbr_text != "null":
+                        pbr <- json::decode::<GltfPbr>(pbr_text)
+                        if json::encode(&pbr.baseColorFactor) != "null":
+                            tint =
+                                json::decode::<[f32; 4]>(json::encode(
+                                    &pbr.baseColorFactor))
+                        texture_text <- json::encode(&pbr.baseColorTexture)
+                        if texture_text != "null":
+                            texture_info <-
+                                json::decode::<GltfTextureInfo>(texture_text)
+                            has_uv := false
+                            for (attribute_name,
+                                attribute_index) in primitive.attributes:
+                                if attribute_name == "TEXCOORD_0":
+                                    has_uv = true
+                            if not has_uv:
+                                ret gltf_error(
+                                    "Textured primitive has no TEXCOORD_0")
+                            if gltf_int(texture_info.texCoord, 0) != 0:
+                                ret gltf_error("Only TEXCOORD_0 base color textures are supported")
+                            if (texture_info.index < 0 or texture_info.index >=
+                                textures.len() as i64):
+                                ret gltf_error(
+                                    "Invalid base color texture index")
+                            texture <- textures[texture_info.index as usize]
+                            image_index <- gltf_int(texture.source, -1)
+                            if image_index < 0 or image_index >= images.len(
+                            ) as i64:
+                                ret gltf_error("Invalid base color image index")
+                            entries["core::ecs::GltfTexture"] =
+                                "{\"path\":" + json::encode(
+                                    path) + ",\"image\":" + gltf_decimal(
+                                    image_index) + "}"
+                entries["gfx::gpu::Material"] =
+                    "{\"texture\":0,\"tint\":" + json::encode([tint[0], tint[1],
+                        tint[2]]) + "}"
+                object.components =
+                    json::decode::<?map[str, str]>(json::encode(entries))
+                objects = vec::push(objects, object)
+                primitive_index = primitive_index + 1
+    doc <-
+        SceneDocument { format: scene_format(), version: scene_version(),
+        name: path, camera: default_camera(), light: default_light(),
+        objects: objects, source: json::decode::<?str>(json::encode(path)),
+        imported: nil }
+    ret GltfImport { document: doc, geometry: geometry, images: images,
+    error: "" }
+
+pub scene_identity <- (object: &SceneObject) -> str:
+    encoded <- json::encode(object.components)
+    if encoded != "null":
+        entries <- json::decode::<map[str, str]>(encoded)
+        data <- entries["core::ecs::Hierarchy"]
+        if data.len() > 0:
+            node <- json::decode::<SceneHierarchyValue>(data)
+            if ffi::handle(&node) != 0:
+                ret node.id
+    ret "authored/" + object.name
+
+# Three-way component merge. Unedited imported values follow the new export;
+# additions, removals, edits and extra entities belong to the JSON document.
+pub gltf_merge <- (fresh: &SceneDocument,
+saved: &SceneDocument) -> SceneDocument:
+    baseline_text <- json::encode(saved.imported)
+    if baseline_text == "null":
+        # A hand-authored or older companion has no merge baseline. Preserve
+        # its contents rather than silently discarding its entities/components.
+        ret json::decode::<SceneDocument>(json::encode(saved))
+    baseline <- json::decode::<[SceneObject]>(baseline_text)
+    old: map[str, SceneObject] := map[str, SceneObject] {}
+    previous: map[str, bool] := map[str, bool] {}
+    authored: map[str, SceneObject] := map[str, SceneObject] {}
+    present: map[str, bool] := map[str, bool] {}
+    for baseline_index in 0..baseline.len() as i64:
+        object <- baseline[baseline_index as usize]
+        old[scene_identity(&object)] =
+            json::decode::<SceneObject>(json::encode(&object))
+        previous[scene_identity(&object)] = true
+    for object in saved.objects:
+        authored[scene_identity(&object)] =
+            json::decode::<SceneObject>(json::encode(&object))
+        present[scene_identity(&object)] = true
+    output: [SceneObject] := []
+    current: map[str, bool] := map[str, bool] {}
+    for object in fresh.objects:
+        id <- scene_identity(&object)
+        current[id] = true
+        if previous[id] and not present[id]:
+            cont
+        updated := json::decode::<SceneObject>(json::encode(object))
+        if previous[id] and present[id]:
+            before <-
+                json::decode::<map[str, str]>(json::encode(old[id].components))
+            edits <-
+                json::decode::<map[str, str]>(json::encode(authored[
+                    id].components))
+            imported <-
+                json::decode::<map[str, str]>(json::encode(object.components))
+            combined: map[str, str] := map[str, str] {}
+            for (key, value) in imported:
+                if edits[key] == before[key]:
+                    combined[key] = value
+            for (key, value) in edits:
+                if key != "core::ecs::GltfMissing" and value != before[key]:
+                    combined[key] = value
+            updated.components =
+                json::decode::<?map[str, str]>(json::encode(combined))
+            if authored[id].name != old[id].name:
+                updated.name = authored[id].name
+        output = vec::push(output, updated)
+    # Keep the last baseline for missing source objects. If Blender later
+    # restores a node, the original three-way comparison can recover its edits.
+    next_baseline: [SceneObject] :=
+        json::decode::<[SceneObject]>(json::encode(fresh.objects))
+    for baseline_index in 0..baseline.len() as i64:
+        object <- baseline[baseline_index as usize]
+        if not current[scene_identity(&object)]:
+            next_baseline =
+                vec::push(next_baseline, json::decode::<SceneObject>(
+                    json::encode(&object)))
+    # Preserve authored extras and orphaned imports if Blender removes a node.
+    # Mark missing geometry so a reused mesh index cannot render the wrong mesh.
+    for object in saved.objects:
+        id <- scene_identity(&object)
+        if not current[id]:
+            retained := json::decode::<SceneObject>(json::encode(&object))
+            if previous[id] and json::encode(retained.components) != "null":
+                entries :=
+                    json::decode::<map[str, str]>(json::encode(
+                        retained.components))
+                entries["core::ecs::GltfMissing"] = "{\"missing\":true}"
+                retained.components =
+                    json::decode::<?map[str, str]>(json::encode(entries))
+            output = vec::push(output, retained)
+    ret SceneDocument { format: scene_format(), version: scene_version(),
+    name: saved.name, camera: saved.camera, light: saved.light, objects: output,
+    source: fresh.source, imported: json::decode::<?[SceneObject]>(json::encode(
+        next_baseline)) }
+
+# Companion path is `<asset>.scene.json`; the glTF/GLB is never overwritten.
+pub open_scene_asset <- (path: str) -> SceneDocument:
+    if gltf_file(path):
+        loaded <- gltf_load(path)
+        if loaded.error.len() > 0:
+            ret empty_document()
+        companion <- host::read_asset(path + ".scene.json")
+        saved <- scene_from_json(companion)
+        if companion.len() > 0 and not document_is_valid(&saved):
+            ret empty_document()
+        if document_is_valid(&saved):
+            ret gltf_merge(&loaded.document, &saved)
+        document := loaded.document
+        document.imported =
+            json::decode::<?[SceneObject]>(json::encode(document.objects))
+        ret document
+    saved <- scene_from_json(host::read_asset(path))
+    if not document_is_valid(&saved):
+        ret empty_document()
+    source <- gltf_string(&saved.source)
+    if source.len() > 0:
+        loaded <- gltf_load(source)
+        if loaded.error.len() > 0:
+            ret empty_document()
+        ret gltf_merge(&loaded.document, &saved)
+    ret saved
+
+@derive(Serialize, Deserialize)
+pub GltfMeshReference <- struct
+    path: str
+    mesh: i64
+    primitive: i64
+
+pub gltf_geometry_key <- (path: str, mesh: i64, primitive: i64) -> str:
+    ret path + "#" + gltf_decimal(mesh) + "/" + gltf_decimal(primitive)
+
+@derive(Serialize, Deserialize)
+pub GltfTextureReference <- struct
+    path: str
+    image: i64
+
+pub gltf_image_key <- (path: str, image: i64) -> str:
+    ret path + "#image/" + gltf_decimal(image)
+

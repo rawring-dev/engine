@@ -312,8 +312,33 @@ const Parser = struct {
             .name = name,
             .ty = ty,
             .mutable = mutable,
-            .value = try self.parseExpression(),
+            .value = try self.parseAssignmentValue(),
         };
+    }
+
+    /// Parses the value of a binding or assignment.
+    ///
+    /// Besides the usual same-line expression, e7 accepts the value as an
+    /// indented continuation block:
+    ///
+    ///     colour <-
+    ///         if focused: white
+    ///         else: grey
+    ///
+    /// The indentation is a layout container for exactly one expression; it
+    /// ends at the matching `dedent`.  This keeps long right-hand sides
+    /// readable without inventing a wrapping token, and the formatter uses it
+    /// when a binding/assignment does not fit on one line.
+    fn parseAssignmentValue(self: *Parser) ParserError!*ast.Expr {
+        if (self.at(.newline) and self.peekAt(1).kind == .indent) {
+            _ = self.advance();
+            _ = try self.expect(.indent, "expected an indented value after assignment");
+            const value = try self.parseExpression();
+            self.skipSeparators();
+            _ = try self.expect(.dedent, "expected dedent after the indented value");
+            return value;
+        }
+        return self.parseExpression();
     }
 
     // ------------------------------------------------------------------
@@ -1542,7 +1567,7 @@ const Parser = struct {
         return self.createStmt(.{ .assign = .{
             .target = expr,
             .op = op,
-            .value = try self.parseExpression(),
+            .value = try self.parseAssignmentValue(),
         } }, start);
     }
 
@@ -2297,6 +2322,37 @@ test "parses declarations and assignments in a function body" {
     try std.testing.expect(block.entries[2].stmt.* == .assign);
     try std.testing.expect(block.entries[3].stmt.* == .assign);
     try std.testing.expect(block.entries[4].stmt.* == .expr);
+}
+
+test "parses indented assignment values" {
+    const source =
+        \\colour <-
+        \\    if field.focused: [1.0, 1.0, 1.0, 1.0]
+        \\    else: [0.82, 0.86, 0.92, 1.0]
+        \\run <- () -> i32:
+        \\    x :=
+        \\        compute(1, 2)
+        \\    x =
+        \\        3
+        \\    x
+    ;
+    var tree = try expectAst(source);
+    defer tree.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), tree.module.items.len);
+    const colour = tree.module.items[0].kind.binding;
+    try std.testing.expectEqualStrings("colour", colour.name);
+    try std.testing.expect(colour.value.* == .if_expr);
+
+    const fn_decl = tree.module.items[1].kind.function;
+    const block = fn_decl.body.block;
+    try std.testing.expectEqual(@as(usize, 3), block.entries.len);
+    const binding = block.entries[0].stmt.*.binding;
+    try std.testing.expectEqualStrings("x", binding.name);
+    try std.testing.expect(binding.value.* == .call);
+    const assign = block.entries[1].stmt.*.assign;
+    try std.testing.expectEqualStrings("x", assign.target.path.segments[0].name);
+    try std.testing.expect(assign.value.* == .int);
 }
 
 test "parses function expression bodies" {

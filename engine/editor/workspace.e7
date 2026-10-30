@@ -41,12 +41,15 @@ pub Workspace <- struct
 
 workspace_init <- (commands: &mut Commands, session_text: str) -> nil:
     workspace := Workspace {
-        playing: false, paused: false, step: false, code: false, focused: false, mouse_down: false,
+        playing: false, paused: false, step: false, code: false, focused: false,
+        mouse_down: false,
         directory: "engine", entries: [], page: 0, file: "engine/gameplay.e7",
-        saved_generation: editor::saved(), terminal_status: "", reload_pending: false, live_json: "", physics_json: "", pickup_json: "", elapsed: 0.0,
+        saved_generation: editor::saved(), terminal_status: "",
+        reload_pending: false, live_json: "", physics_json: "", pickup_json: "",
+        elapsed: 0.0,
     }
     if session_text.len() > 0:
-        session := json::decode::<WorkspaceSession>(session_text)
+        session <- json::decode::<WorkspaceSession>(session_text)
         if ffi::handle(&session) != 0:
             workspace.playing = session.playing
             workspace.paused = session.paused
@@ -57,14 +60,14 @@ workspace_init <- (commands: &mut Commands, session_text: str) -> nil:
             workspace.code = session.code
             workspace.directory = session.directory
             workspace.file = session.file
-    initial_file := editor::initial_file()
+    initial_file <- editor::initial_file()
     if session_text.len() == 0 and initial_file.len() > 0:
         workspace.file = initial_file
         workspace.code = true
         workspace.directory = workspace_parent(initial_file)
     if workspace.code and editor::alive() == 0:
         editor::resize(442, 416)
-        opened := editor::open(workspace.file)
+        opened <- editor::open(workspace.file)
     workspace.entries = workspace_scan(workspace.directory)
     commands.insert_resource(workspace)
     widget(commands, 6.0, 47.0, 160.0, 24.0, "FILES / ASSETS", 40, 0, -1, 0)
@@ -72,18 +75,22 @@ workspace_init <- (commands: &mut Commands, session_text: str) -> nil:
     widget(commands, 90.0, 78.0, 74.0, 26.0, "Refresh", 54, 86, -1, 0)
     slot := 0
     while slot < 12:
-        widget(commands, 10.0, 112.0 + (slot as f32) * 27.0, 154.0, 25.0, "", 41 + slot, 300 + slot, -1, 0)
+        widget(commands, 10.0, 112.0 + (slot as f32) * 27.0, 154.0, 25.0, "",
+            41 + slot, 300 + slot, -1, 0)
         slot = slot + 1
     widget(commands, 10.0, 442.0, 74.0, 26.0, "<", 55, 87, -1, 0)
     widget(commands, 90.0, 442.0, 74.0, 26.0, ">", 56, 88, -1, 0)
     widget(commands, 184.0, 46.0, 442.0, 28.0, "", 57, 0, -1, 2)
-    rect := UIRect { x: -10000.0, y: 84.0, w: 0.0, h: 0.0 }
-    image := UIImage { texture: 0 }
+    rect <- UIRect { x: -10000.0, y: 84.0, w: 0.0, h: 0.0 }
+    image <- UIImage { texture: 0 }
     commands.add_row(Components, { rect, image })
 
 @trigger(WorkspaceButtons)
-pub workspace_buttons <- sys (workspace: res &mut Workspace, state: res &mut EditorState, ui: res &mut UIState, input: res &Input, world: res &mut PhysicsWorld, pickup: res &mut PickupState, time: res &mut Time):
-    action := ui.action
+pub workspace_buttons <- sys (workspace: res &mut Workspace,
+state: res &mut EditorState, ui: res &mut UIState, input: res &Input,
+world: res &mut PhysicsWorld, pickup: res &mut PickupState,
+time: res &mut Time):
+    action <- ui.action
     if action == 80 and not workspace.playing:
         workspace.playing = true
         workspace.paused = false
@@ -119,7 +126,7 @@ pub workspace_buttons <- sys (workspace: res &mut Workspace, state: res &mut Edi
         input.release_mouse()
         ui.focused_entity = 0
         if workspace.code:
-            opened := editor::open(workspace.file)
+            opened <- editor::open(workspace.file)
             state.status = editor::status()
     elif action == 85:
         workspace.directory = workspace_parent(workspace.directory)
@@ -129,22 +136,33 @@ pub workspace_buttons <- sys (workspace: res &mut Workspace, state: res &mut Edi
         workspace.entries = workspace_scan(workspace.directory)
     elif action == 87 and workspace.page > 0:
         workspace.page = workspace.page - 1
-    elif action == 88 and (workspace.page + 1) * 12 < workspace.entries.len() as i64:
+    elif action == 88 and (workspace.page + 1) * 12 < workspace.entries.len(
+    ) as i64:
         workspace.page = workspace.page + 1
     elif action >= 300 and action < 312:
-        at := workspace.page * 12 + action - 300
+        at <- workspace.page * 12 + action - 300
         if at < workspace.entries.len() as i64:
-            entry := workspace.entries[at as usize]
-            path := workspace.directory + "/" + entry
-            if entry.slice((entry.len() as i64 - 1) as usize, entry.len() as usize) == "/":
-                workspace.directory = path.slice(0, (path.len() as i64 - 1) as usize)
+            entry <- workspace.entries[at as usize]
+            path <- workspace.directory + "/" + entry
+            if entry.slice((entry.len() as i64 - 1) as usize, entry.len(
+            ) as usize) == "/":
+                workspace.directory =
+                    path.slice(0, (path.len() as i64 - 1) as usize)
                 workspace.entries = workspace_scan(workspace.directory)
                 workspace.page = 0
+            elif gltf_file(entry) or workspace_scene_file(entry):
+                if workspace.playing:
+                    state.status = "Stop play mode before opening a scene"
+                else:
+                    opened <- editor_open(state, path)
+                    if opened:
+                        workspace.code = false
+                        workspace.focused = false
             elif workspace_text_file(entry):
                 workspace.file = path
                 workspace.focused = true
                 ui.focused_entity = 0
-                opened := editor::open(path)
+                opened <- editor::open(path)
                 state.status = editor::status()
             else:
                 state.status = "Asset: " + path
@@ -157,25 +175,30 @@ pub workspace_buttons <- sys (workspace: res &mut Workspace, state: res &mut Edi
 
 @trigger(WorkspaceTick)
 pub workspace_tick <- sys (
-    workspace: res &mut Workspace, state: res &mut EditorState, input: res &Input, ui: res &mut UIState,
+    workspace: res &mut Workspace, state: res &mut EditorState,
+    input: res &Input, ui: res &mut UIState,
     gpu: res &mut Gpu, window: res &Window,
     images: select &mut UIRect, &mut UIImage from Components,
-    widgets: select &mut UIRect, &EditorWidget, &mut UILabel, &mut UIButton, &EditorLabel, &mut UIPanel from Components,
+    widgets: select &mut UIRect, &EditorWidget, &mut UILabel, &mut UIButton,
+    &EditorLabel, &mut UIPanel from Components,
 ):
-    down := input.mouse_down(0)
+    down <- input.mouse_down(0)
     if down and not workspace.mouse_down:
-        workspace.focused = workspace.code and input.cursor_x() >= 184.0 and input.cursor_x() < (window.width as f32) - 334.0 and input.cursor_y() >= 84.0 and input.cursor_y() < (window.height as f32) - 40.0
+        workspace.focused =
+            workspace.code and input.cursor_x() >= 184.0 and input.cursor_x(
+            ) < (window.width as f32) - 334.0 and input.cursor_y(
+            ) >= 84.0 and input.cursor_y() < (window.height as f32) - 40.0
         if workspace.focused:
             ui.focused_entity = 0
     workspace.mouse_down = down
     editor::focus(0)
     if workspace.focused and workspace.code:
         editor::focus(1)
-    width := window.width - 518
-    height := window.height - 124
+    width <- window.width - 518
+    height <- window.height - 124
     editor::resize(width as i64, height as i64)
     # Always drain output, even while showing the game, so Neovim cannot stall.
-    bitmap := editor::image()
+    bitmap <- editor::image()
     for (rect, image) in images:
         if bitmap != 0:
             if image.texture != 0:
@@ -191,12 +214,12 @@ pub workspace_tick <- sys (
             rect.h = ((height / 17) * 17) as f32
     if bitmap != 0:
         image::free(bitmap)
-    terminal_status := editor::status()
+    terminal_status <- editor::status()
     if terminal_status != workspace.terminal_status:
         workspace.terminal_status = terminal_status
         if workspace.code:
             state.status = terminal_status
-    generation := editor::saved()
+    generation <- editor::saved()
     if generation != workspace.saved_generation:
         workspace.saved_generation = generation
         workspace.reload_pending = true
@@ -220,14 +243,14 @@ pub workspace_tick <- sys (
             panel.colour = [0.105, 0.14, 0.19, 0.98]
             if workspace.paused:
                 panel.colour = [0.38, 0.27, 0.08, 1.0]
-        file_widget := marker.role >= 40
+        file_widget <- marker.role >= 40
         if file_widget:
             if not workspace.code:
                 rect.x = -10000.0
             else:
                 rect.x = layout.x
                 if marker.role == 40:
-                    title := "Files: " + workspace.directory
+                    title <- "Files: " + workspace.directory
                     if label.text != title:
                         invalidate_label(gpu, ui, widgets.entity())
                         label.text = title
@@ -237,25 +260,27 @@ pub workspace_tick <- sys (
                         invalidate_label(gpu, ui, widgets.entity())
                         label.text = workspace.file
                 elif marker.role >= 41 and marker.role <= 52:
-                    slot := marker.role - 41
-                    at := workspace.page * 12 + slot
+                    slot <- marker.role - 41
+                    at <- workspace.page * 12 + slot
                     text := ""
                     if at < workspace.entries.len() as i64:
                         text = workspace.entries[at as usize]
                     if text != button.label:
-                        cached := ui.textures[widgets.entity()]
+                        cached <- ui.textures[widgets.entity()]
                         if cached.len() > 0:
                             gpu.destroy_texture(cached[0] as u64)
                             ui.textures[widgets.entity()] = []
                         button.label = text
-        elif (layout.anchor == 0 and layout.x < 174.0 and layout.y >= 40.0) or marker.role == -1 and layout.x == 184.0 and layout.y == 46.0:
+        elif (layout.anchor == 0 and layout.x < 174.0 and layout.y >=
+        40.0) or marker.role == -1 and layout.x == 184.0 and layout.y == 46.0:
             if workspace.code:
                 rect.x = -10000.0
 
 # Stage before rendering; publish only after the frame has completed. No ECS
 # snapshots, graphics teardown, plugin initialization, or world reset is needed.
 @trigger(WorkspaceCapture)
-pub workspace_capture <- sys (workspace: res &mut Workspace, state: res &mut EditorState):
+pub workspace_capture <- sys (workspace: res &mut Workspace,
+state: res &mut EditorState):
     if not workspace.reload_pending:
         ret
     workspace.reload_pending = false
@@ -266,9 +291,10 @@ pub workspace_capture <- sys (workspace: res &mut Workspace, state: res &mut Edi
     host::request_reload()
 
 @trigger(WorkspaceRestore)
-pub workspace_restore <- sys (workspace: res &Workspace, world: res &mut PhysicsWorld, pickup: res &mut PickupState):
+pub workspace_restore <- sys (workspace: res &Workspace,
+world: res &mut PhysicsWorld, pickup: res &mut PickupState):
     if workspace.physics_json.len() > 0:
-        restored := json::decode::<PhysicsWorld>(workspace.physics_json)
+        restored <- json::decode::<PhysicsWorld>(workspace.physics_json)
         if ffi::handle(&restored) != 0:
             world.gravity_y = restored.gravity_y
             world.max_step = restored.max_step
@@ -288,31 +314,31 @@ pub workspace_restore <- sys (workspace: res &Workspace, world: res &mut Physics
             world.pending_impulses = restored.pending_impulses
             world.sleep_state = restored.sleep_state
     if workspace.pickup_json.len() > 0:
-        restored := json::decode::<PickupState>(workspace.pickup_json)
+        restored <- json::decode::<PickupState>(workspace.pickup_json)
         if ffi::handle(&restored) != 0:
             pickup.held_id = restored.held_id
 
 # Gameplay phases advance together. Editor input/rendering keep running while
 # paused, and stepping advances exactly one fixed simulation interval.
-pub workspace_simulate <- async () -> nil:
-    workspace := await query &mut Workspace
-    simulate := workspace.playing and (not workspace.paused or workspace.step)
+pub workspace_simulate <- async() -> nil:
+    workspace := await query & mut Workspace
+    simulate <- workspace.playing and (not workspace.paused or workspace.step)
     workspace.step = false
     if simulate:
         workspace.elapsed = workspace.elapsed + 0.016
-    elapsed := workspace.elapsed
-    typing := workspace.code
+    elapsed <- workspace.elapsed
+    typing <- workspace.code
     disown workspace
     if simulate:
         await PreUpdate()
-    clock := await query &mut Time
+    clock := await query & mut Time
     clock.elapsed = elapsed
     clock.delta = 0.0
     if simulate:
         clock.delta = 0.016
     disown clock
     if typing:
-        input := await query &mut Input
+        input <- await query & mut Input
         core::input::clear_input(input)
         disown input
     if simulate:

@@ -12,11 +12,11 @@ pub Components <- table
     ...
 
 test_component_catalog_and_dynamic_json <- () -> i64:
-    types := json::decode::<[ComponentType]>(ecs::component_catalog())
+    types <- json::decode::<[ComponentType]>(ecs::component_catalog())
     assert_eq_i64(types.len() as i64, 1)
     assert_str_eq(types[0].name, "CatalogCustom")
     assert_str_eq(types[0].schema, "{health=i;enabled=b;title=s}")
-    initial := component_initial(types[0])
+    initial <- component_initial(types[0])
     assert_str_eq(initial, "{\"health\":0,\"enabled\":false,\"title\":\"\"}")
     assert_str_eq(component_canonical(types[0].schema, initial), initial)
     assert_str_eq(component_canonical(types[0].schema, "{}"), "")

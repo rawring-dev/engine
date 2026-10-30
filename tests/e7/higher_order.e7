@@ -30,19 +30,19 @@ test_hof_apply_callback <- () -> i64:
     0
 
 test_hof_struct_function_field <- () -> i64:
-    ops := Ops { f: double }
+    ops <- Ops { f: double }
     assert_eq_i64(ops.f(5), 10)
     0
 
 test_hof_map_function_values <- () -> i64:
-    dispatch := map[str, (i64) -> i64] { "double": double, "inc": plus_one }
-    chosen := dispatch["double"]
+    dispatch <- map[str, (i64) -> i64] { "double": double, "inc": plus_one }
+    chosen <- dispatch["double"]
     assert_eq_i64(chosen(4), 8)
     0
 
 test_hof_returned_function <- () -> i64:
-    first := pick(0)
-    second := pick(1)
+    first <- pick(0)
+    second <- pick(1)
     assert_eq_i64(first(3), 6)
     assert_eq_i64(second(3), 4)
     0

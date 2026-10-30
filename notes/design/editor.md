@@ -20,6 +20,8 @@ runtime/src/editor_host.zig  e7 terminal API and compile callback
 runtime/src/editor_terminal.c PTY/libvterm and single-image text rasterization
 engine/scene/main.e7         scene library module root
 engine/scene/document.e7     scene file format, JSON (de)serialization, helpers
+engine/scene/gltf.e7         static glTF/GLB import and companion merge
+engine/core/hierarchy.e7     affine transform composition and parent traversal
 engine/editor/scenes/        checked-in sample scene documents
 runtime/src/editor_run.zig   resident editor host (`zig build run-editor`)
 runtime/src/live_reload.zig  staged JIT generations and ABI compatibility checks
@@ -33,6 +35,54 @@ panel drawn by the e7 UI library):
 ![scene editor](../editor-preview.png)
 
 ![embedded Neovim and asset explorer](../editor-code-workspace.png)
+
+## Blender and glTF scenes
+
+Export a static glTF 2.0 scene from Blender as `.gltf` plus its buffers/images,
+or as a self-contained `.glb`. Enter the asset path in the scene path field and
+click **Open**, or choose it in the Code workspace's asset explorer. Add engine
+components in the inspector and create additional entities normally. **Save**
+writes `<asset>.scene.json`; the glTF file is never modified. To reimport, save
+editor changes, export the updated asset, and open the glTF or its companion
+again. The companion contains an imported baseline and the authored document:
+unchanged source components follow the new export, while component additions,
+changes, removals, deleted objects, and extra entities remain. Imported nodes
+removed from the source are retained and marked missing in the companion, with
+their mesh hidden to prevent stale mesh indices from displaying the wrong asset.
+If a node returns with the same ID, its saved components are restored.
+
+Nodes require unique names, or a stable string `extras.engine7_id` exported as a
+Blender custom property. Names serve as IDs when no explicit ID is supplied;
+renaming one is treated as removing one node and adding another. Unnamed nodes
+fall back to their index, so give nodes names or IDs before reordering. Mesh
+primitives are identified by their node ID and primitive index. Paths stored in
+the companion are relative to the process working directory; keep exported assets
+at the same path or update the scene source before reopening it.
+
+The current importer supports static triangle meshes, interleaved or tightly
+packed float positions/normals/UVs, unsigned indices, local TRS or matrices,
+node hierarchies, base color factors, and base color PNG/JPEG textures from
+external files, data URIs, or GLB buffer views. It rejects sparse accessors,
+required extensions, morph targets, and non-triangle topology. Skinned meshes
+support four joint influences per vertex, float or normalized unsigned weights,
+and inverse bind matrices. The e7s vertex shader skins on the GPU using a
+per-instance palette of up to 64 joints; imported normals are not used for lighting.
+Custom game loops must await `PrepareRender()` before `Render()` to update skins.
+The first
+animation clip can drive node translation, rotation and scale during Play; its
+channels must use LINEAR interpolation and share key times per node. Rotation
+uses shortest-arc normalized interpolation. Other clips,
+other PBR maps, alpha blending, and glTF sampler settings are not yet applied.
+Meshes are limited to 256 uploaded primitives and the renderer to 512 world draws.
+
+**Child +** creates a box under the selection; its Transform is local to the
+parent. **Detach** preserves the current world matrix, including inherited shear.
+The Hierarchy component exposes the stable ID and parent ID. Deleting an object
+deletes its descendants; undo restores them. The editor rejects missing parents
+and cycles. Picking uses conservative transformed bounds for hierarchies.
+Physics still integrates world-space TRS: parented rigid bodies and bodies with
+an imported affine base retain their components but are not simulated in play
+mode until world/local physics conversion is implemented.
 
 ## Host bridge (Zig side)
 
@@ -210,8 +260,8 @@ components, so the editor uses the same rendering path as the engine demo
 Run `zig build run-editor` from the repository root. The initial document is
 `engine/editor/scenes/sample.scene.json`. The viewport uses the engine renderer;
 left/right panels anchor to window edges when resized (960×540 or larger is
-recommended). Shared rendering supports 256 object slots, 256 textures, 256 UI
-quads, and 512 total draws per frame.
+recommended). Shared rendering supports 512 object slots, 256 textures, 256 UI
+quads, and 768 total draws per frame.
 
 * Create Box, Sphere, Capsule, Plane, or **Empty** entities. Use the paged hierarchy or
   click viewport object bounds to select; Copy and Delete operate on selection.

@@ -1,0 +1,203 @@
+# End-to-end editor scene fixture, compiled with the real editor modules.
+GltfProbe <- trigger
+@resource
+GltfProbeState <- struct
+    mesh: u64
+    texture: u64
+    node_count: i64
+    animated_x: f32
+    skin_mesh: u64
+
+@trigger(GltfProbe)
+gltf_probe <- sys (probe: res &mut GltfProbeState,
+    meshes: select &GltfMesh, &MeshRenderer, &gfx::gpu::Material,
+    &editor::EditorObject from Components,
+    nodes: select &Hierarchy from Components,
+    animated: select &Transform, &TransformAnimation from Components,
+    skins: select &GltfSkin, &MeshRenderer from Components):
+    probe.mesh = 0
+    probe.texture = 0
+    probe.node_count = 0
+    for (reference, renderer, material, marker) in meshes:
+        probe.mesh = renderer.mesh
+        probe.texture = material.texture
+    for node in nodes:
+        probe.node_count = probe.node_count + 1
+    for (transform, animation) in animated:
+        probe.animated_x = transform.translation[0]
+    probe.skin_mesh = 0
+    for (skin, renderer) in skins:
+        probe.skin_mesh = renderer.mesh
+
+main <- async() -> i32:
+    commands <- await query & mut Commands
+    commands.add_plugin(core::window::WindowPlugin)
+    commands.add_plugin(core::input::InputPlugin)
+    commands.add_plugin(core::time::TimePlugin)
+    commands.add_plugin(gfx::gpu::GfxPlugin)
+    commands.add_plugin(core::camera::CameraPlugin)
+    commands.add_plugin(ui::Ui)
+    commands.add_plugin(physics::PhysicsPlugin)
+    commands.add_plugin(physics::broadphase::BroadphasePlugin)
+    commands.add_plugin(gameplay::Gameplay)
+    commands.add_plugin(editor::Editor)
+    commands.insert_resource(GltfProbeState { mesh: 0, texture: 0,
+        node_count: 0, animated_x: 0.0, skin_mesh: 0 })
+    disown commands
+    await Init()
+    state <- await query & mut EditorState
+    if not editor_open(state, "engine/assets/testdata/gltf/textured.glb"):
+        ret 10
+    if state.document.objects.len() != 3:
+        ret 11
+    editor_select(state, 1)
+    if not editor_component_add(state, "core::ecs::RigidBody"):
+        ret 12
+    if not editor_save(state, ".zig-cache/editor-gltf-test.scene.json"):
+        ret 13
+    if not editor_open(state, ".zig-cache/editor-gltf-test.scene.json"):
+        ret 14
+    editor_select(state, 1)
+    components <- editor_attached_components(state)
+    if components["core::ecs::RigidBody"].len() == 0:
+        ret 15
+    disown state
+    await EditorRefresh()
+    await GltfProbe()
+    probe <- await query & GltfProbeState
+    if probe.mesh == 0 or probe.texture == 0 or probe.node_count != 3:
+        ret 16
+    mesh <- probe.mesh
+    texture <- probe.texture
+    await EditorRefresh()
+    await GltfProbe()
+    if probe.mesh != mesh or probe.texture != texture:
+        ret 17
+    for frame in 0..6:
+        await FrameInit()
+        await EditorUpdate()
+        await PrepareRender()
+        await Render()
+    gpu <- await query & gfx::gpu::Gpu
+    if ptr::load_u32(gpu.scene + 1300) < 1:
+        ret 18
+    uniform <- ptr::load_u64(gpu.scene + 152)
+    if f32::abs(ptr::load_f32(uniform + 48) - 2.0) > 0.0001 or f32::abs(
+        ptr::load_f32(uniform + 52) - 1.0) > 0.0001:
+        ret 19
+    # Missing source nodes must release stale GPU resources and can reappear.
+    edit <- await query & mut EditorState
+    editor_select(edit, 2)
+    if not editor_component_add(edit, "core::ecs::GltfMissing"):
+        ret 20
+    disown edit
+    await EditorRefresh()
+    await GltfProbe()
+    if probe.mesh != 0 or probe.texture != 0:
+        ret 21
+    restore <- await query & mut EditorState
+    if not editor_component_remove(restore):
+        ret 22
+    disown restore
+    await EditorRefresh()
+    await GltfProbe()
+    if probe.mesh == 0 or probe.texture == 0:
+        ret 23
+    animated_scene <- await query &mut EditorState
+    if not editor_open(animated_scene, "engine/assets/testdata/gltf/animated.gltf"):
+        if not editor_open(animated_scene, "engine/assets/testdata/gltf/animated.gltf"):
+            ret 24
+    disown animated_scene
+    play <- await query &mut UIState
+    play.action = 80
+    disown play
+    await WorkspaceButtons()
+    await EditorRefresh()
+    await workspace_simulate()
+    await GltfProbe()
+    if probe.animated_x <= 2.0:
+        ret 25
+    pause <- await query &mut UIState
+    pause.action = 81
+    disown pause
+    await WorkspaceButtons()
+    paused_x <- probe.animated_x
+    await workspace_simulate()
+    await GltfProbe()
+    if probe.animated_x != paused_x:
+        ret 26
+    step <- await query &mut UIState
+    step.action = 82
+    disown step
+    await WorkspaceButtons()
+    await workspace_simulate()
+    await GltfProbe()
+    if probe.animated_x <= paused_x:
+        ret 27
+    stop <- await query &mut UIState
+    stop.action = 83
+    disown stop
+    await WorkspaceButtons()
+    skin_scene <- await query &mut EditorState
+    if not editor_open(skin_scene, "engine/assets/testdata/gltf/skinned.gltf"):
+        if not editor_open(skin_scene, "engine/assets/testdata/gltf/skinned.gltf"):
+            ret 28
+    disown skin_scene
+    skin_play <- await query &mut UIState
+    skin_play.action = 80
+    disown skin_play
+    await WorkspaceButtons()
+    await EditorRefresh()
+    await workspace_simulate()
+    await PrepareRender()
+    await Render()
+    await GltfProbe()
+    if probe.skin_mesh == 0:
+        ret 29
+    extra <- ptr::load_u64(gpu.scene + 1280)
+    entry <- extra + 87040 + (probe.skin_mesh as i64-1)*48
+    palette <- ptr::load_u64(entry + 40)
+    if palette == 0 or ptr::load_u32(entry + 36) != 1 or ptr::load_f32(palette + 52) <= 0.0:
+        ret 30
+    before <- ptr::load_f32(palette + 52)
+    pipeline <- ptr::load_u64(gpu.scene + 1392)
+    if pipeline == 0:
+        ret 31
+    found := false
+    for draw in 0..ptr::load_u32(gpu.scene + 1300):
+        command <- extra + draw*80
+        if ptr::load_u64(command + 16) == ptr::load_u64(entry):
+            offset <- ptr::load_u32(command + 60)
+            uniform <- ptr::load_u64(gpu.scene + 152)
+            if ptr::load_u64(command) != pipeline or f32::abs(ptr::load_f32(uniform + offset + 372) - before) > 0.0001:
+                ret 32
+            found = true
+    if not found:
+        ret 33
+    pixels_out <- ptr::alloc(8) as u64
+    size_out <- ptr::alloc(8) as u64
+    if platform::scene::scene_draw_present(gpu.scene,pixels_out,size_out) == 0:
+        ret 34
+    pixels <- ptr::load_u64(pixels_out)
+    size <- ptr::load_u64(size_out)
+    for step in 0..30:
+        await workspace_simulate()
+    await PrepareRender()
+    await Render()
+    if ptr::load_f32(palette + 52) <= before:
+        ret 35
+    if platform::scene::scene_draw_present(gpu.scene,pixels_out,size_out) == 0:
+        ret 36
+    later <- ptr::load_u64(pixels_out)
+    changed := 0
+    for index in 0..size:
+        if ptr::load_u8(pixels+index) != ptr::load_u8(later+index):
+            changed = changed + 1
+    ptr::free(pixels)
+    ptr::free(later)
+    ptr::free(pixels_out)
+    ptr::free(size_out)
+    if changed < 20:
+        ret 37
+    await DeInit()
+    ret 0

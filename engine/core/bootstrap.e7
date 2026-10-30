@@ -18,8 +18,8 @@ pub init_window <- sys (
 
     # Shader loading is e7 policy: read the SPIR-V assets and hand them to the
     # low-level Vulkan scene constructor through the Gpu wrappers.
-    vert_spirv := gpu.read_shader("engine/shaders/cube.vert.spv")
-    frag_spirv := gpu.read_shader("engine/shaders/cube.frag.spv")
+    vert_spirv <- gpu.read_shader("engine/shaders/cube.vert.spv")
+    frag_spirv <- gpu.read_shader("engine/shaders/cube.frag.spv")
     gpu.create_scene(window, vert_spirv, frag_spirv)
     time.start()
 
@@ -28,4 +28,3 @@ pub init_window <- sys (
 pub shutdown <- sys (window: res &mut Window, gpu: res &mut Gpu):
     gpu.destroy_scene()
     window.destroy()
-

@@ -27,6 +27,21 @@ const builtin_trait_names = [_][]const u8{
 pub const Diagnostic = struct {
     message: []const u8,
     span: ast.Span = .{},
+    /// Module the diagnostic was reported in: "" for the root module, and the
+    /// `::`-qualified prefix for nested/external modules (`core::window`).
+    /// Editor tooling uses this to attribute project-wide diagnostics to the
+    /// file that owns the module; the compiler pipeline itself ignores it.
+    module_path: []const u8 = "",
+};
+
+/// A binding declared with `:=` that the semantic analyzer never saw mutated.
+/// Editor tooling (the e7 formatter) rewrites these to `<-`.
+pub const MutableBindingInfo = struct {
+    name: []const u8,
+    /// Module path the binding lives in ("" for the root module).
+    module_path: []const u8,
+    /// Byte offset of the binding declaration in its own source buffer.
+    offset: usize,
 };
 
 pub const TriggerInfo = struct {
@@ -109,6 +124,9 @@ pub const Analysis = struct {
     arena: std.heap.ArenaAllocator,
     store: types.TypeStore,
     diagnostics: []Diagnostic,
+    /// `:=` bindings that are never assigned, mutably borrowed, or passed as a
+    /// mutable method receiver.  Used by the formatter, not by codegen.
+    never_mutated_bindings: []MutableBindingInfo = &.{},
     expr_types: std.AutoHashMapUnmanaged(usize, *types.Type),
     triggers: []TriggerInfo,
     /// Direct `impl Trait for Type` relations, as written.
@@ -269,10 +287,21 @@ pub fn analyze(allocator: std.mem.Allocator, module: *ast.Module) !Analysis {
     // it was collected while the backing list still owned its buffer.
     var component_table = checker.component_table;
     if (component_table) |*table| table.columns = components;
+    var never_mutated: std.ArrayList(MutableBindingInfo) = .empty;
+    for (checker.mutable_bindings.items) |binding| {
+        const offset = binding.decl_offset orelse continue;
+        if (binding.mutated) continue;
+        try never_mutated.append(checker.allocator, .{
+            .name = binding.name,
+            .module_path = binding.module_path,
+            .offset = offset,
+        });
+    }
     return .{
         .arena = arena,
         .store = checker.store,
         .diagnostics = try checker.diagnostics.toOwnedSlice(checker.allocator),
+        .never_mutated_bindings = try never_mutated.toOwnedSlice(checker.allocator),
         .expr_types = checker.expr_types,
         .triggers = triggers,
         .trait_impls = try checker.trait_impls.toOwnedSlice(checker.allocator),
@@ -369,6 +398,13 @@ const Binding = struct {
     scope_depth: usize = 0,
     is_global: bool = false,
     loans: std.ArrayList(*Loan) = .empty,
+    /// Module the binding lives in ("" for the root module).
+    module_path: []const u8 = "",
+    /// Byte offset of the `:=` binding declaration, when it has one.
+    decl_offset: ?usize = null,
+    /// True once an assignment, mutable borrow, or mutable method receiver
+    /// needed the binding to be mutable.
+    mutated: bool = false,
 };
 
 const Scope = struct {
@@ -400,6 +436,8 @@ const Checker = struct {
     allocator: std.mem.Allocator,
     store: types.TypeStore,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
+    /// Every binding declared mutable, for the formatter's `:=` -> `<-` pass.
+    mutable_bindings: std.ArrayList(*Binding) = .empty,
     expr_types: std.AutoHashMapUnmanaged(usize, *types.Type) = .empty,
     type_defs: std.StringHashMapUnmanaged(*TypeDef) = .empty,
     functions: std.StringHashMapUnmanaged(*Callable) = .empty,
@@ -1284,7 +1322,7 @@ const Checker = struct {
                 }
                 try self.checkImplRequirements(decl);
             },
-            .binding => |binding| try self.checkBinding(binding),
+            .binding => |binding| try self.checkBinding(binding, self.current_span.offset),
             .uninitialized => |decl| try self.checkUninitialized(decl),
             .mod => |m| if (m.items) |items| {
                 const child = try self.childModule(prefix, m.name);
@@ -1705,6 +1743,7 @@ const Checker = struct {
         try self.diagnostics.append(self.allocator, .{
             .message = try std.fmt.allocPrint(self.allocator, format, args),
             .span = self.current_span,
+            .module_path = self.current_module,
         });
     }
 
@@ -1762,8 +1801,10 @@ const Checker = struct {
             .mutable = mutable,
             .is_global = self.scopes.items.len == 1,
             .scope_depth = self.scopes.items.len,
+            .module_path = self.current_module,
         };
         self.next_binding_id += 1;
+        if (binding.mutable) try self.mutable_bindings.append(self.allocator, binding);
         try scope.bindings.append(self.allocator, binding);
         return binding;
     }
@@ -1779,7 +1820,7 @@ const Checker = struct {
         return null;
     }
 
-    fn checkBinding(self: *Checker, binding: ast.Binding) !void {
+    fn checkBinding(self: *Checker, binding: ast.Binding, decl_offset: usize) !void {
         const mark = self.loans.items.len;
         var ty: *types.Type = undefined;
         if (binding.ty) |annotation| {
@@ -1789,6 +1830,7 @@ const Checker = struct {
         }
         _ = try self.checkMoveExpr(binding.value, ty);
         const declared = try self.declare(binding.name, ty, binding.mutable);
+        if (binding.mutable) declared.decl_offset = decl_offset;
         try self.ownLoansFrom(mark, declared);
     }
 
@@ -2029,9 +2071,12 @@ const Checker = struct {
             try self.report("cannot borrow moved value `{s}`", .{place.root.name});
             return;
         }
-        if (mutable and !try self.placeMutable(place)) {
-            try self.report("cannot mutably borrow immutable place `{s}`", .{place.root.name});
-            return;
+        if (mutable) {
+            place.root.mutated = true;
+            if (!try self.placeMutable(place)) {
+                try self.report("cannot mutably borrow immutable place `{s}`", .{place.root.name});
+                return;
+            }
         }
         for (self.loans.items) |loan| {
             if (!loan.active) continue;
@@ -2811,7 +2856,7 @@ const Checker = struct {
         defer self.releaseTemporaries(mark);
         switch (stmt.*) {
             .binding => |binding| {
-                try self.checkBinding(binding);
+                try self.checkBinding(binding, self.current_span.offset);
                 return null;
             },
             .ret => |value| {
@@ -3018,6 +3063,7 @@ const Checker = struct {
             try self.report("assignment target is not a place", .{});
             return;
         };
+        place.root.mutated = true;
         if (!place.root.initialized and (place.path.len != 0 or assign.op != .assign)) {
             try self.report("use of uninitialized value `{s}`", .{place.root.name});
             return;
@@ -4725,6 +4771,7 @@ const Checker = struct {
                 try self.expectAssignable(expected_receiver.reference.child, self.unwrapReferences(receiver_ty), field.name);
                 if (expected_receiver.reference.mutable) {
                     if (try self.placeOf(field.target)) |place| {
+                        place.root.mutated = true;
                         try self.checkRead(place);
                         if (!try self.placeMutable(place)) {
                             try self.report("method `{s}::{s}` requires a mutable receiver, but it is immutable", .{ def.name, field.name });

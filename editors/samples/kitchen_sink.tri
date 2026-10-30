@@ -238,3 +238,13 @@ pub finish <- () -> i32:
     detached <- detach work(2)
     cancelled <- cancel spawned
     ret value
+
+# ---------------------------------------------------------------------------
+# Plugin declarations and lease release (`plugin`, `disown`)
+# ---------------------------------------------------------------------------
+
+pub KitchenPlugin <- plugin
+
+pub release <- (commands: i64) -> nil:
+    disown commands
+    ret nil

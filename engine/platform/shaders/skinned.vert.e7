@@ -1,0 +1,40 @@
+# Four-weight GPU skinning. The palette follows the common Scene fields at
+# byte 320; joint matrices are mesh-local and column-major.
+Scene <- struct
+    model: [f32; 4, 4]
+    view: [f32; 4, 4]
+    proj: [f32; 4, 4]
+    camera_pos: [f32; 4]
+    light_pos: [f32; 4]
+    light_color: [f32; 4]
+    params: [f32; 4]
+    tint: [f32; 4]
+    padding0: [f32; 4]
+    padding1: [f32; 4]
+    padding2: [f32; 4]
+    joints: [[f32; 4, 4]; 64]
+
+@binding(0, 0)
+scene: Scene
+
+In <- struct
+    @location(0) position: [f32; 3]
+    @location(1) color: [f32; 3]
+    @location(2) texcoord: [f32; 2]
+    @location(3) joint: [u32; 4]
+    @location(4) weight: [f32; 4]
+
+Out <- struct
+    @builtin(position) position: [f32; 4]
+    @location(0) world_pos: [f32; 3]
+    @location(1) vcolor: [f32; 3]
+    @location(2) uv: [f32; 2]
+
+@vertex
+main <- (input: In) -> Out:
+    position := [input.position.x, input.position.y, input.position.z, 1.0] as [f32; 4]
+    skinned := (scene.joints[input.joint.x] * position) * input.weight.x + (scene.joints[input.joint.y] * position) * input.weight.y + (scene.joints[input.joint.z] * position) * input.weight.z + (scene.joints[input.joint.w] * position) * input.weight.w
+    world := scene.model * skinned
+    view := scene.view * world
+    clip := scene.proj * view
+    ret Out{position: clip, world_pos: world.xyz, vcolor: input.color, uv: input.texcoord}

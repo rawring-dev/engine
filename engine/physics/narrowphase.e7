@@ -51,7 +51,8 @@ max_f32 <- (a: f32, b: f32) -> f32:
     ret b
 
 pub aabb_overlap <- (a: Aabb, b: Aabb) -> bool:
-    ret (a.min.x <= b.max.x and a.max.x >= b.min.x and a.min.y <= b.max.y and a.max.y >= b.min.y and a.min.z <= b.max.z and a.max.z >= b.min.z)
+    ret (a.min.x <= b.max.x and a.max.x >= b.min.x and a.min.y <= b.max.y and
+        a.max.y >= b.min.y and a.min.z <= b.max.z and a.max.z >= b.min.z)
 
 # Total penetration depths on each axis; <= 0 means separated on that axis.
 pub aabb_penetration_depth <- (a: Aabb, b: Aabb) -> Vec3:
@@ -63,18 +64,18 @@ pub aabb_penetration_depth <- (a: Aabb, b: Aabb) -> Vec3:
 
 # Minimum translation that pushes `a` out of `b`.  Zero when not overlapping.
 pub aabb_penetration <- (a: Aabb, b: Aabb) -> Vec3:
-    depth_x := min_f32(a.max.x, b.max.x) - max_f32(a.min.x, b.min.x)
-    depth_y := min_f32(a.max.y, b.max.y) - max_f32(a.min.y, b.min.y)
-    depth_z := min_f32(a.max.z, b.max.z) - max_f32(a.min.z, b.min.z)
+    depth_x <- min_f32(a.max.x, b.max.x) - max_f32(a.min.x, b.min.x)
+    depth_y <- min_f32(a.max.y, b.max.y) - max_f32(a.min.y, b.min.y)
+    depth_z <- min_f32(a.max.z, b.max.z) - max_f32(a.min.z, b.min.z)
     if depth_x <= 0.0 or depth_y <= 0.0 or depth_z <= 0.0:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
 
-    a_center_x := (a.min.x + a.max.x) * 0.5
-    a_center_y := (a.min.y + a.max.y) * 0.5
-    a_center_z := (a.min.z + a.max.z) * 0.5
-    b_center_x := (b.min.x + b.max.x) * 0.5
-    b_center_y := (b.min.y + b.max.y) * 0.5
-    b_center_z := (b.min.z + b.max.z) * 0.5
+    a_center_x <- (a.min.x + a.max.x) * 0.5
+    a_center_y <- (a.min.y + a.max.y) * 0.5
+    a_center_z <- (a.min.z + a.max.z) * 0.5
+    b_center_x <- (b.min.x + b.max.x) * 0.5
+    b_center_y <- (b.min.y + b.max.y) * 0.5
+    b_center_z <- (b.min.z + b.max.z) * 0.5
 
     if depth_x <= depth_y and depth_x <= depth_z:
         if a_center_x < b_center_x:
@@ -89,12 +90,12 @@ pub aabb_penetration <- (a: Aabb, b: Aabb) -> Vec3:
     ret Vec3 { x: 0.0, y: 0.0, z: depth_z }
 
 pub sphere_aabb_overlap <- (center: Vec3, radius: f32, box: Aabb) -> bool:
-    closest_x := f32::clamp(center.x, box.min.x, box.max.x)
-    closest_y := f32::clamp(center.y, box.min.y, box.max.y)
-    closest_z := f32::clamp(center.z, box.min.z, box.max.z)
-    dx := center.x - closest_x
-    dy := center.y - closest_y
-    dz := center.z - closest_z
+    closest_x <- f32::clamp(center.x, box.min.x, box.max.x)
+    closest_y <- f32::clamp(center.y, box.min.y, box.max.y)
+    closest_z <- f32::clamp(center.z, box.min.z, box.max.z)
+    dx <- center.x - closest_x
+    dy <- center.y - closest_y
+    dz <- center.z - closest_z
     ret dx * dx + dy * dy + dz * dz <= radius * radius
 
 # Vertical capsule approximated by its enclosing AABB.
@@ -104,12 +105,12 @@ pub capsule_aabb_overlap <- (
     half_height: f32,
     box: Aabb,
 ) -> bool:
-    capsule_min := Vec3 {
+    capsule_min <- Vec3 {
         x: center.x - radius,
         y: center.y - half_height - radius,
         z: center.z - radius,
     }
-    capsule_max := Vec3 {
+    capsule_max <- Vec3 {
         x: center.x + radius,
         y: center.y + half_height + radius,
         z: center.z + radius,
@@ -125,17 +126,19 @@ pub capsule_plane_penetration <- (
     normal: Vec3,
     offset: f32,
 ) -> Vec3:
-    normalized := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    normalized <-
+        f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z *
+            normal.z)
     if normalized < 0.000001:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    nx := normal.x / normalized
-    ny := normal.y / normalized
-    nz := normal.z / normalized
-    distance := nx * center.x + ny * center.y + nz * center.z - offset
-    support := radius + half_height * f32::abs(ny)
+    nx <- normal.x / normalized
+    ny <- normal.y / normalized
+    nz <- normal.z / normalized
+    distance <- nx * center.x + ny * center.y + nz * center.z - offset
+    support <- radius + half_height * f32::abs(ny)
     if distance >= support:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    push := support - distance
+    push <- support - distance
     ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
 
 pub sphere_plane_penetration <- (
@@ -144,36 +147,42 @@ pub sphere_plane_penetration <- (
     normal: Vec3,
     offset: f32,
 ) -> Vec3:
-    normalized := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    normalized <-
+        f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z *
+            normal.z)
     if normalized < 0.000001:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    nx := normal.x / normalized
-    ny := normal.y / normalized
-    nz := normal.z / normalized
-    distance := nx * center.x + ny * center.y + nz * center.z - offset
+    nx <- normal.x / normalized
+    ny <- normal.y / normalized
+    nz <- normal.z / normalized
+    distance <- nx * center.x + ny * center.y + nz * center.z - offset
     if distance >= radius:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    push := radius - distance
+    push <- radius - distance
     ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
 
 pub box_plane_penetration <- (box: Aabb, normal: Vec3, offset: f32) -> Vec3:
-    normalized := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    normalized <-
+        f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z *
+            normal.z)
     if normalized < 0.000001:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    nx := normal.x / normalized
-    ny := normal.y / normalized
-    nz := normal.z / normalized
-    center_x := (box.min.x + box.max.x) * 0.5
-    center_y := (box.min.y + box.max.y) * 0.5
-    center_z := (box.min.z + box.max.z) * 0.5
-    extent_x := (box.max.x - box.min.x) * 0.5
-    extent_y := (box.max.y - box.min.y) * 0.5
-    extent_z := (box.max.z - box.min.z) * 0.5
-    distance := nx * center_x + ny * center_y + nz * center_z - offset
-    support := f32::abs(nx) * extent_x + f32::abs(ny) * extent_y + f32::abs(nz) * extent_z
+    nx <- normal.x / normalized
+    ny <- normal.y / normalized
+    nz <- normal.z / normalized
+    center_x <- (box.min.x + box.max.x) * 0.5
+    center_y <- (box.min.y + box.max.y) * 0.5
+    center_z <- (box.min.z + box.max.z) * 0.5
+    extent_x <- (box.max.x - box.min.x) * 0.5
+    extent_y <- (box.max.y - box.min.y) * 0.5
+    extent_z <- (box.max.z - box.min.z) * 0.5
+    distance <- nx * center_x + ny * center_y + nz * center_z - offset
+    support <-
+        f32::abs(nx) * extent_x + f32::abs(ny) * extent_y + f32::abs(
+            nz) * extent_z
     if distance >= support:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
-    push := support - distance
+    push <- support - distance
     ret Vec3 { x: nx * push, y: ny * push, z: nz * push }
 
 # True capsule-AABB test via the closest point between the capsule's vertical
@@ -185,10 +194,10 @@ pub capsule_aabb_penetration <- (
     half_height: f32,
     box: Aabb,
 ) -> Vec3:
-    segment_min_y := center.y - half_height
-    segment_max_y := center.y + half_height
-    overlap_low := max_f32(segment_min_y, box.min.y)
-    overlap_high := min_f32(segment_max_y, box.max.y)
+    segment_min_y <- center.y - half_height
+    segment_max_y <- center.y + half_height
+    overlap_low <- max_f32(segment_min_y, box.min.y)
+    overlap_high <- min_f32(segment_max_y, box.max.y)
     segment_y := center.y
     if overlap_low <= overlap_high:
         segment_y = f32::clamp(center.y, overlap_low, overlap_high)
@@ -197,24 +206,25 @@ pub capsule_aabb_penetration <- (
     else:
         segment_y = segment_min_y
 
-    point_x := f32::clamp(center.x, box.min.x, box.max.x)
-    point_y := f32::clamp(segment_y, box.min.y, box.max.y)
-    point_z := f32::clamp(center.z, box.min.z, box.max.z)
-    dx := center.x - point_x
-    dy := segment_y - point_y
-    dz := center.z - point_z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
+    point_x <- f32::clamp(center.x, box.min.x, box.max.x)
+    point_y <- f32::clamp(segment_y, box.min.y, box.max.y)
+    point_z <- f32::clamp(center.z, box.min.z, box.max.z)
+    dx <- center.x - point_x
+    dy <- segment_y - point_y
+    dz <- center.z - point_z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
     if distance >= radius:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
     if distance > 0.000001:
-        push := radius - distance
-        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
-    capsule_min := Vec3 {
+        push <- radius - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push,
+        z: dz / distance * push }
+    capsule_min <- Vec3 {
         x: center.x - radius,
         y: center.y - half_height - radius,
         z: center.z - radius,
     }
-    capsule_max := Vec3 {
+    capsule_max <- Vec3 {
         x: center.x + radius,
         y: center.y + half_height + radius,
         z: center.z + radius,
@@ -222,20 +232,25 @@ pub capsule_aabb_penetration <- (
     ret aabb_penetration(Aabb { min: capsule_min, max: capsule_max }, box)
 
 pub sphere_aabb_penetration <- (center: Vec3, radius: f32, box: Aabb) -> Vec3:
-    point_x := f32::clamp(center.x, box.min.x, box.max.x)
-    point_y := f32::clamp(center.y, box.min.y, box.max.y)
-    point_z := f32::clamp(center.z, box.min.z, box.max.z)
-    dx := center.x - point_x
-    dy := center.y - point_y
-    dz := center.z - point_z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
+    point_x <- f32::clamp(center.x, box.min.x, box.max.x)
+    point_y <- f32::clamp(center.y, box.min.y, box.max.y)
+    point_z <- f32::clamp(center.z, box.min.z, box.max.z)
+    dx <- center.x - point_x
+    dy <- center.y - point_y
+    dz <- center.z - point_z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
     if distance >= radius:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
     if distance > 0.000001:
-        push := radius - distance
-        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
-    sphere_min := Vec3 { x: center.x - radius, y: center.y - radius, z: center.z - radius }
-    sphere_max := Vec3 { x: center.x + radius, y: center.y + radius, z: center.z + radius }
+        push <- radius - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push,
+        z: dz / distance * push }
+    sphere_min <-
+        Vec3 { x: center.x - radius, y: center.y - radius,
+        z: center.z - radius }
+    sphere_max <-
+        Vec3 { x: center.x + radius, y: center.y + radius,
+        z: center.z + radius }
     ret aabb_penetration(Aabb { min: sphere_min, max: sphere_max }, box)
 
 # Sphere vs capsule: push the sphere out of the capsule's vertical segment.
@@ -246,45 +261,52 @@ pub sphere_capsule_penetration <- (
     sphere_center: Vec3,
     sphere_radius: f32,
 ) -> Vec3:
-    segment_y := f32::clamp(
+    segment_y <- f32::clamp(
         sphere_center.y,
         capsule_center.y - half_height,
         capsule_center.y + half_height,
     )
-    dx := sphere_center.x - capsule_center.x
-    dy := sphere_center.y - segment_y
-    dz := sphere_center.z - capsule_center.z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
-    combined := radius + sphere_radius
+    dx <- sphere_center.x - capsule_center.x
+    dy <- sphere_center.y - segment_y
+    dz <- sphere_center.z - capsule_center.z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
+    combined <- radius + sphere_radius
     if distance >= combined:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
     if distance > 0.000001:
-        push := combined - distance
-        ret Vec3 { x: dx / distance * push, y: dy / distance * push, z: dz / distance * push }
+        push <- combined - distance
+        ret Vec3 { x: dx / distance * push, y: dy / distance * push,
+        z: dz / distance * push }
     ret Vec3 { x: 0.0, y: combined, z: 0.0 }
 
 # True when the AABB crosses the infinite plane (signed distances straddle 0).
 pub plane_aabb_overlap <- (normal: Vec3, offset: f32, box: Aabb) -> bool:
-    center := Vec3 {
+    center <- Vec3 {
         x: (box.min.x + box.max.x) * 0.5,
         y: (box.min.y + box.max.y) * 0.5,
         z: (box.min.z + box.max.z) * 0.5,
     }
-    extent := Vec3 {
+    extent <- Vec3 {
         x: (box.max.x - box.min.x) * 0.5,
         y: (box.max.y - box.min.y) * 0.5,
         z: (box.max.z - box.min.z) * 0.5,
     }
-    center_distance := normal.x * center.x + normal.y * center.y + normal.z * center.z - offset
-    radius := (f32::abs(normal.x) * extent.x + f32::abs(normal.y) * extent.y + f32::abs(normal.z) * extent.z)
+    center_distance <-
+        normal.x * center.x + normal.y * center.y + normal.z * center.z - offset
+    radius <- (f32::abs(normal.x) * extent.x + f32::abs(normal.y) * extent.y +
+        f32::abs(normal.z) * extent.z)
     ret center_distance - radius <= 0.0 and center_distance + radius >= 0.0
 
 pub ray_plane <- (ray: Ray, normal: Vec3, offset: f32) -> RayHit:
-    denominator := normal.x * ray.direction.x + normal.y * ray.direction.y + normal.z * ray.direction.z
+    denominator <-
+        (normal.x * ray.direction.x + normal.y * ray.direction.y + normal.z *
+            ray.direction.z)
     if f32::abs(denominator) < 0.000001:
         ret RayHit { hit: false, distance: 0.0, point: ray.origin }
-    origin_distance := normal.x * ray.origin.x + normal.y * ray.origin.y + normal.z * ray.origin.z
-    t := (offset - origin_distance) / denominator
+    origin_distance <-
+        (normal.x * ray.origin.x + normal.y * ray.origin.y + normal.z *
+            ray.origin.z)
+    t <- (offset - origin_distance) / denominator
     if t < 0.0:
         ret RayHit { hit: false, distance: 0.0, point: ray.origin }
     ret RayHit {
@@ -298,7 +320,8 @@ pub ray_plane <- (ray: Ray, normal: Vec3, offset: f32) -> RayHit:
     }
 
 # Capsule ray test approximated by a sphere around the capsule centre.
-pub ray_capsule <- (ray: Ray, center: Vec3, radius: f32, half_height: f32) -> RayHit:
+pub ray_capsule <- (ray: Ray, center: Vec3, radius: f32,
+half_height: f32) -> RayHit:
     ret ray_sphere(ray, center, radius + half_height)
 
 # ---------------------------------------------------------------------------
@@ -321,10 +344,10 @@ pub quat_identity <- () -> Quat:
     ret Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
 
 pub quat_normalize <- (q: Quat) -> Quat:
-    length := f32::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+    length <- f32::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
     if length < 0.000001:
         ret Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
-    inv := 1.0 / length
+    inv <- 1.0 / length
     ret Quat { x: q.x * inv, y: q.y * inv, z: q.z * inv, w: q.w * inv }
 
 pub quat_mul <- (a: Quat, b: Quat) -> Quat:
@@ -340,9 +363,9 @@ pub quat_conjugate <- (q: Quat) -> Quat:
 
 pub quat_rotate <- (q: Quat, v: Vec3) -> Vec3:
     # v' = v + 2w(qv x v) + 2 qv x (qv x v)
-    tx := 2.0 * (q.y * v.z - q.z * v.y)
-    ty := 2.0 * (q.z * v.x - q.x * v.z)
-    tz := 2.0 * (q.x * v.y - q.y * v.x)
+    tx <- 2.0 * (q.y * v.z - q.z * v.y)
+    ty <- 2.0 * (q.z * v.x - q.x * v.z)
+    tz <- 2.0 * (q.x * v.y - q.y * v.x)
     ret Vec3 {
         x: v.x + q.w * tx + (q.y * tz - q.z * ty),
         y: v.y + q.w * ty + (q.z * tx - q.x * tz),
@@ -350,16 +373,16 @@ pub quat_rotate <- (q: Quat, v: Vec3) -> Vec3:
     }
 
 pub quat_from_euler <- (roll: f32, pitch: f32, yaw: f32) -> Quat:
-    half_roll := roll * 0.5
-    half_pitch := pitch * 0.5
-    half_yaw := yaw * 0.5
-    cr := f32::cos(half_roll)
-    sr := f32::sin(half_roll)
-    cp := f32::cos(half_pitch)
-    sp := f32::sin(half_pitch)
-    cy := f32::cos(half_yaw)
-    sy := f32::sin(half_yaw)
-    qx := Quat {
+    half_roll <- roll * 0.5
+    half_pitch <- pitch * 0.5
+    half_yaw <- yaw * 0.5
+    cr <- f32::cos(half_roll)
+    sr <- f32::sin(half_roll)
+    cp <- f32::cos(half_pitch)
+    sp <- f32::sin(half_pitch)
+    cy <- f32::cos(half_yaw)
+    sy <- f32::sin(half_yaw)
+    qx <- Quat {
         x: sr * cp * cy - cr * sp * sy,
         y: cr * sp * cy + sr * cp * sy,
         z: cr * cp * sy - sr * sp * cy,
@@ -369,11 +392,11 @@ pub quat_from_euler <- (roll: f32, pitch: f32, yaw: f32) -> Quat:
     ret quat_normalize(qx)
 
 pub quat_integrate <- (q: Quat, omega: Vec3, dt: f32) -> Quat:
-    half_dt := dt * 0.5
-    wx := omega.x * half_dt
-    wy := omega.y * half_dt
-    wz := omega.z * half_dt
-    next := Quat {
+    half_dt <- dt * 0.5
+    wx <- omega.x * half_dt
+    wy <- omega.y * half_dt
+    wz <- omega.z * half_dt
+    next <- Quat {
         x: q.x + (wx * q.w + wy * q.z - wz * q.y),
         y: q.y + (wy * q.w + wz * q.x - wx * q.z),
         z: q.z + (wz * q.w + wx * q.y - wy * q.x),
@@ -383,19 +406,21 @@ pub quat_integrate <- (q: Quat, omega: Vec3, dt: f32) -> Quat:
 
 # Small atan approximation for |x| <= 1; rendering-quality Euler sync only.
 atan_unit <- (x: f32) -> f32:
-    x2 := x * x
-    poly := x * (1.0 - x2 * (0.3333333333 - x2 * (0.2 - x2 * (0.1428571428 - x2 * 0.1111111111))))
+    x2 <- x * x
+    poly <-
+        x * (1.0 - x2 * (0.3333333333 - x2 * (0.2 - x2 * (0.1428571428 - x2 *
+            0.1111111111))))
     ret poly
 
 pub atan2_approx <- (y: f32, x: f32) -> f32:
-    pi := 3.1415926535
-    half_pi := pi * 0.5
-    abs_y := f32::abs(y)
-    abs_x := f32::abs(x)
+    pi <- 3.1415926535
+    half_pi <- pi * 0.5
+    abs_y <- f32::abs(y)
+    abs_x <- f32::abs(x)
     if abs_y > abs_x:
         if abs_y < 0.000001:
             ret 0.0
-        ratio := x / abs_y
+        ratio <- x / abs_y
         if y > 0.0:
             ret half_pi - atan_unit(ratio)
         ret 0.0 - half_pi - atan_unit(ratio)
@@ -405,7 +430,7 @@ pub atan2_approx <- (y: f32, x: f32) -> f32:
         if y < 0.0:
             ret 0.0 - half_pi
         ret 0.0
-    ratio := y / abs_x
+    ratio <- y / abs_x
     if x > 0.0:
         ret atan_unit(ratio)
     if y >= 0.0:
@@ -413,8 +438,8 @@ pub atan2_approx <- (y: f32, x: f32) -> f32:
     ret 0.0 - pi + atan_unit(ratio)
 
 pub asin_approx <- (x: f32) -> f32:
-    clamped := f32::clamp(x, -1.0, 1.0)
-    root := f32::sqrt(1.0 - clamped * clamped)
+    clamped <- f32::clamp(x, -1.0, 1.0)
+    root <- f32::sqrt(1.0 - clamped * clamped)
     ret atan2_approx(clamped, root)
 
 # Euler decomposition helper for tooling/tests only.  The simulation and the
@@ -423,10 +448,14 @@ pub asin_approx <- (x: f32) -> f32:
 pub quat_to_euler <- (q: Quat) -> Vec3:
     # Inverse of quat_from_euler for R = Rz(yaw) * Ry(pitch) * Rx(roll).
     # Standard active (right-handed) XYZ Euler decomposition.
-    sin_pitch := f32::clamp(2.0 * (q.w * q.y - q.x * q.z), -1.0, 1.0)
-    pitch := asin_approx(sin_pitch)
-    yaw := atan2_approx(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-    roll := atan2_approx(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+    sin_pitch <- f32::clamp(2.0 * (q.w * q.y - q.x * q.z), -1.0, 1.0)
+    pitch <- asin_approx(sin_pitch)
+    yaw <-
+        atan2_approx(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y +
+            q.z * q.z))
+    roll <-
+        atan2_approx(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x +
+            q.y * q.y))
     ret Vec3 { x: roll, y: pitch, z: yaw }
 
 pub quat_from_vec <- (values: [f32]) -> Quat:
@@ -455,15 +484,23 @@ pub shape_aabb <- (
         }
     if shape == 1:
         ret Aabb {
-            min: Vec3 { x: center.x - radius, y: center.y - radius, z: center.z - radius },
-            max: Vec3 { x: center.x + radius, y: center.y + radius, z: center.z + radius },
+            min: Vec3 { x: center.x - radius, y: center.y - radius,
+            z: center.z - radius },
+            max: Vec3 { x: center.x + radius, y: center.y + radius,
+            z: center.z + radius },
         }
-    axis_x := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
-    axis_y := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    axis_z := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    axis_x <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    axis_y <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    axis_z <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
     if shape == 2:
         # Capsule segment endpoints + radius.
-        segment := Vec3 {
+        segment <- Vec3 {
             x: axis_y.x * half_height,
             y: axis_y.y * half_height,
             z: axis_y.z * half_height,
@@ -480,21 +517,36 @@ pub shape_aabb <- (
                 z: center.z + segment.z + radius,
             },
         }
-    ex := f32::abs(axis_x.x) * half_extents.x + f32::abs(axis_y.x) * half_extents.y + f32::abs(axis_z.x) * half_extents.z
-    ey := f32::abs(axis_x.y) * half_extents.x + f32::abs(axis_y.y) * half_extents.y + f32::abs(axis_z.y) * half_extents.z
-    ez := f32::abs(axis_x.z) * half_extents.x + f32::abs(axis_y.z) * half_extents.y + f32::abs(axis_z.z) * half_extents.z
+    ex <-
+        f32::abs(axis_x.x) * half_extents.x + f32::abs(
+            axis_y.x) * half_extents.y + f32::abs(axis_z.x) * half_extents.z
+    ey <-
+        f32::abs(axis_x.y) * half_extents.x + f32::abs(
+            axis_y.y) * half_extents.y + f32::abs(axis_z.y) * half_extents.z
+    ez <-
+        f32::abs(axis_x.z) * half_extents.x + f32::abs(
+            axis_y.z) * half_extents.y + f32::abs(axis_z.z) * half_extents.z
     ret Aabb {
         min: Vec3 { x: center.x - ex, y: center.y - ey, z: center.z - ez },
         max: Vec3 { x: center.x + ex, y: center.y + ey, z: center.z + ez },
     }
 
-pub obb_axis_radius <- (axis: Vec3, half_extents: Vec3, orientation: Quat) -> f32:
-    ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
-    ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+pub obb_axis_radius <- (axis: Vec3, half_extents: Vec3,
+orientation: Quat) -> f32:
+    ax <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
     ret (
-        f32::abs(axis.x * ax.x + axis.y * ax.y + axis.z * ax.z) * half_extents.x +
-        f32::abs(axis.x * ay.x + axis.y * ay.y + axis.z * ay.z) * half_extents.y +
+        f32::abs(axis.x * ax.x + axis.y * ax.y + axis.z * ax.z) *
+        half_extents.x +
+        f32::abs(axis.x * ay.x + axis.y * ay.y + axis.z * ay.z) *
+        half_extents.y +
         f32::abs(axis.x * az.x + axis.y * az.y + axis.z * az.z) * half_extents.z
     )
 
@@ -511,9 +563,9 @@ box_axis <- (orientation: Quat, index: i64) -> Vec3:
     ret quat_rotate(orientation, axis)
 
 pub obb_obb_manifold <- (a: Obb, b: Obb) -> Manifold:
-    dx := a.center.x - b.center.x
-    dy := a.center.y - b.center.y
-    dz := a.center.z - b.center.z
+    dx <- a.center.x - b.center.x
+    dy <- a.center.y - b.center.y
+    dz <- a.center.z - b.center.z
     best := 1000000.0
     nx := 0.0
     ny := 1.0
@@ -522,35 +574,47 @@ pub obb_obb_manifold <- (a: Obb, b: Obb) -> Manifold:
     while index < 15:
         axis := Vec3 { x: 0.0, y: 0.0, z: 0.0 }
         if index < 3:
-            axis = box_axis(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, index)
+            axis =
+                box_axis(Quat { x: a.orientation.x, y: a.orientation.y,
+                    z: a.orientation.z, w: a.orientation.w }, index)
         elif index < 6:
-            axis = box_axis(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, index - 3)
+            axis =
+                box_axis(Quat { x: b.orientation.x, y: b.orientation.y,
+                    z: b.orientation.z, w: b.orientation.w }, index - 3)
         else:
             axis = vec3_cross(
-                box_axis(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, (index - 6) / 3),
-                box_axis(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, (index - 6) % 3),
+                box_axis(Quat { x: a.orientation.x, y: a.orientation.y,
+                    z: a.orientation.z, w: a.orientation.w }, (index - 6) / 3),
+                box_axis(Quat { x: b.orientation.x, y: b.orientation.y,
+                    z: b.orientation.z, w: b.orientation.w }, (index - 6) % 3),
             )
         index = index + 1
-        length := f32::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
+        length <- f32::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z)
         if length < 0.0001:
             cont
-        ax := axis.x / length
-        ay := axis.y / length
-        az := axis.z / length
-        ra := obb_axis_radius(
+        ax <- axis.x / length
+        ay <- axis.y / length
+        az <- axis.z / length
+        ra <- obb_axis_radius(
             Vec3 { x: ax, y: ay, z: az },
-            Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z },
-            Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w },
+            Vec3 { x: a.half_extents.x, y: a.half_extents.y,
+            z: a.half_extents.z },
+            Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z,
+            w: a.orientation.w },
         )
-        rb := obb_axis_radius(
+        rb <- obb_axis_radius(
             Vec3 { x: ax, y: ay, z: az },
-            Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z },
-            Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w },
+            Vec3 { x: b.half_extents.x, y: b.half_extents.y,
+            z: b.half_extents.z },
+            Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z,
+            w: b.orientation.w },
         )
-        separation := dx * ax + dy * ay + dz * az
-        overlap := ra + rb - f32::abs(separation)
+        separation <- dx * ax + dy * ay + dz * az
+        overlap <- ra + rb - f32::abs(separation)
         if overlap <= 0.0:
-            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z } }
+            ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+            penetration: 0.0, contact: Vec3 { x: a.center.x, y: a.center.y,
+            z: a.center.z } }
         if overlap < best:
             best = overlap
             sign := 1.0
@@ -563,29 +627,46 @@ pub obb_obb_manifold <- (a: Obb, b: Obb) -> Manifold:
         hit: true,
         normal: Vec3 { x: nx, y: ny, z: nz },
         penetration: best,
-        contact: Vec3 { x: (a.center.x + b.center.x) * 0.5, y: (a.center.y + b.center.y) * 0.5, z: (a.center.z + b.center.z) * 0.5 },
+        contact: Vec3 { x: (a.center.x + b.center.x) * 0.5, y: (a.center.y +
+            b.center.y) * 0.5, z: (a.center.z + b.center.z) * 0.5 },
     }
 
 # OBB vs plane: push the OBB out along +normal.
 pub obb_plane_manifold <- (box: Obb, normal: Vec3, offset: f32) -> Manifold:
-    length := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    length <-
+        f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z *
+            normal.z)
     if length < 0.000001:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y, z: box.center.z } }
-    nx := normal.x / length
-    ny := normal.y / length
-    nz := normal.z / length
-    ax := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
-    ay := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    az := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
-    support := (
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y,
+        z: box.center.z } }
+    nx <- normal.x / length
+    ny <- normal.y / length
+    nz <- normal.z / length
+    ax <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 1.0, y: 0.0,
+            z: 0.0 })
+    ay <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 1.0,
+            z: 0.0 })
+    az <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, Vec3 { x: 0.0, y: 0.0,
+            z: 1.0 })
+    support <- (
         f32::abs(nx * ax.x + ny * ax.y + nz * ax.z) * box.half_extents.x +
         f32::abs(nx * ay.x + ny * ay.y + nz * ay.z) * box.half_extents.y +
         f32::abs(nx * az.x + ny * az.y + nz * az.z) * box.half_extents.z
     )
-    distance := nx * box.center.x + ny * box.center.y + nz * box.center.z - offset
+    distance <-
+        nx * box.center.x + ny * box.center.y + nz * box.center.z - offset
     if distance >= support:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y, z: box.center.z } }
-    penetration := support - distance
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: box.center.x, y: box.center.y,
+        z: box.center.z } }
+    penetration <- support - distance
     ret Manifold {
         hit: true,
         normal: Vec3 { x: nx, y: ny, z: nz },
@@ -598,25 +679,33 @@ pub obb_plane_manifold <- (box: Obb, normal: Vec3, offset: f32) -> Manifold:
     }
 
 pub sphere_obb_manifold <- (center: Vec3, radius: f32, box: Obb) -> Manifold:
-    inv := quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w })
-    local := quat_rotate(inv, Vec3 {
+    inv <-
+        quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w })
+    local <- quat_rotate(inv, Vec3 {
         x: center.x - box.center.x,
         y: center.y - box.center.y,
         z: center.z - box.center.z,
     })
-    closest_x := f32::clamp(local.x, 0.0 - box.half_extents.x, box.half_extents.x)
-    closest_y := f32::clamp(local.y, 0.0 - box.half_extents.y, box.half_extents.y)
-    closest_z := f32::clamp(local.z, 0.0 - box.half_extents.z, box.half_extents.z)
-    dx := local.x - closest_x
-    dy := local.y - closest_y
-    dz := local.z - closest_z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
+    closest_x :=
+        f32::clamp(local.x, 0.0 - box.half_extents.x, box.half_extents.x)
+    closest_y :=
+        f32::clamp(local.y, 0.0 - box.half_extents.y, box.half_extents.y)
+    closest_z :=
+        f32::clamp(local.z, 0.0 - box.half_extents.z, box.half_extents.z)
+    dx <- local.x - closest_x
+    dy <- local.y - closest_y
+    dz <- local.z - closest_z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
     if distance >= radius:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: center.x, y: center.y,
+        z: center.z } }
     local_normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     penetration := radius - distance
     if distance > 0.000001:
-        local_normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
+        local_normal =
+            Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
     else:
         # An interior centre needs the nearest exit face, plus the radius.
         # A fixed +Y normal and radius-only depth leave it trapped in the box.
@@ -644,12 +733,17 @@ pub sphere_obb_manifold <- (center: Vec3, radius: f32, box: Obb) -> Manifold:
             closest_y = local.y
             closest_z = sign * box.half_extents.z
         penetration = radius + face
-    world_normal := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_normal)
-    local_contact := Vec3 { x: closest_x, y: closest_y, z: closest_z }
-    world_contact := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_contact)
+    world_normal <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, local_normal)
+    local_contact <- Vec3 { x: closest_x, y: closest_y, z: closest_z }
+    world_contact <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, local_contact)
     ret Manifold {
         hit: true,
-        normal: Vec3 { x: world_normal.x, y: world_normal.y, z: world_normal.z },
+        normal: Vec3 { x: world_normal.x, y: world_normal.y,
+        z: world_normal.z },
         penetration: penetration,
         contact: Vec3 {
             x: box.center.x + world_contact.x,
@@ -659,16 +753,18 @@ pub sphere_obb_manifold <- (center: Vec3, radius: f32, box: Obb) -> Manifold:
     }
 
 # Pure distance function shared by the convex segment search.
-segment_box_distance_squared <- (start: Vec3, end: Vec3, half: Vec3, t: f32) -> f32:
-    x := start.x + (end.x - start.x) * t
-    y := start.y + (end.y - start.y) * t
-    z := start.z + (end.z - start.z) * t
-    dx := x - f32::clamp(x, 0.0 - half.x, half.x)
-    dy := y - f32::clamp(y, 0.0 - half.y, half.y)
-    dz := z - f32::clamp(z, 0.0 - half.z, half.z)
+segment_box_distance_squared <- (start: Vec3, end: Vec3, half: Vec3,
+t: f32) -> f32:
+    x <- start.x + (end.x - start.x) * t
+    y <- start.y + (end.y - start.y) * t
+    z <- start.z + (end.z - start.z) * t
+    dx <- x - f32::clamp(x, 0.0 - half.x, half.x)
+    dy <- y - f32::clamp(y, 0.0 - half.y, half.y)
+    dz <- z - f32::clamp(z, 0.0 - half.z, half.z)
     ret dx * dx + dy * dy + dz * dz
 
-# Capsule (A) vs OBB (B), using the capsule segment's closest point in OBB space.
+# Capsule (A) vs OBB (B), using the capsule segment's closest point in OBB
+# space.
 pub capsule_obb_manifold <- (
     center: Vec3,
     radius: f32,
@@ -676,18 +772,26 @@ pub capsule_obb_manifold <- (
     orientation: Quat,
     box: Obb,
 ) -> Manifold:
-    local_center := quat_rotate(quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }), Vec3 {
+    local_center <-
+        quat_rotate(quat_conjugate(Quat { x: box.orientation.x,
+            y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }),
+            Vec3 {
         x: center.x - box.center.x,
         y: center.y - box.center.y,
         z: center.z - box.center.z,
     })
-    local_axis := quat_rotate(quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }), quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 }))
-    segment_min := Vec3 {
+    local_axis <-
+        quat_rotate(quat_conjugate(Quat { x: box.orientation.x,
+            y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }),
+            quat_rotate(Quat { x: orientation.x, y: orientation.y,
+            z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0,
+            z: 0.0 }))
+    segment_min <- Vec3 {
         x: local_center.x - local_axis.x * half_height,
         y: local_center.y - local_axis.y * half_height,
         z: local_center.z - local_axis.z * half_height,
     }
-    segment_max := Vec3 {
+    segment_max <- Vec3 {
         x: local_center.x + local_axis.x * half_height,
         y: local_center.y + local_axis.y * half_height,
         z: local_center.z + local_axis.z * half_height,
@@ -698,53 +802,60 @@ pub capsule_obb_manifold <- (
     upper := 1.0
     iteration := 0
     while iteration < 40:
-        left := lower + (upper - lower) / 3.0
-        right := upper - (upper - lower) / 3.0
-        dl := segment_box_distance_squared(
+        left <- lower + (upper - lower) / 3.0
+        right <- upper - (upper - lower) / 3.0
+        dl <- segment_box_distance_squared(
             Vec3 { x: segment_min.x, y: segment_min.y, z: segment_min.z },
             Vec3 { x: segment_max.x, y: segment_max.y, z: segment_max.z },
-            Vec3 { x: box.half_extents.x, y: box.half_extents.y, z: box.half_extents.z }, left,
+            Vec3 { x: box.half_extents.x, y: box.half_extents.y,
+            z: box.half_extents.z }, left,
         )
-        dr := segment_box_distance_squared(
+        dr <- segment_box_distance_squared(
             Vec3 { x: segment_min.x, y: segment_min.y, z: segment_min.z },
             Vec3 { x: segment_max.x, y: segment_max.y, z: segment_max.z },
-            Vec3 { x: box.half_extents.x, y: box.half_extents.y, z: box.half_extents.z }, right,
+            Vec3 { x: box.half_extents.x, y: box.half_extents.y,
+            z: box.half_extents.z }, right,
         )
         if dl <= dr:
             upper = right
         else:
             lower = left
         iteration = iteration + 1
-    t := (lower + upper) * 0.5
-    px := segment_min.x + (segment_max.x - segment_min.x) * t
-    py := segment_min.y + (segment_max.y - segment_min.y) * t
-    pz := segment_min.z + (segment_max.z - segment_min.z) * t
+    t <- (lower + upper) * 0.5
+    px <- segment_min.x + (segment_max.x - segment_min.x) * t
+    py <- segment_min.y + (segment_max.y - segment_min.y) * t
+    pz <- segment_min.z + (segment_max.z - segment_min.z) * t
     best_point_x := f32::clamp(px, 0.0 - box.half_extents.x, box.half_extents.x)
     best_point_y := f32::clamp(py, 0.0 - box.half_extents.y, box.half_extents.y)
     best_point_z := f32::clamp(pz, 0.0 - box.half_extents.z, box.half_extents.z)
-    best_dx := px - best_point_x
-    best_dy := py - best_point_y
-    best_dz := pz - best_point_z
-    best_distance := f32::sqrt(best_dx * best_dx + best_dy * best_dy + best_dz * best_dz)
+    best_dx <- px - best_point_x
+    best_dy <- py - best_point_y
+    best_dz <- pz - best_point_z
+    best_distance <-
+        f32::sqrt(best_dx * best_dx + best_dy * best_dy + best_dz * best_dz)
     if best_distance >= radius:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: center.x, y: center.y,
+        z: center.z } }
     local_normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     penetration := radius - best_distance
     if best_distance > 0.000001:
-        local_normal = Vec3 { x: best_dx / best_distance, y: best_dy / best_distance, z: best_dz / best_distance }
+        local_normal =
+            Vec3 { x: best_dx / best_distance, y: best_dy / best_distance,
+            z: best_dz / best_distance }
     else:
         # The segment intersects the box. Choose the shortest face-axis exit
         # for the entire capsule, not just for the sampled point on its axis.
-        starts := [segment_min.x, segment_min.y, segment_min.z]
-        ends := [segment_max.x, segment_max.y, segment_max.z]
-        extents := [box.half_extents.x, box.half_extents.y, box.half_extents.z]
+        starts <- [segment_min.x, segment_min.y, segment_min.z]
+        ends <- [segment_max.x, segment_max.y, segment_max.z]
+        extents <- [box.half_extents.x, box.half_extents.y, box.half_extents.z]
         penetration = 1000000.0
         axis := 0
         while axis < 3:
-            low := min_f32(starts[axis as usize], ends[axis as usize])
-            high := max_f32(starts[axis as usize], ends[axis as usize])
-            positive := extents[axis as usize] - low + radius
-            negative := extents[axis as usize] + high + radius
+            low <- min_f32(starts[axis as usize], ends[axis as usize])
+            high <- max_f32(starts[axis as usize], ends[axis as usize])
+            positive <- extents[axis as usize] - low + radius
+            negative <- extents[axis as usize] + high + radius
             depth := positive
             sign := 1.0
             if negative < positive:
@@ -756,25 +867,42 @@ pub capsule_obb_manifold <- (
                 if axis == 0:
                     local_normal.x = sign
                     best_point_x = sign * box.half_extents.x
-                    best_point_y = f32::clamp(local_center.y, 0.0 - box.half_extents.y, box.half_extents.y)
-                    best_point_z = f32::clamp(local_center.z, 0.0 - box.half_extents.z, box.half_extents.z)
+                    best_point_y =
+                        f32::clamp(local_center.y, 0.0 - box.half_extents.y,
+                            box.half_extents.y)
+                    best_point_z =
+                        f32::clamp(local_center.z, 0.0 - box.half_extents.z,
+                            box.half_extents.z)
                 elif axis == 1:
                     local_normal.y = sign
-                    best_point_x = f32::clamp(local_center.x, 0.0 - box.half_extents.x, box.half_extents.x)
+                    best_point_x =
+                        f32::clamp(local_center.x, 0.0 - box.half_extents.x,
+                            box.half_extents.x)
                     best_point_y = sign * box.half_extents.y
-                    best_point_z = f32::clamp(local_center.z, 0.0 - box.half_extents.z, box.half_extents.z)
+                    best_point_z =
+                        f32::clamp(local_center.z, 0.0 - box.half_extents.z,
+                            box.half_extents.z)
                 else:
                     local_normal.z = sign
-                    best_point_x = f32::clamp(local_center.x, 0.0 - box.half_extents.x, box.half_extents.x)
-                    best_point_y = f32::clamp(local_center.y, 0.0 - box.half_extents.y, box.half_extents.y)
+                    best_point_x =
+                        f32::clamp(local_center.x, 0.0 - box.half_extents.x,
+                            box.half_extents.x)
+                    best_point_y =
+                        f32::clamp(local_center.y, 0.0 - box.half_extents.y,
+                            box.half_extents.y)
                     best_point_z = sign * box.half_extents.z
             axis = axis + 1
-    world_normal := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_normal)
-    local_contact := Vec3 { x: best_point_x, y: best_point_y, z: best_point_z }
-    world_contact := quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }, local_contact)
+    world_normal <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, local_normal)
+    local_contact <- Vec3 { x: best_point_x, y: best_point_y, z: best_point_z }
+    world_contact <-
+        quat_rotate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }, local_contact)
     ret Manifold {
         hit: true,
-        normal: Vec3 { x: world_normal.x, y: world_normal.y, z: world_normal.z },
+        normal: Vec3 { x: world_normal.x, y: world_normal.y,
+        z: world_normal.z },
         penetration: penetration,
         contact: Vec3 {
             x: box.center.x + world_contact.x,
@@ -792,18 +920,27 @@ pub capsule_plane_manifold <- (
     normal: Vec3,
     offset: f32,
 ) -> Manifold:
-    length := f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+    length <-
+        f32::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z *
+            normal.z)
     if length < 0.000001:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
-    nx := normal.x / length
-    ny := normal.y / length
-    nz := normal.z / length
-    axis := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    support := radius + half_height * f32::abs(nx * axis.x + ny * axis.y + nz * axis.z)
-    distance := nx * center.x + ny * center.y + nz * center.z - offset
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: center.x, y: center.y,
+        z: center.z } }
+    nx <- normal.x / length
+    ny <- normal.y / length
+    nz <- normal.z / length
+    axis <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    support <-
+        radius + half_height * f32::abs(nx * axis.x + ny * axis.y + nz * axis.z)
+    distance <- nx * center.x + ny * center.y + nz * center.z - offset
     if distance >= support:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center.x, y: center.y, z: center.z } }
-    return_contact := Vec3 {
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: center.x, y: center.y,
+        z: center.z } }
+    return_contact <- Vec3 {
         x: center.x - nx * support,
         y: center.y - ny * support,
         z: center.z - nz * support,
@@ -821,13 +958,15 @@ pub sphere_sphere_manifold <- (
     center_b: Vec3,
     radius_b: f32,
 ) -> Manifold:
-    dx := center_a.x - center_b.x
-    dy := center_a.y - center_b.y
-    dz := center_a.z - center_b.z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
-    combined := radius_a + radius_b
+    dx <- center_a.x - center_b.x
+    dy <- center_a.y - center_b.y
+    dz <- center_a.z - center_b.z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
+    combined <- radius_a + radius_b
     if distance >= combined:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: center_a.x, y: center_a.y, z: center_a.z } }
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: center_a.x, y: center_a.y,
+        z: center_a.z } }
     normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     if distance > 0.000001:
         normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
@@ -842,7 +981,8 @@ pub sphere_sphere_manifold <- (
         },
     }
 
-# Diagonal inverse inertia for the simple demo shapes (world axes approximation).
+# Diagonal inverse inertia for the simple demo shapes (world axes
+# approximation).
 pub inverse_inertia_diagonal <- (
     shape: i64,
     half_extents: Vec3,
@@ -853,15 +993,23 @@ pub inverse_inertia_diagonal <- (
     if inv_mass <= 0.0:
         ret Vec3 { x: 0.0, y: 0.0, z: 0.0 }
     if shape == 1:
-        value := 2.5 * inv_mass / (radius * radius + 0.000001)
+        value <- 2.5 * inv_mass / (radius * radius + 0.000001)
         ret Vec3 { x: value, y: value, z: value }
     if shape == 2:
-        lateral := 12.0 * inv_mass / (3.0 * radius * radius + 4.0 * half_height * half_height + 0.000001)
-        vertical := 2.0 * inv_mass / (radius * radius + 0.000001)
+        lateral <-
+            12.0 * inv_mass / (3.0 * radius * radius + 4.0 * half_height *
+                half_height + 0.000001)
+        vertical <- 2.0 * inv_mass / (radius * radius + 0.000001)
         ret Vec3 { x: lateral, y: vertical, z: lateral }
-    x_axis := 3.0 * inv_mass / (half_extents.y * half_extents.y + half_extents.z * half_extents.z + 0.000001)
-    y_axis := 3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.z * half_extents.z + 0.000001)
-    z_axis := 3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.y * half_extents.y + 0.000001)
+    x_axis <-
+        3.0 * inv_mass / (half_extents.y * half_extents.y + half_extents.z *
+            half_extents.z + 0.000001)
+    y_axis <-
+        3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.z *
+            half_extents.z + 0.000001)
+    z_axis <-
+        3.0 * inv_mass / (half_extents.x * half_extents.x + half_extents.y *
+            half_extents.y + 0.000001)
     ret Vec3 { x: x_axis, y: y_axis, z: z_axis }
 
 pub capsule_capsule_manifold <- (
@@ -874,18 +1022,36 @@ pub capsule_capsule_manifold <- (
     half_height_b: f32,
     orientation_b: Quat,
 ) -> Manifold:
-    axis_a := quat_rotate(Quat { x: orientation_a.x, y: orientation_a.y, z: orientation_a.z, w: orientation_a.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    axis_b := quat_rotate(Quat { x: orientation_b.x, y: orientation_b.y, z: orientation_b.z, w: orientation_b.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    a1 := Vec3 { x: center_a.x - axis_a.x * half_height_a, y: center_a.y - axis_a.y * half_height_a, z: center_a.z - axis_a.z * half_height_a }
-    a2 := Vec3 { x: center_a.x + axis_a.x * half_height_a, y: center_a.y + axis_a.y * half_height_a, z: center_a.z + axis_a.z * half_height_a }
-    b1 := Vec3 { x: center_b.x - axis_b.x * half_height_b, y: center_b.y - axis_b.y * half_height_b, z: center_b.z - axis_b.z * half_height_b }
-    b2 := Vec3 { x: center_b.x + axis_b.x * half_height_b, y: center_b.y + axis_b.y * half_height_b, z: center_b.z + axis_b.z * half_height_b }
-    d1 := Vec3 { x: a2.x - a1.x, y: a2.y - a1.y, z: a2.z - a1.z }
-    d2 := Vec3 { x: b2.x - b1.x, y: b2.y - b1.y, z: b2.z - b1.z }
-    r := Vec3 { x: a1.x - b1.x, y: a1.y - b1.y, z: a1.z - b1.z }
-    aa := d1.x * d1.x + d1.y * d1.y + d1.z * d1.z
-    ee := d2.x * d2.x + d2.y * d2.y + d2.z * d2.z
-    ff := d2.x * r.x + d2.y * r.y + d2.z * r.z
+    axis_a <-
+        quat_rotate(Quat { x: orientation_a.x, y: orientation_a.y,
+            z: orientation_a.z, w: orientation_a.w }, Vec3 { x: 0.0, y: 1.0,
+            z: 0.0 })
+    axis_b <-
+        quat_rotate(Quat { x: orientation_b.x, y: orientation_b.y,
+            z: orientation_b.z, w: orientation_b.w }, Vec3 { x: 0.0, y: 1.0,
+            z: 0.0 })
+    a1 <-
+        Vec3 { x: center_a.x - axis_a.x * half_height_a,
+        y: center_a.y - axis_a.y * half_height_a,
+        z: center_a.z - axis_a.z * half_height_a }
+    a2 <-
+        Vec3 { x: center_a.x + axis_a.x * half_height_a,
+        y: center_a.y + axis_a.y * half_height_a,
+        z: center_a.z + axis_a.z * half_height_a }
+    b1 <-
+        Vec3 { x: center_b.x - axis_b.x * half_height_b,
+        y: center_b.y - axis_b.y * half_height_b,
+        z: center_b.z - axis_b.z * half_height_b }
+    b2 <-
+        Vec3 { x: center_b.x + axis_b.x * half_height_b,
+        y: center_b.y + axis_b.y * half_height_b,
+        z: center_b.z + axis_b.z * half_height_b }
+    d1 <- Vec3 { x: a2.x - a1.x, y: a2.y - a1.y, z: a2.z - a1.z }
+    d2 <- Vec3 { x: b2.x - b1.x, y: b2.y - b1.y, z: b2.z - b1.z }
+    r <- Vec3 { x: a1.x - b1.x, y: a1.y - b1.y, z: a1.z - b1.z }
+    aa <- d1.x * d1.x + d1.y * d1.y + d1.z * d1.z
+    ee <- d2.x * d2.x + d2.y * d2.y + d2.z * d2.z
+    ff <- d2.x * r.x + d2.y * r.y + d2.z * r.z
     s := 0.0
     t := 0.0
     if aa <= 0.000001 and ee <= 0.000001:
@@ -895,13 +1061,13 @@ pub capsule_capsule_manifold <- (
         s = 0.0
         t = f32::clamp(ff / ee, 0.0, 1.0)
     else:
-        cc := d1.x * r.x + d1.y * r.y + d1.z * r.z
+        cc <- d1.x * r.x + d1.y * r.y + d1.z * r.z
         if ee <= 0.000001:
             t = 0.0
             s = f32::clamp(0.0 - cc / aa, 0.0, 1.0)
         else:
-            bb := d1.x * d2.x + d1.y * d2.y + d1.z * d2.z
-            denom := aa * ee - bb * bb
+            bb <- d1.x * d2.x + d1.y * d2.y + d1.z * d2.z
+            denom <- aa * ee - bb * bb
             if f32::abs(denom) > 0.000001:
                 s = f32::clamp((bb * ff - cc * ee) / denom, 0.0, 1.0)
             else:
@@ -913,15 +1079,19 @@ pub capsule_capsule_manifold <- (
             elif t > 1.0:
                 t = 1.0
                 s = f32::clamp((bb - cc) / aa, 0.0, 1.0)
-    point_a := Vec3 { x: a1.x + d1.x * s, y: a1.y + d1.y * s, z: a1.z + d1.z * s }
-    point_b := Vec3 { x: b1.x + d2.x * t, y: b1.y + d2.y * t, z: b1.z + d2.z * t }
-    dx := point_a.x - point_b.x
-    dy := point_a.y - point_b.y
-    dz := point_a.z - point_b.z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
-    combined := radius_a + radius_b
+    point_a <-
+        Vec3 { x: a1.x + d1.x * s, y: a1.y + d1.y * s, z: a1.z + d1.z * s }
+    point_b <-
+        Vec3 { x: b1.x + d2.x * t, y: b1.y + d2.y * t, z: b1.z + d2.z * t }
+    dx <- point_a.x - point_b.x
+    dy <- point_a.y - point_b.y
+    dz <- point_a.z - point_b.z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
+    combined <- radius_a + radius_b
     if distance >= combined:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: point_a.x, y: point_a.y, z: point_a.z } }
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: point_a.x, y: point_a.y,
+        z: point_a.z } }
     normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     if distance > 0.000001:
         normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
@@ -945,23 +1115,31 @@ pub sphere_capsule_manifold <- (
     half_height: f32,
     orientation: Quat,
 ) -> Manifold:
-    axis := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    axis <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
     # Project the sphere centre onto the oriented capsule segment.
-    projected := center.x * axis.x + center.y * axis.y + center.z * axis.z
-    capsule_projection := capsule_center.x * axis.x + capsule_center.y * axis.y + capsule_center.z * axis.z
-    offset := f32::clamp(projected - capsule_projection, 0.0 - half_height, half_height)
-    closest := Vec3 {
+    projected <- center.x * axis.x + center.y * axis.y + center.z * axis.z
+    capsule_projection <-
+        (capsule_center.x * axis.x + capsule_center.y * axis.y +
+            capsule_center.z * axis.z)
+    offset <-
+        f32::clamp(projected - capsule_projection, 0.0 - half_height,
+            half_height)
+    closest <- Vec3 {
         x: capsule_center.x + axis.x * offset,
         y: capsule_center.y + axis.y * offset,
         z: capsule_center.z + axis.z * offset,
     }
-    dx := center.x - closest.x
-    dy := center.y - closest.y
-    dz := center.z - closest.z
-    distance := f32::sqrt(dx * dx + dy * dy + dz * dz)
-    combined := radius + capsule_radius
+    dx <- center.x - closest.x
+    dy <- center.y - closest.y
+    dz <- center.z - closest.z
+    distance <- f32::sqrt(dx * dx + dy * dy + dz * dz)
+    combined <- radius + capsule_radius
     if distance >= combined:
-        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, penetration: 0.0, contact: Vec3 { x: closest.x, y: closest.y, z: closest.z } }
+        ret Manifold { hit: false, normal: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
+        penetration: 0.0, contact: Vec3 { x: closest.x, y: closest.y,
+        z: closest.z } }
     normal := Vec3 { x: 0.0, y: 1.0, z: 0.0 }
     if distance > 0.000001:
         normal = Vec3 { x: dx / distance, y: dy / distance, z: dz / distance }
@@ -995,18 +1173,19 @@ pub mat3_mul_vec <- (m: Mat3, v: Vec3) -> Vec3:
         z: m.m20 * v.x + m.m21 * v.y + m.m22 * v.z,
     }
 
-# Active right-handed rotation matrix for a unit quaternion: world = R(q) * local.
+# Active right-handed rotation matrix for a unit quaternion: world = R(q) *
+# local.
 # This is the same convention as quat_rotate and the renderer's Rz*Ry*Rx.
 pub quat_to_mat3 <- (q: Quat) -> Mat3:
-    xx := q.x * q.x
-    yy := q.y * q.y
-    zz := q.z * q.z
-    xy := q.x * q.y
-    xz := q.x * q.z
-    yz := q.y * q.z
-    wx := q.w * q.x
-    wy := q.w * q.y
-    wz := q.w * q.z
+    xx <- q.x * q.x
+    yy <- q.y * q.y
+    zz <- q.z * q.z
+    xy <- q.x * q.y
+    xz <- q.x * q.z
+    yz <- q.y * q.z
+    wx <- q.w * q.x
+    wy <- q.w * q.y
+    wz <- q.w * q.z
     ret Mat3 {
         m00: 1.0 - 2.0 * (yy + zz),
         m01: 2.0 * (xy - wz),
@@ -1030,25 +1209,42 @@ pub inverse_inertia_world <- (
     inv_mass: f32,
     orientation: Quat,
 ) -> Mat3:
-    diag := inverse_inertia_diagonal(shape, Vec3 { x: half_extents.x, y: half_extents.y, z: half_extents.z }, radius, half_height, inv_mass)
-    rot := quat_to_mat3(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w })
-    # M = R * diag(diag) * R^T, with R the active right-handed quaternion matrix.
+    diag <-
+        inverse_inertia_diagonal(shape, Vec3 { x: half_extents.x,
+            y: half_extents.y, z: half_extents.z }, radius, half_height,
+            inv_mass)
+    rot <-
+        quat_to_mat3(Quat { x: orientation.x, y: orientation.y,
+            z: orientation.z, w: orientation.w })
+    # M = R * diag(diag) * R^T, with R the active right-handed quaternion
+    # matrix.
     ret Mat3 {
-        m00: rot.m00 * diag.x * rot.m00 + rot.m01 * diag.y * rot.m01 + rot.m02 * diag.z * rot.m02,
-        m01: rot.m00 * diag.x * rot.m10 + rot.m01 * diag.y * rot.m11 + rot.m02 * diag.z * rot.m12,
-        m02: rot.m00 * diag.x * rot.m20 + rot.m01 * diag.y * rot.m21 + rot.m02 * diag.z * rot.m22,
-        m10: rot.m10 * diag.x * rot.m00 + rot.m11 * diag.y * rot.m01 + rot.m12 * diag.z * rot.m02,
-        m11: rot.m10 * diag.x * rot.m10 + rot.m11 * diag.y * rot.m11 + rot.m12 * diag.z * rot.m12,
-        m12: rot.m10 * diag.x * rot.m20 + rot.m11 * diag.y * rot.m21 + rot.m12 * diag.z * rot.m22,
-        m20: rot.m20 * diag.x * rot.m00 + rot.m21 * diag.y * rot.m01 + rot.m22 * diag.z * rot.m02,
-        m21: rot.m20 * diag.x * rot.m10 + rot.m21 * diag.y * rot.m11 + rot.m22 * diag.z * rot.m12,
-        m22: rot.m20 * diag.x * rot.m20 + rot.m21 * diag.y * rot.m21 + rot.m22 * diag.z * rot.m22,
+        m00: (rot.m00 * diag.x * rot.m00 + rot.m01 * diag.y * rot.m01 +
+            rot.m02 * diag.z * rot.m02),
+        m01: (rot.m00 * diag.x * rot.m10 + rot.m01 * diag.y * rot.m11 +
+            rot.m02 * diag.z * rot.m12),
+        m02: (rot.m00 * diag.x * rot.m20 + rot.m01 * diag.y * rot.m21 +
+            rot.m02 * diag.z * rot.m22),
+        m10: (rot.m10 * diag.x * rot.m00 + rot.m11 * diag.y * rot.m01 +
+            rot.m12 * diag.z * rot.m02),
+        m11: (rot.m10 * diag.x * rot.m10 + rot.m11 * diag.y * rot.m11 +
+            rot.m12 * diag.z * rot.m12),
+        m12: (rot.m10 * diag.x * rot.m20 + rot.m11 * diag.y * rot.m21 +
+            rot.m12 * diag.z * rot.m22),
+        m20: (rot.m20 * diag.x * rot.m00 + rot.m21 * diag.y * rot.m01 +
+            rot.m22 * diag.z * rot.m02),
+        m21: (rot.m20 * diag.x * rot.m10 + rot.m21 * diag.y * rot.m11 +
+            rot.m22 * diag.z * rot.m12),
+        m22: (rot.m20 * diag.x * rot.m20 + rot.m21 * diag.y * rot.m21 +
+            rot.m22 * diag.z * rot.m22),
     }
 
 pub point_inside_obb <- (point: Vec3, box: Obb) -> bool:
-    local := quat_rotate(
-        quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y, z: box.orientation.z, w: box.orientation.w }),
-        Vec3 { x: point.x - box.center.x, y: point.y - box.center.y, z: point.z - box.center.z },
+    local <- quat_rotate(
+        quat_conjugate(Quat { x: box.orientation.x, y: box.orientation.y,
+            z: box.orientation.z, w: box.orientation.w }),
+        Vec3 { x: point.x - box.center.x, y: point.y - box.center.y,
+        z: point.z - box.center.z },
     )
     ret (
         f32::abs(local.x) <= box.half_extents.x + 0.0001 and
@@ -1066,22 +1262,34 @@ pub box_plane_contacts <- (
     offset: f32,
     max_points: i64,
 ) -> [f32]:
-    ax := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
-    ay := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
-    az := quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z, w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
+    ax <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 1.0, y: 0.0, z: 0.0 })
+    ay <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 1.0, z: 0.0 })
+    az <-
+        quat_rotate(Quat { x: orientation.x, y: orientation.y, z: orientation.z,
+            w: orientation.w }, Vec3 { x: 0.0, y: 0.0, z: 1.0 })
     xs: [f32] := []
     ys: [f32] := []
     zs: [f32] := []
     depths: [f32] := []
     corner := 0
     while corner < 8:
-        sx := (corner % 2) as f32 * 2.0 - 1.0
-        sy := ((corner / 2) % 2) as f32 * 2.0 - 1.0
-        sz := ((corner / 4) % 2) as f32 * 2.0 - 1.0
-        px := center.x + ax.x * sx * half_extents.x + ay.x * sy * half_extents.y + az.x * sz * half_extents.z
-        py := center.y + ax.y * sx * half_extents.x + ay.y * sy * half_extents.y + az.y * sz * half_extents.z
-        pz := center.z + ax.z * sx * half_extents.x + ay.z * sy * half_extents.y + az.z * sz * half_extents.z
-        distance := normal.x * px + normal.y * py + normal.z * pz - offset
+        sx <- (corner % 2) as f32 * 2.0 - 1.0
+        sy <- ((corner / 2) % 2) as f32 * 2.0 - 1.0
+        sz <- ((corner / 4) % 2) as f32 * 2.0 - 1.0
+        px <-
+            (center.x + ax.x * sx * half_extents.x + ay.x * sy *
+                half_extents.y + az.x * sz * half_extents.z)
+        py <-
+            (center.y + ax.y * sx * half_extents.x + ay.y * sy *
+                half_extents.y + az.y * sz * half_extents.z)
+        pz <-
+            (center.z + ax.z * sx * half_extents.x + ay.z * sy *
+                half_extents.y + az.z * sz * half_extents.z)
+        distance <- normal.x * px + normal.y * py + normal.z * pz - offset
         if distance < 0.0:
             xs = vec::push(xs, px)
             ys = vec::push(ys, py)
@@ -1089,7 +1297,7 @@ pub box_plane_contacts <- (
             depths = vec::push(depths, 0.0 - distance)
         corner = corner + 1
     result: [f32] := []
-    count := xs.len() as i64
+    count <- xs.len() as i64
     if count <= max_points:
         index := 0
         while index < count:
@@ -1116,21 +1324,30 @@ pub box_plane_contacts <- (
     ret result
 
 # Clip a convex incident face against one side plane of the reference box.
-clip_contact_polygon <- (polygon: [f32], axis: Vec3, center: Vec3, limit: f32) -> [f32]:
+clip_contact_polygon <- (polygon: [f32], axis: Vec3, center: Vec3,
+limit: f32) -> [f32]:
     result: [f32] := []
-    count := polygon.len() as i64
+    count <- polygon.len() as i64
     if count == 0:
         ret result
     previous := count - 3
-    pd := (polygon[previous as usize] - center.x) * axis.x + (polygon[(previous + 1) as usize] - center.y) * axis.y + (polygon[(previous + 2) as usize] - center.z) * axis.z - limit
+    pd :=
+        (polygon[previous as usize] - center.x) * axis.x + (polygon[(previous +
+            1) as usize] - center.y) * axis.y + (polygon[(previous +
+            2) as usize] - center.z) * axis.z - limit
     current := 0
     while current < count:
-        cd := (polygon[current as usize] - center.x) * axis.x + (polygon[(current + 1) as usize] - center.y) * axis.y + (polygon[(current + 2) as usize] - center.z) * axis.z - limit
+        cd <- (polygon[current as usize] - center.x) * axis.x + (polygon[(
+            current + 1) as usize] - center.y) * axis.y + (polygon[(current +
+            2) as usize] - center.z) * axis.z - limit
         if (pd <= 0.0) != (cd <= 0.0):
-            t := pd / (pd - cd)
+            t <- pd / (pd - cd)
             coordinate := 0
             while coordinate < 3:
-                value := polygon[(previous + coordinate) as usize] + (polygon[(current + coordinate) as usize] - polygon[(previous + coordinate) as usize]) * t
+                value <-
+                    polygon[(previous + coordinate) as usize] + (polygon[(
+                        current + coordinate) as usize] - polygon[(previous +
+                        coordinate) as usize]) * t
                 result = vec::push(result, value)
                 coordinate = coordinate + 1
         if cd <= 0.0:
@@ -1149,35 +1366,60 @@ box_face_contacts <- (reference: Obb, incident: Obb, outward: Vec3) -> [f32]:
     inc_alignment := 0.0
     i := 0
     while i < 3:
-        ra := box_axis(Quat { x: reference.orientation.x, y: reference.orientation.y, z: reference.orientation.z, w: reference.orientation.w }, i)
-        alignment := f32::abs(ra.x * outward.x + ra.y * outward.y + ra.z * outward.z)
+        ra <-
+            box_axis(Quat { x: reference.orientation.x,
+                y: reference.orientation.y, z: reference.orientation.z,
+                w: reference.orientation.w }, i)
+        alignment :=
+            f32::abs(ra.x * outward.x + ra.y * outward.y + ra.z * outward.z)
         if alignment > ref_alignment:
             ref_alignment = alignment
             ref_axis = i
-        ia := box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y, z: incident.orientation.z, w: incident.orientation.w }, i)
-        alignment = f32::abs(ia.x * outward.x + ia.y * outward.y + ia.z * outward.z)
+        ia <-
+            box_axis(Quat { x: incident.orientation.x,
+                y: incident.orientation.y, z: incident.orientation.z,
+                w: incident.orientation.w }, i)
+        alignment =
+            f32::abs(ia.x * outward.x + ia.y * outward.y + ia.z * outward.z)
         if alignment > inc_alignment:
             inc_alignment = alignment
             inc_axis = i
         i = i + 1
-    face_normal := box_axis(Quat { x: reference.orientation.x, y: reference.orientation.y, z: reference.orientation.z, w: reference.orientation.w }, ref_axis)
-    if face_normal.x * outward.x + face_normal.y * outward.y + face_normal.z * outward.z < 0.0:
+    face_normal :=
+        box_axis(Quat { x: reference.orientation.x, y: reference.orientation.y,
+            z: reference.orientation.z, w: reference.orientation.w }, ref_axis)
+    if (face_normal.x * outward.x + face_normal.y * outward.y + face_normal.z *
+        outward.z < 0.0):
         face_normal.x = 0.0 - face_normal.x
         face_normal.y = 0.0 - face_normal.y
         face_normal.z = 0.0 - face_normal.z
-    ref_extents := [reference.half_extents.x, reference.half_extents.y, reference.half_extents.z]
-    inc_extents := [incident.half_extents.x, incident.half_extents.y, incident.half_extents.z]
-    inc_normal := box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y, z: incident.orientation.z, w: incident.orientation.w }, inc_axis)
+    ref_extents <-
+        [reference.half_extents.x, reference.half_extents.y,
+            reference.half_extents.z]
+    inc_extents <-
+        [incident.half_extents.x, incident.half_extents.y,
+            incident.half_extents.z]
+    inc_normal <-
+        box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y,
+            z: incident.orientation.z, w: incident.orientation.w }, inc_axis)
     sign := -1.0
-    if inc_normal.x * face_normal.x + inc_normal.y * face_normal.y + inc_normal.z * face_normal.z < 0.0:
+    if (inc_normal.x * face_normal.x + inc_normal.y * face_normal.y +
+        inc_normal.z * face_normal.z < 0.0):
         sign = 1.0
-    fc_x := incident.center.x + inc_normal.x * inc_extents[inc_axis as usize] * sign
-    fc_y := incident.center.y + inc_normal.y * inc_extents[inc_axis as usize] * sign
-    fc_z := incident.center.z + inc_normal.z * inc_extents[inc_axis as usize] * sign
-    u_index := (inc_axis + 1) % 3
-    v_index := (inc_axis + 2) % 3
-    u := box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y, z: incident.orientation.z, w: incident.orientation.w }, u_index)
-    v := box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y, z: incident.orientation.z, w: incident.orientation.w }, v_index)
+    fc_x <-
+        incident.center.x + inc_normal.x * inc_extents[inc_axis as usize] * sign
+    fc_y <-
+        incident.center.y + inc_normal.y * inc_extents[inc_axis as usize] * sign
+    fc_z <-
+        incident.center.z + inc_normal.z * inc_extents[inc_axis as usize] * sign
+    u_index <- (inc_axis + 1) % 3
+    v_index <- (inc_axis + 2) % 3
+    u <-
+        box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y,
+            z: incident.orientation.z, w: incident.orientation.w }, u_index)
+    v <-
+        box_axis(Quat { x: incident.orientation.x, y: incident.orientation.y,
+            z: incident.orientation.z, w: incident.orientation.w }, v_index)
     polygon: [f32] := []
     corner := 0
     while corner < 4:
@@ -1187,59 +1429,119 @@ box_face_contacts <- (reference: Obb, incident: Obb, outward: Vec3) -> [f32]:
             su = -1.0
         if corner < 2:
             sv = -1.0
-        polygon = vec::push(polygon, fc_x + u.x * inc_extents[u_index as usize] * su + v.x * inc_extents[v_index as usize] * sv)
-        polygon = vec::push(polygon, fc_y + u.y * inc_extents[u_index as usize] * su + v.y * inc_extents[v_index as usize] * sv)
-        polygon = vec::push(polygon, fc_z + u.z * inc_extents[u_index as usize] * su + v.z * inc_extents[v_index as usize] * sv)
+        polygon =
+            vec::push(polygon, fc_x + u.x * inc_extents[u_index as usize] * su +
+                v.x * inc_extents[v_index as usize] * sv)
+        polygon =
+            vec::push(polygon, fc_y + u.y * inc_extents[u_index as usize] * su +
+                v.y * inc_extents[v_index as usize] * sv)
+        polygon =
+            vec::push(polygon, fc_z + u.z * inc_extents[u_index as usize] * su +
+                v.z * inc_extents[v_index as usize] * sv)
         corner = corner + 1
     side := 0
     while side < 3:
         if side != ref_axis:
-            axis := box_axis(Quat { x: reference.orientation.x, y: reference.orientation.y, z: reference.orientation.z, w: reference.orientation.w }, side)
-            polygon = clip_contact_polygon(polygon, Vec3 { x: axis.x, y: axis.y, z: axis.z }, Vec3 { x: reference.center.x, y: reference.center.y, z: reference.center.z }, ref_extents[side as usize])
-            polygon = clip_contact_polygon(polygon, Vec3 { x: 0.0 - axis.x, y: 0.0 - axis.y, z: 0.0 - axis.z }, Vec3 { x: reference.center.x, y: reference.center.y, z: reference.center.z }, ref_extents[side as usize])
+            axis <-
+                box_axis(Quat { x: reference.orientation.x,
+                    y: reference.orientation.y, z: reference.orientation.z,
+                    w: reference.orientation.w }, side)
+            polygon =
+                clip_contact_polygon(polygon, Vec3 { x: axis.x, y: axis.y,
+                    z: axis.z }, Vec3 { x: reference.center.x,
+                    y: reference.center.y, z: reference.center.z }, ref_extents[
+                    side as usize])
+            polygon =
+                clip_contact_polygon(polygon, Vec3 { x: 0.0 - axis.x, y: 0.0 -
+                    axis.y, z: 0.0 - axis.z }, Vec3 { x: reference.center.x,
+                    y: reference.center.y, z: reference.center.z }, ref_extents[
+                    side as usize])
         side = side + 1
     result: [f32] := []
     i = 0
     while i < polygon.len() as i64:
-        depth := ref_extents[ref_axis as usize] - ((polygon[i as usize] - reference.center.x) * face_normal.x + (polygon[(i + 1) as usize] - reference.center.y) * face_normal.y + (polygon[(i + 2) as usize] - reference.center.z) * face_normal.z)
+        depth <-
+            ref_extents[ref_axis as usize] - ((polygon[i as usize] -
+                reference.center.x) * face_normal.x + (polygon[(i +
+                1) as usize] - reference.center.y) * face_normal.y + (polygon[(
+                i + 2) as usize] - reference.center.z) * face_normal.z)
         if depth >= -0.006:
             # Midpoint of the two surfaces; lever arms match for both bodies.
-            result = vec::push(result, polygon[i as usize] + face_normal.x * depth * 0.5)
-            result = vec::push(result, polygon[(i + 1) as usize] + face_normal.y * depth * 0.5)
-            result = vec::push(result, polygon[(i + 2) as usize] + face_normal.z * depth * 0.5)
+            result =
+                vec::push(result, polygon[i as usize] + face_normal.x * depth *
+                    0.5)
+            result =
+                vec::push(result, polygon[(i + 1) as usize] + face_normal.y *
+                    depth * 0.5)
+            result =
+                vec::push(result, polygon[(i + 2) as usize] + face_normal.z *
+                    depth * 0.5)
         i = i + 3
     ret result
 
 # Face clipping preserves the full support patch even when neither box has a
 # corner inside the other, avoiding the single-corner torque of the old test.
 pub obb_obb_contacts <- (a: Obb, b: Obb) -> [f32]:
-    manifold := obb_obb_manifold(
-        Obb { center: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z }, half_extents: Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, orientation: Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w } },
-        Obb { center: Vec3 { x: b.center.x, y: b.center.y, z: b.center.z }, half_extents: Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, orientation: Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w } },
+    manifold <- obb_obb_manifold(
+        Obb { center: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z },
+        half_extents: Vec3 { x: a.half_extents.x, y: a.half_extents.y,
+        z: a.half_extents.z }, orientation: Quat { x: a.orientation.x,
+        y: a.orientation.y, z: a.orientation.z, w: a.orientation.w } },
+        Obb { center: Vec3 { x: b.center.x, y: b.center.y, z: b.center.z },
+        half_extents: Vec3 { x: b.half_extents.x, y: b.half_extents.y,
+        z: b.half_extents.z }, orientation: Quat { x: b.orientation.x,
+        y: b.orientation.y, z: b.orientation.z, w: b.orientation.w } },
     )
-    result: [f32] := []
+    result: [f32] <- []
     if not manifold.hit:
         ret result
     best_a := 0.0
     best_b := 0.0
     i := 0
     while i < 3:
-        axis := box_axis(Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w }, i)
-        alignment := f32::abs(axis.x * manifold.normal.x + axis.y * manifold.normal.y + axis.z * manifold.normal.z)
+        axis :=
+            box_axis(Quat { x: a.orientation.x, y: a.orientation.y,
+                z: a.orientation.z, w: a.orientation.w }, i)
+        alignment :=
+            f32::abs(axis.x * manifold.normal.x + axis.y * manifold.normal.y +
+                axis.z * manifold.normal.z)
         if alignment > best_a:
             best_a = alignment
-        axis = box_axis(Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w }, i)
-        alignment = f32::abs(axis.x * manifold.normal.x + axis.y * manifold.normal.y + axis.z * manifold.normal.z)
+        axis =
+            box_axis(Quat { x: b.orientation.x, y: b.orientation.y,
+                z: b.orientation.z, w: b.orientation.w }, i)
+        alignment =
+            f32::abs(axis.x * manifold.normal.x + axis.y * manifold.normal.y +
+                axis.z * manifold.normal.z)
         if alignment > best_b:
             best_b = alignment
         i = i + 1
     if best_a >= best_b:
         if best_a < 0.999:
             ret result
-        ret box_face_contacts(Obb { center: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z }, half_extents: Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, orientation: Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w } }, Obb { center: Vec3 { x: b.center.x, y: b.center.y, z: b.center.z }, half_extents: Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, orientation: Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w } }, Vec3 { x: 0.0 - manifold.normal.x, y: 0.0 - manifold.normal.y, z: 0.0 - manifold.normal.z })
+        ret box_face_contacts(Obb { center: Vec3 { x: a.center.x, y: a.center.y,
+            z: a.center.z }, half_extents: Vec3 { x: a.half_extents.x,
+            y: a.half_extents.y, z: a.half_extents.z }, orientation: Quat {
+            x: a.orientation.x, y: a.orientation.y, z: a.orientation.z,
+            w: a.orientation.w } }, Obb { center: Vec3 { x: b.center.x,
+            y: b.center.y, z: b.center.z }, half_extents: Vec3 {
+            x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z },
+            orientation: Quat { x: b.orientation.x, y: b.orientation.y,
+            z: b.orientation.z, w: b.orientation.w } }, Vec3 { x: 0.0 -
+            manifold.normal.x, y: 0.0 - manifold.normal.y, z: 0.0 -
+            manifold.normal.z })
     if best_b < 0.999:
         ret result
-    ret box_face_contacts(Obb { center: Vec3 { x: b.center.x, y: b.center.y, z: b.center.z }, half_extents: Vec3 { x: b.half_extents.x, y: b.half_extents.y, z: b.half_extents.z }, orientation: Quat { x: b.orientation.x, y: b.orientation.y, z: b.orientation.z, w: b.orientation.w } }, Obb { center: Vec3 { x: a.center.x, y: a.center.y, z: a.center.z }, half_extents: Vec3 { x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z }, orientation: Quat { x: a.orientation.x, y: a.orientation.y, z: a.orientation.z, w: a.orientation.w } }, Vec3 { x: manifold.normal.x, y: manifold.normal.y, z: manifold.normal.z })
+    ret box_face_contacts(Obb { center: Vec3 { x: b.center.x, y: b.center.y,
+        z: b.center.z }, half_extents: Vec3 { x: b.half_extents.x,
+        y: b.half_extents.y, z: b.half_extents.z }, orientation: Quat {
+        x: b.orientation.x, y: b.orientation.y, z: b.orientation.z,
+        w: b.orientation.w } }, Obb { center: Vec3 { x: a.center.x,
+        y: a.center.y, z: a.center.z }, half_extents: Vec3 {
+        x: a.half_extents.x, y: a.half_extents.y, z: a.half_extents.z },
+        orientation: Quat { x: a.orientation.x, y: a.orientation.y,
+        z: a.orientation.z, w: a.orientation.w } }, Vec3 { x: manifold.normal.x,
+        y: manifold.normal.y, z: manifold.normal.z })
 
 # Coulomb contact impulse at one point.  `v*`/`w*` are the current body
 # velocity and angular velocity; returns the post-impulse state.
@@ -1282,21 +1584,25 @@ pub contact_impulse <- (
     out_wz := wz
     normal_impulse := 0.0
     if vn < 0.0:
-        rn_x := ry * nz - rz * ny
-        rn_y := rz * nx - rx * nz
-        rn_z := rx * ny - ry * nx
-        ang := mat3_mul_vec(Mat3 {
-            m00: inverse_inertia.m00, m01: inverse_inertia.m01, m02: inverse_inertia.m02,
-            m10: inverse_inertia.m10, m11: inverse_inertia.m11, m12: inverse_inertia.m12,
-            m20: inverse_inertia.m20, m21: inverse_inertia.m21, m22: inverse_inertia.m22,
+        rn_x <- ry * nz - rz * ny
+        rn_y <- rz * nx - rx * nz
+        rn_z <- rx * ny - ry * nx
+        ang <- mat3_mul_vec(Mat3 {
+            m00: inverse_inertia.m00, m01: inverse_inertia.m01,
+            m02: inverse_inertia.m02,
+            m10: inverse_inertia.m10, m11: inverse_inertia.m11,
+            m12: inverse_inertia.m12,
+            m20: inverse_inertia.m20, m21: inverse_inertia.m21,
+            m22: inverse_inertia.m22,
         }, Vec3 { x: rn_x, y: rn_y, z: rn_z })
-        axr_x := ang.y * rz - ang.z * ry
-        axr_y := ang.z * rx - ang.x * rz
-        axr_z := ang.x * ry - ang.y * rx
-        denom := inv_mass + axr_x * nx + axr_y * ny + axr_z * nz
+        axr_x <- ang.y * rz - ang.z * ry
+        axr_y <- ang.z * rx - ang.x * rz
+        axr_z <- ang.x * ry - ang.y * rx
+        denom <- inv_mass + axr_x * nx + axr_y * ny + axr_z * nz
         if denom < 0.000001:
-            ret ImpulseResult { vx: out_vx, vy: out_vy, vz: out_vz, wx: out_wx, wy: out_wy, wz: out_wz }
-        jn := (0.0 - vn) / denom
+            ret ImpulseResult { vx: out_vx, vy: out_vy, vz: out_vz, wx: out_wx,
+            wy: out_wy, wz: out_wz }
+        jn <- (0.0 - vn) / denom
         normal_impulse = jn
         out_vx = out_vx + nx * jn * inv_mass
         out_vy = out_vy + ny * jn * inv_mass
@@ -1312,23 +1618,26 @@ pub contact_impulse <- (
     tx := px - nx * vn
     ty := py - ny * vn
     tz := pz - nz * vn
-    speed := f32::sqrt(tx * tx + ty * ty + tz * tz)
+    speed <- f32::sqrt(tx * tx + ty * ty + tz * tz)
     if speed > 0.000001:
         tx = tx / speed
         ty = ty / speed
         tz = tz / speed
-        rt_x := ry * tz - rz * ty
-        rt_y := rz * tx - rx * tz
-        rt_z := rx * ty - ry * tx
-        ang_t := mat3_mul_vec(Mat3 {
-            m00: inverse_inertia.m00, m01: inverse_inertia.m01, m02: inverse_inertia.m02,
-            m10: inverse_inertia.m10, m11: inverse_inertia.m11, m12: inverse_inertia.m12,
-            m20: inverse_inertia.m20, m21: inverse_inertia.m21, m22: inverse_inertia.m22,
+        rt_x <- ry * tz - rz * ty
+        rt_y <- rz * tx - rx * tz
+        rt_z <- rx * ty - ry * tx
+        ang_t <- mat3_mul_vec(Mat3 {
+            m00: inverse_inertia.m00, m01: inverse_inertia.m01,
+            m02: inverse_inertia.m02,
+            m10: inverse_inertia.m10, m11: inverse_inertia.m11,
+            m12: inverse_inertia.m12,
+            m20: inverse_inertia.m20, m21: inverse_inertia.m21,
+            m22: inverse_inertia.m22,
         }, Vec3 { x: rt_x, y: rt_y, z: rt_z })
-        atr_x := ang_t.y * rz - ang_t.z * ry
-        atr_y := ang_t.z * rx - ang_t.x * rz
-        atr_z := ang_t.x * ry - ang_t.y * rx
-        denom_t := inv_mass + atr_x * tx + atr_y * ty + atr_z * tz
+        atr_x <- ang_t.y * rz - ang_t.z * ry
+        atr_y <- ang_t.z * rx - ang_t.x * rz
+        atr_z <- ang_t.x * ry - ang_t.y * rx
+        denom_t <- inv_mass + atr_x * tx + atr_y * ty + atr_z * tz
         if denom_t > 0.000001:
             mu := friction
             if speed < 0.5 and static_friction > friction:
@@ -1336,7 +1645,7 @@ pub contact_impulse <- (
             # Maintain a small resting-contact budget so friction still acts
             # after the first of several simultaneous contacts has stopped the
             # normal velocity.
-            max_friction := mu * (normal_impulse + 0.1)
+            max_friction <- mu * (normal_impulse + 0.1)
             jt := speed / denom_t
             if jt > max_friction:
                 jt = max_friction
@@ -1405,31 +1714,33 @@ pub pair_contact_impulse <- (
     o_bwz := bwz
     normal_impulse := 0.0
     if vn < 0.0:
-        rnax := ry * nz - rz * ny
-        rnay := rz * nx - rx * nz
-        rnaz := rx * ny - ry * nx
-        anga := mat3_mul_vec(Mat3 {
+        rnax <- ry * nz - rz * ny
+        rnay <- rz * nx - rx * nz
+        rnaz <- rx * ny - ry * nx
+        anga <- mat3_mul_vec(Mat3 {
             m00: inv_ia.m00, m01: inv_ia.m01, m02: inv_ia.m02,
             m10: inv_ia.m10, m11: inv_ia.m11, m12: inv_ia.m12,
             m20: inv_ia.m20, m21: inv_ia.m21, m22: inv_ia.m22,
         }, Vec3 { x: rnax, y: rnay, z: rnaz })
-        angaxr_x := anga.y * rz - anga.z * ry
-        angaxr_y := anga.z * rx - anga.x * rz
-        angaxr_z := anga.x * ry - anga.y * rx
-        rnbx := bry * nz - brz * ny
-        rnby := brz * nx - brx * nz
-        rnbz := brx * ny - bry * nx
-        angb := mat3_mul_vec(Mat3 {
+        angaxr_x <- anga.y * rz - anga.z * ry
+        angaxr_y <- anga.z * rx - anga.x * rz
+        angaxr_z <- anga.x * ry - anga.y * rx
+        rnbx <- bry * nz - brz * ny
+        rnby <- brz * nx - brx * nz
+        rnbz <- brx * ny - bry * nx
+        angb <- mat3_mul_vec(Mat3 {
             m00: inv_ib.m00, m01: inv_ib.m01, m02: inv_ib.m02,
             m10: inv_ib.m10, m11: inv_ib.m11, m12: inv_ib.m12,
             m20: inv_ib.m20, m21: inv_ib.m21, m22: inv_ib.m22,
         }, Vec3 { x: rnbx, y: rnby, z: rnbz })
-        angbxr_x := angb.y * brz - angb.z * bry
-        angbxr_y := angb.z * brx - angb.x * brz
-        angbxr_z := angb.x * bry - angb.y * brx
-        denom := inv_mass_a + inv_mass_b + angaxr_x * nx + angaxr_y * ny + angaxr_z * nz + angbxr_x * nx + angbxr_y * ny + angbxr_z * nz
+        angbxr_x <- angb.y * brz - angb.z * bry
+        angbxr_y <- angb.z * brx - angb.x * brz
+        angbxr_z <- angb.x * bry - angb.y * brx
+        denom <-
+            (inv_mass_a + inv_mass_b + angaxr_x * nx + angaxr_y * ny +
+                angaxr_z * nz + angbxr_x * nx + angbxr_y * ny + angbxr_z * nz)
         if denom > 0.000001:
-            jn := (0.0 - vn) / denom
+            jn <- (0.0 - vn) / denom
             normal_impulse = jn
             o_avx = o_avx + nx * jn * inv_mass_a
             o_avy = o_avy + ny * jn * inv_mass_a
@@ -1457,39 +1768,41 @@ pub pair_contact_impulse <- (
     tx := rvx - nx * vn
     ty := rvy - ny * vn
     tz := rvz - nz * vn
-    speed := f32::sqrt(tx * tx + ty * ty + tz * tz)
+    speed <- f32::sqrt(tx * tx + ty * ty + tz * tz)
     if speed > 0.000001:
         tx = tx / speed
         ty = ty / speed
         tz = tz / speed
-        rt_ax := ry * tz - rz * ty
-        rt_ay := rz * tx - rx * tz
-        rt_az := rx * ty - ry * tx
-        anga_t := mat3_mul_vec(Mat3 {
+        rt_ax <- ry * tz - rz * ty
+        rt_ay <- rz * tx - rx * tz
+        rt_az <- rx * ty - ry * tx
+        anga_t <- mat3_mul_vec(Mat3 {
             m00: inv_ia.m00, m01: inv_ia.m01, m02: inv_ia.m02,
             m10: inv_ia.m10, m11: inv_ia.m11, m12: inv_ia.m12,
             m20: inv_ia.m20, m21: inv_ia.m21, m22: inv_ia.m22,
         }, Vec3 { x: rt_ax, y: rt_ay, z: rt_az })
-        atr_x := anga_t.y * rz - anga_t.z * ry
-        atr_y := anga_t.z * rx - anga_t.x * rz
-        atr_z := anga_t.x * ry - anga_t.y * rx
-        rt_bx := bry * tz - brz * ty
-        rt_by := brz * tx - brx * tz
-        rt_bz := brx * ty - bry * tx
-        angb_t := mat3_mul_vec(Mat3 {
+        atr_x <- anga_t.y * rz - anga_t.z * ry
+        atr_y <- anga_t.z * rx - anga_t.x * rz
+        atr_z <- anga_t.x * ry - anga_t.y * rx
+        rt_bx <- bry * tz - brz * ty
+        rt_by <- brz * tx - brx * tz
+        rt_bz <- brx * ty - bry * tx
+        angb_t <- mat3_mul_vec(Mat3 {
             m00: inv_ib.m00, m01: inv_ib.m01, m02: inv_ib.m02,
             m10: inv_ib.m10, m11: inv_ib.m11, m12: inv_ib.m12,
             m20: inv_ib.m20, m21: inv_ib.m21, m22: inv_ib.m22,
         }, Vec3 { x: rt_bx, y: rt_by, z: rt_bz })
-        btr_x := angb_t.y * brz - angb_t.z * bry
-        btr_y := angb_t.z * brx - angb_t.x * brz
-        btr_z := angb_t.x * bry - angb_t.y * brx
-        denom_t := inv_mass_a + inv_mass_b + atr_x * tx + atr_y * ty + atr_z * tz + btr_x * tx + btr_y * ty + btr_z * tz
+        btr_x <- angb_t.y * brz - angb_t.z * bry
+        btr_y <- angb_t.z * brx - angb_t.x * brz
+        btr_z <- angb_t.x * bry - angb_t.y * brx
+        denom_t <-
+            (inv_mass_a + inv_mass_b + atr_x * tx + atr_y * ty + atr_z * tz +
+                btr_x * tx + btr_y * ty + btr_z * tz)
         if denom_t > 0.000001:
             mu := friction
             if speed < 0.5 and static_friction > friction:
                 mu = static_friction
-            max_friction := mu * (normal_impulse + 0.1)
+            max_friction <- mu * (normal_impulse + 0.1)
             jt := speed / denom_t
             if jt > max_friction:
                 jt = max_friction
@@ -1522,40 +1835,63 @@ pub NarrowphasePlugin <- plugin
 # solved first cannot permanently over-correct and launch a resting box.
 solver_matrix <- (values: [f32], index: i64) -> Mat3:
     if index < 0:
-        ret Mat3 { m00: 0.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 0.0, m12: 0.0, m20: 0.0, m21: 0.0, m22: 0.0 }
-    base := index * 9
+        ret Mat3 { m00: 0.0, m01: 0.0, m02: 0.0, m10: 0.0, m11: 0.0, m12: 0.0,
+        m20: 0.0, m21: 0.0, m22: 0.0 }
+    base <- index * 9
     ret Mat3 {
-        m00: values[base as usize], m01: values[(base + 1) as usize], m02: values[(base + 2) as usize],
-        m10: values[(base + 3) as usize], m11: values[(base + 4) as usize], m12: values[(base + 5) as usize],
-        m20: values[(base + 6) as usize], m21: values[(base + 7) as usize], m22: values[(base + 8) as usize],
+        m00: values[base as usize], m01: values[(base + 1) as usize],
+        m02: values[(base + 2) as usize],
+        m10: values[(base + 3) as usize], m11: values[(base + 4) as usize],
+        m12: values[(base + 5) as usize],
+        m20: values[(base + 6) as usize], m21: values[(base + 7) as usize],
+        m22: values[(base + 8) as usize],
     }
 
-solver_axis_speed <- (state: [f32], a: i64, b: i64, contacts: [f32], c: i64, response: [f32], offset: i64) -> f32:
-    ab := a * 6
-    rax := contacts[(c + 5) as usize]
-    ray := contacts[(c + 6) as usize]
-    raz := contacts[(c + 7) as usize]
-    vx := state[ab as usize] + state[(ab + 4) as usize] * raz - state[(ab + 5) as usize] * ray
-    vy := state[(ab + 1) as usize] + state[(ab + 5) as usize] * rax - state[(ab + 3) as usize] * raz
-    vz := state[(ab + 2) as usize] + state[(ab + 3) as usize] * ray - state[(ab + 4) as usize] * rax
+solver_axis_speed <- (state: [f32], a: i64, b: i64, contacts: [f32], c: i64,
+response: [f32], offset: i64) -> f32:
+    ab <- a * 6
+    rax <- contacts[(c + 5) as usize]
+    ray <- contacts[(c + 6) as usize]
+    raz <- contacts[(c + 7) as usize]
+    vx :=
+        state[ab as usize] + state[(ab + 4) as usize] * raz - state[(ab +
+            5) as usize] * ray
+    vy :=
+        state[(ab + 1) as usize] + state[(ab + 5) as usize] * rax - state[(ab +
+            3) as usize] * raz
+    vz :=
+        state[(ab + 2) as usize] + state[(ab + 3) as usize] * ray - state[(ab +
+            4) as usize] * rax
     if b >= 0:
-        bb := b * 6
-        rbx := contacts[(c + 8) as usize]
-        rby := contacts[(c + 9) as usize]
-        rbz := contacts[(c + 10) as usize]
-        vx = vx - state[bb as usize] - state[(bb + 4) as usize] * rbz + state[(bb + 5) as usize] * rby
-        vy = vy - state[(bb + 1) as usize] - state[(bb + 5) as usize] * rbx + state[(bb + 3) as usize] * rbz
-        vz = vz - state[(bb + 2) as usize] - state[(bb + 3) as usize] * rby + state[(bb + 4) as usize] * rbx
-    ret vx * response[offset as usize] + vy * response[(offset + 1) as usize] + vz * response[(offset + 2) as usize]
+        bb <- b * 6
+        rbx <- contacts[(c + 8) as usize]
+        rby <- contacts[(c + 9) as usize]
+        rbz <- contacts[(c + 10) as usize]
+        vx =
+            vx - state[bb as usize] - state[(bb + 4) as usize] * rbz + state[(
+                bb + 5) as usize] * rby
+        vy =
+            vy - state[(bb + 1) as usize] - state[(bb +
+                5) as usize] * rbx + state[(bb + 3) as usize] * rbz
+        vz =
+            vz - state[(bb + 2) as usize] - state[(bb +
+                3) as usize] * rby + state[(bb + 4) as usize] * rbx
+    ret vx * response[offset as usize] + vy * response[(offset +
+        1) as usize] + vz * response[(offset + 2) as usize]
 
-solver_apply_axis <- (state: &mut [f32], a: i64, b: i64, response: [f32], offset: i64, impulse: f32) -> nil:
+solver_apply_axis <- (state: &mut [f32], a: i64, b: i64, response: [f32],
+offset: i64, impulse: f32) -> nil:
     coordinate := 0
     while coordinate < 6:
-        at := a * 6 + coordinate
-        state[at as usize] = state[at as usize] + response[(offset + 4 + coordinate) as usize] * impulse
+        at <- a * 6 + coordinate
+        state[at as usize] =
+            state[at as usize] + response[(offset + 4 +
+                coordinate) as usize] * impulse
         if b >= 0:
-            bt := b * 6 + coordinate
-            state[bt as usize] = state[bt as usize] + response[(offset + 10 + coordinate) as usize] * impulse
+            bt <- b * 6 + coordinate
+            state[bt as usize] =
+                state[bt as usize] + response[(offset + 10 +
+                    coordinate) as usize] * impulse
         coordinate = coordinate + 1
 
 # Contact layout: a,b,normal.xyz,ra.xyz,rb.xyz,lambda_n,lambda_t1,lambda_t2.
@@ -1578,11 +1914,11 @@ pub solve_contact_velocities <- (
     response_at := 0
     c := 0
     while c < contacts.len() as i64:
-        a := contacts[c as usize] as i64
-        b := contacts[(c + 1) as usize] as i64
-        nx := contacts[(c + 2) as usize]
-        ny := contacts[(c + 3) as usize]
-        nz := contacts[(c + 4) as usize]
+        a <- contacts[c as usize] as i64
+        b <- contacts[(c + 1) as usize] as i64
+        nx <- contacts[(c + 2) as usize]
+        ny <- contacts[(c + 3) as usize]
+        nz <- contacts[(c + 4) as usize]
         tx := 0.0
         ty := nz
         tz := 0.0 - ny
@@ -1590,16 +1926,16 @@ pub solve_contact_velocities <- (
             tx = 0.0 - nz
             ty = 0.0
             tz = nx
-        length := f32::sqrt(tx * tx + ty * ty + tz * tz)
+        length <- f32::sqrt(tx * tx + ty * ty + tz * tz)
         tx = tx / length
         ty = ty / length
         tz = tz / length
-        ux := ny * tz - nz * ty
-        uy := nz * tx - nx * tz
-        uz := nx * ty - ny * tx
-        ia := solver_matrix(inertias, a)
-        ib := solver_matrix(inertias, b)
-        ma := inverse_masses[a as usize]
+        ux <- ny * tz - nz * ty
+        uy <- nz * tx - nx * tz
+        uz <- nx * ty - ny * tx
+        ia <- solver_matrix(inertias, a)
+        ib <- solver_matrix(inertias, b)
+        ma <- inverse_masses[a as usize]
         mb := 0.0
         if b >= 0:
             mb = inverse_masses[b as usize]
@@ -1616,20 +1952,35 @@ pub solve_contact_velocities <- (
                 dx = ux
                 dy = uy
                 dz = uz
-            rax := contacts[(c + 5) as usize]
-            ray := contacts[(c + 6) as usize]
-            raz := contacts[(c + 7) as usize]
-            rbx := contacts[(c + 8) as usize]
-            rby := contacts[(c + 9) as usize]
-            rbz := contacts[(c + 10) as usize]
-            ca := vec3_cross(Vec3 { x: rax, y: ray, z: raz }, Vec3 { x: dx, y: dy, z: dz })
-            cb := vec3_cross(Vec3 { x: rbx, y: rby, z: rbz }, Vec3 { x: dx, y: dy, z: dz })
-            wa := mat3_mul_vec(Mat3 { m00: ia.m00, m01: ia.m01, m02: ia.m02, m10: ia.m10, m11: ia.m11, m12: ia.m12, m20: ia.m20, m21: ia.m21, m22: ia.m22 }, Vec3 { x: ca.x, y: ca.y, z: ca.z })
-            wb := mat3_mul_vec(Mat3 { m00: ib.m00, m01: ib.m01, m02: ib.m02, m10: ib.m10, m11: ib.m11, m12: ib.m12, m20: ib.m20, m21: ib.m21, m22: ib.m22 }, Vec3 { x: cb.x, y: cb.y, z: cb.z })
-            k := ma + mb + ca.x * wa.x + ca.y * wa.y + ca.z * wa.z + cb.x * wb.x + cb.y * wb.y + cb.z * wb.z
-            record := [dx, dy, dz, k,
+            rax <- contacts[(c + 5) as usize]
+            ray <- contacts[(c + 6) as usize]
+            raz <- contacts[(c + 7) as usize]
+            rbx <- contacts[(c + 8) as usize]
+            rby <- contacts[(c + 9) as usize]
+            rbz <- contacts[(c + 10) as usize]
+            ca <-
+                vec3_cross(Vec3 { x: rax, y: ray, z: raz }, Vec3 { x: dx, y: dy,
+                    z: dz })
+            cb <-
+                vec3_cross(Vec3 { x: rbx, y: rby, z: rbz }, Vec3 { x: dx, y: dy,
+                    z: dz })
+            wa <-
+                mat3_mul_vec(Mat3 { m00: ia.m00, m01: ia.m01, m02: ia.m02,
+                    m10: ia.m10, m11: ia.m11, m12: ia.m12, m20: ia.m20,
+                    m21: ia.m21, m22: ia.m22 }, Vec3 { x: ca.x, y: ca.y,
+                    z: ca.z })
+            wb <-
+                mat3_mul_vec(Mat3 { m00: ib.m00, m01: ib.m01, m02: ib.m02,
+                    m10: ib.m10, m11: ib.m11, m12: ib.m12, m20: ib.m20,
+                    m21: ib.m21, m22: ib.m22 }, Vec3 { x: cb.x, y: cb.y,
+                    z: cb.z })
+            k <-
+                (ma + mb + ca.x * wa.x + ca.y * wa.y + ca.z * wa.z + cb.x *
+                    wb.x + cb.y * wb.y + cb.z * wb.z)
+            record <- [dx, dy, dz, k,
                 dx * ma, dy * ma, dz * ma, wa.x, wa.y, wa.z,
-                0.0 - dx * mb, 0.0 - dy * mb, 0.0 - dz * mb, 0.0 - wb.x, 0.0 - wb.y, 0.0 - wb.z]
+                0.0 - dx * mb, 0.0 - dy * mb, 0.0 - dz * mb, 0.0 - wb.x, 0.0 -
+                wb.y, 0.0 - wb.z]
             for value in record:
                 response[response_at as usize] = value
                 response_at = response_at + 1
@@ -1641,39 +1992,49 @@ pub solve_contact_velocities <- (
         c = 0
         offset := 0
         while c < contacts.len() as i64:
-            a := contacts[c as usize] as i64
-            b := contacts[(c + 1) as usize] as i64
-            kn := response[(offset + 3) as usize]
+            a <- contacts[c as usize] as i64
+            b <- contacts[(c + 1) as usize] as i64
+            kn <- response[(offset + 3) as usize]
             if kn <= 0.000001:
                 c = c + 14
                 offset = offset + 48
                 cont
-            old_n := contacts[(c + 11) as usize]
-            new_n := old_n - solver_axis_speed(state, a, b, contacts, c, response, offset) / kn
+            old_n <- contacts[(c + 11) as usize]
+            new_n :=
+                old_n - solver_axis_speed(state, a, b, contacts, c, response,
+                    offset) / kn
             if new_n < 0.0:
                 new_n = 0.0
             contacts[(c + 11) as usize] = new_n
             solver_apply_axis(&mut state, a, b, response, offset, new_n - old_n)
-            old_t := contacts[(c + 12) as usize]
-            old_u := contacts[(c + 13) as usize]
+            old_t <- contacts[(c + 12) as usize]
+            old_u <- contacts[(c + 13) as usize]
             new_t := old_t
             new_u := old_u
-            kt := response[(offset + 19) as usize]
-            ku := response[(offset + 35) as usize]
+            kt <- response[(offset + 19) as usize]
+            ku <- response[(offset + 35) as usize]
             if kt > 0.000001:
-                new_t = old_t - solver_axis_speed(state, a, b, contacts, c, response, offset + 16) / kt
+                new_t =
+                    old_t - solver_axis_speed(state, a, b, contacts, c,
+                        response, offset + 16) / kt
             if ku > 0.000001:
-                new_u = old_u - solver_axis_speed(state, a, b, contacts, c, response, offset + 32) / ku
-            magnitude := f32::sqrt(new_t * new_t + new_u * new_u)
+                new_u =
+                    old_u - solver_axis_speed(state, a, b, contacts, c,
+                        response, offset + 32) / ku
+            magnitude <- f32::sqrt(new_t * new_t + new_u * new_u)
             if magnitude > static_friction * new_n and magnitude > 0.000001:
-                scale := friction * new_n / magnitude
+                scale <- friction * new_n / magnitude
                 new_t = new_t * scale
                 new_u = new_u * scale
             contacts[(c + 12) as usize] = new_t
             contacts[(c + 13) as usize] = new_u
-            solver_apply_axis(&mut state, a, b, response, offset + 16, new_t - old_t)
-            solver_apply_axis(&mut state, a, b, response, offset + 32, new_u - old_u)
-            change := f32::abs(new_n - old_n) + f32::abs(new_t - old_t) + f32::abs(new_u - old_u)
+            solver_apply_axis(&mut state, a, b, response, offset + 16, new_t -
+                old_t)
+            solver_apply_axis(&mut state, a, b, response, offset + 32, new_u -
+                old_u)
+            change <-
+                f32::abs(new_n - old_n) + f32::abs(new_t - old_t) + f32::abs(
+                    new_u - old_u)
             if change > max_change:
                 max_change = change
             c = c + 14
@@ -1687,36 +2048,47 @@ pub solve_contact_velocities <- (
 # entire stack with the floor prevents a pair correction pushing its support
 # into the ground and producing a fresh bounce on the following frame.
 # Record layout: a,b,normal.xyz,target separation along normal.
-pub solve_contact_positions <- (initial: [f32], inverse_masses: [f32], constraints: [f32], iterations: i64) -> [f32]:
+pub solve_contact_positions <- (initial: [f32], inverse_masses: [f32],
+constraints: [f32], iterations: i64) -> [f32]:
     positions := initial
     iteration := 0
     while iteration < iterations:
         c := 0
         while c < constraints.len() as i64:
-            a := constraints[c as usize] as i64
-            b := constraints[(c + 1) as usize] as i64
-            nx := constraints[(c + 2) as usize]
-            ny := constraints[(c + 3) as usize]
-            nz := constraints[(c + 4) as usize]
-            ab := a * 3
-            separation := positions[ab as usize] * nx + positions[(ab + 1) as usize] * ny + positions[(ab + 2) as usize] * nz
-            ma := inverse_masses[a as usize]
+            a <- constraints[c as usize] as i64
+            b <- constraints[(c + 1) as usize] as i64
+            nx <- constraints[(c + 2) as usize]
+            ny <- constraints[(c + 3) as usize]
+            nz <- constraints[(c + 4) as usize]
+            ab <- a * 3
+            separation :=
+                positions[ab as usize] * nx + positions[(ab +
+                    1) as usize] * ny + positions[(ab + 2) as usize] * nz
+            ma <- inverse_masses[a as usize]
             mb := 0.0
             if b >= 0:
-                bb := b * 3
-                separation = separation - positions[bb as usize] * nx - positions[(bb + 1) as usize] * ny - positions[(bb + 2) as usize] * nz
+                bb <- b * 3
+                separation =
+                    separation - positions[bb as usize] * nx - positions[(bb +
+                        1) as usize] * ny - positions[(bb + 2) as usize] * nz
                 mb = inverse_masses[b as usize]
-            depth := constraints[(c + 5) as usize] - separation - 0.001
+            depth <- constraints[(c + 5) as usize] - separation - 0.001
             if depth > 0.0 and ma + mb > 0.0:
-                impulse := depth * 0.7 / (ma + mb)
-                positions[ab as usize] = positions[ab as usize] + nx * impulse * ma
-                positions[(ab + 1) as usize] = positions[(ab + 1) as usize] + ny * impulse * ma
-                positions[(ab + 2) as usize] = positions[(ab + 2) as usize] + nz * impulse * ma
+                impulse <- depth * 0.7 / (ma + mb)
+                positions[ab as usize] =
+                    positions[ab as usize] + nx * impulse * ma
+                positions[(ab + 1) as usize] =
+                    positions[(ab + 1) as usize] + ny * impulse * ma
+                positions[(ab + 2) as usize] =
+                    positions[(ab + 2) as usize] + nz * impulse * ma
                 if b >= 0:
-                    bb := b * 3
-                    positions[bb as usize] = positions[bb as usize] - nx * impulse * mb
-                    positions[(bb + 1) as usize] = positions[(bb + 1) as usize] - ny * impulse * mb
-                    positions[(bb + 2) as usize] = positions[(bb + 2) as usize] - nz * impulse * mb
+                    bb <- b * 3
+                    positions[bb as usize] =
+                        positions[bb as usize] - nx * impulse * mb
+                    positions[(bb + 1) as usize] =
+                        positions[(bb + 1) as usize] - ny * impulse * mb
+                    positions[(bb + 2) as usize] =
+                        positions[(bb + 2) as usize] - nz * impulse * mb
             c = c + 6
         iteration = iteration + 1
     ret positions
@@ -1724,8 +2096,9 @@ pub solve_contact_positions <- (initial: [f32], inverse_masses: [f32], constrain
 # XZ because PhysicsWorld gravity acts along Y. Every supporting edge of the
 # convex hull must contain the centre of mass on its interior side. This uses
 # the union of all support patches, so a bridge may rest on two pedestals.
-pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bool) -> bool:
-    count := points.len() as i64 / 2
+pub support_polygon_contains <- (points: [f32], x: f32, z: f32,
+require_area: bool) -> bool:
+    count <- points.len() as i64 / 2
     if count == 0:
         ret false
     has_area := false
@@ -1738,8 +2111,8 @@ pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bo
     line_z := 0.0
     i := 0
     while i < count:
-        px := points[(i * 2) as usize]
-        pz := points[(i * 2 + 1) as usize]
+        px <- points[(i * 2) as usize]
+        pz <- points[(i * 2 + 1) as usize]
         if px < min_x:
             min_x = px
         if px > max_x:
@@ -1750,9 +2123,9 @@ pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bo
             max_z = pz
         j := i + 1
         while j < count:
-            dx := points[(j * 2) as usize] - px
-            dz := points[(j * 2 + 1) as usize] - pz
-            length := f32::sqrt(dx * dx + dz * dz)
+            dx <- points[(j * 2) as usize] - px
+            dz <- points[(j * 2 + 1) as usize] - pz
+            length <- f32::sqrt(dx * dx + dz * dz)
             if length > 0.000001:
                 has_edge = true
                 line_x = dx
@@ -1761,7 +2134,9 @@ pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bo
                 negative := false
                 k := 0
                 while k < count:
-                    side := dx * (points[(k * 2 + 1) as usize] - pz) - dz * (points[(k * 2) as usize] - px)
+                    side <-
+                        dx * (points[(k * 2 + 1) as usize] - pz) - dz * (points[
+                            (k * 2) as usize] - px)
                     if side > 0.0000001 * length:
                         positive = true
                     elif side < 0.0 - 0.0000001 * length:
@@ -1771,7 +2146,7 @@ pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bo
                 # rather than boundaries of the convex support polygon.
                 if positive != negative:
                     has_area = true
-                    side := dx * (z - pz) - dz * (x - px)
+                    side <- dx * (z - pz) - dz * (x - px)
                     margin := -0.0001
                     if require_area:
                         margin = 0.00005
@@ -1787,9 +2162,10 @@ pub support_polygon_contains <- (points: [f32], x: f32, z: f32, require_area: bo
     if require_area:
         ret false
     # Spheres may rest on a point; a horizontal capsule may rest on a line.
-    if x < min_x - 0.0001 or x > max_x + 0.0001 or z < min_z - 0.0001 or z > max_z + 0.0001:
+    if (x < min_x - 0.0001 or x > max_x + 0.0001 or z < min_z - 0.0001 or z >
+        max_z + 0.0001):
         ret false
     if not has_edge:
         ret true
-    cross := line_x * (z - points[1]) - line_z * (x - points[0])
+    cross <- line_x * (z - points[1]) - line_z * (x - points[0])
     ret f32::abs(cross) <= 0.0001 * f32::sqrt(line_x * line_x + line_z * line_z)

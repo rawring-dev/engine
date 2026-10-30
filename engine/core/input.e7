@@ -115,8 +115,8 @@ pub gather_input <- sys (input: res &mut Input, window: res &Window):
     input.look_dx = f32::clamp(input.mouse_dx(), -600.0, 600.0)
     input.look_dy = f32::clamp(input.mouse_dy(), -600.0, 600.0)
 
-    jump_down := input.key_down(11)
-    interact_down := input.move_up
+    jump_down <- input.key_down(11)
+    interact_down <- input.move_up
     input.jump_pressed = jump_down and not input.jump_was_down
     input.jump_down = jump_down
     input.jump_was_down = jump_down

@@ -60,9 +60,9 @@ syn keyword e7Constant nil
 
 syn keyword e7Conditional if elif else match
 syn keyword e7Repeat loop while for in
-syn keyword e7Statement ret break cont
+syn keyword e7Statement ret break cont disown
 syn keyword e7Include use mod
-syn keyword e7Structure struct enum table trigger sys
+syn keyword e7Structure struct enum table trigger sys plugin
 syn keyword e7Storage pub
 syn keyword e7Keyword impl trait async await spawn detach cancel unsafe
 syn keyword e7Keyword select from where res
@@ -75,7 +75,7 @@ syn keyword e7Keyword crate self super mut raw
 "   - Uppercase identifiers are types by convention (type paths, enum
 "     variants, generic parameters, aggregate names).
 "   - A lowercase name before optional generics and
-"     '<- struct|enum|table|trigger|sys' is an aggregate declaration name.
+"     '<- struct|enum|table|trigger|sys|plugin' is an aggregate declaration name.
 "   - A name after 'trait' is a type.
 "   - Contextual 'map' immediately before '[' is a type.
 " A look-behind is used after 'trait' because a keyword item wins over a
@@ -84,7 +84,7 @@ syn keyword e7Keyword crate self super mut raw
 syn match e7Type /\<[A-Z][A-Za-z0-9_]*\>/
 syn match e7Type /\<map\ze[ \t]*\[/
 syn match e7Type /\%(\<trait[ \t]\+\)\@<=[A-Za-z_][A-Za-z0-9_]*/
-syn match e7Type /\<[a-z][A-Za-z0-9_]*\ze\%(<[^>\n]*>\)\?[ \t]*<-[ \t]*\%(struct\|enum\|table\|trigger\|sys\)\>/
+syn match e7Type /\<[a-z][A-Za-z0-9_]*\ze\%(<[^>\n]*>\)\?[ \t]*<-[ \t]*\%(struct\|enum\|table\|trigger\|sys\|plugin\)\>/
 
 
 " ---------------------------------------------------------------------------

@@ -1,0 +1,112 @@
+# Composable keyframe sampling and the ECS playback system. Animation is
+# evaluated during Update, so editor pause and single-step control it too.
+use core::ecs::*;
+use core::events::*;
+use core::time::*;
+
+pub AnimationFrame <- struct
+    first: i64
+    second: i64
+    blend: f32
+    time: f32
+    valid: bool
+
+pub animation_frame <- (times: &[f32], time: f32, delta: f32, speed: f32,
+looping: bool) -> AnimationFrame:
+    n <- times.len() as i64
+    if n == 0:
+        ret AnimationFrame { first: 0, second: 0, blend: 0.0, time: time, valid: false }
+    for index in 1..n:
+        if times[index as usize] <= times[(index-1) as usize]:
+            ret AnimationFrame { first: 0, second: 0, blend: 0.0, time: time, valid: false }
+    start <- times[0]
+    end <- times[(n-1) as usize]
+    current := time + delta*speed
+    duration <- end-start
+    if looping and duration > 0.0:
+        # Constant-time wrap in either direction, including large time steps.
+        cycles <- ((current-start)/duration) as i64
+        current = current - (cycles as f32)*duration
+        if current < start:
+            current = current+duration
+        if current >= end:
+            current = start
+    else:
+        if current < start:
+            current = start
+        if current > end:
+            current = end
+    if n == 1 or current <= start:
+        ret AnimationFrame { first: 0, second: 0, blend: 0.0, time: current, valid: true }
+    if current >= end:
+        ret AnimationFrame { first: n-1, second: n-1, blend: 0.0, time: current, valid: true }
+    # Binary search avoids a linear scan for long animation clips.
+    low := 0
+    high := n-1
+    while high-low > 1:
+        mid <- (low+high)/2
+        if times[mid as usize] <= current:
+            low = mid
+        else:
+            high = mid
+    blend <- (current-times[low as usize])/(times[high as usize]-times[low as usize])
+    ret AnimationFrame { first: low, second: high, blend: blend, time: current, valid: true }
+
+pub animation_scalar <- (values: &[f32], stride: i64, axis: i64, frame: &AnimationFrame) -> f32:
+    a <- values[(frame.first*stride+axis) as usize]
+    b <- values[(frame.second*stride+axis) as usize]
+    ret a+(b-a)*frame.blend
+
+# Shortest-arc normalized interpolation avoids quaternion flips and produces
+# a valid rotation even when neighboring keys use opposite quaternion signs.
+pub animation_rotation <- (values: &[f32], frame: &AnimationFrame) -> [f32;4]:
+    dot := 0.0
+    for axis in 0..4:
+        dot = dot + values[(frame.first*4+axis) as usize]*values[(frame.second*4+axis) as usize]
+    sign := 1.0
+    if dot < 0.0:
+        sign = -1.0
+    result: [f32;4] := [0.0,0.0,0.0,1.0]
+    length := 0.0
+    for axis in 0..4:
+        a <- values[(frame.first*4+axis) as usize]
+        b <- values[(frame.second*4+axis) as usize]*sign
+        v <- a+(b-a)*frame.blend
+        result[axis as usize] = v
+        length = length+v*v
+    if length < 0.00000001:
+        result = [0.0,0.0,0.0,1.0]
+    else:
+        length = f32::sqrt(length)
+        for axis in 0..4:
+            result[axis as usize] = result[axis as usize]/length
+    ret result
+
+@trigger(Update)
+pub animate_transforms <- sys (time: res &Time,
+    rows: select &mut Transform, &mut BodyOrientation, &mut TransformAnimation from Components):
+    for (transform, orientation, animation) in rows:
+        if not animation.playing:
+            cont
+        count <- animation.times.len() as i64
+        if (animation.translations.len() != 0 and animation.translations.len() as i64 != count*3) or (animation.rotations.len() != 0 and animation.rotations.len() as i64 != count*4) or (animation.scales.len() != 0 and animation.scales.len() as i64 != count*3):
+            cont
+        frame <- animation_frame(&animation.times,animation.time,time.delta,animation.speed,animation.looping)
+        if not frame.valid:
+            ptr::free(ffi::handle(&frame))
+            cont
+        animation.time = frame.time
+        if animation.translations.len() > 0:
+            for axis in 0..3:
+                transform.translation[axis as usize] = animation_scalar(&animation.translations,3,axis,&frame)
+        if animation.scales.len() > 0:
+            for axis in 0..3:
+                transform.scale[axis as usize] = animation_scalar(&animation.scales,3,axis,&frame)
+        if animation.rotations.len() > 0:
+            q <- animation_rotation(&animation.rotations,&frame)
+            orientation.x = q[0]
+            orientation.y = q[1]
+            orientation.z = q[2]
+            orientation.w = q[3]
+            ptr::free(ffi::handle(&q))
+        ptr::free(ffi::handle(&frame))

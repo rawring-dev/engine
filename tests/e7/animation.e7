@@ -1,0 +1,30 @@
+# e7-test-source: ../../engine/core/ecs.e7
+# e7-test-source: ../../engine/core/events.e7
+# e7-test-source: ../../engine/core/time.e7
+# e7-test-source: ../../engine/core/animation.e7
+
+test_animation_interpolation_and_loop <- () -> i64:
+    times <- [0.0,1.0,2.0]
+    values <- [0.0,0.0,0.0, 2.0,4.0,6.0, 4.0,8.0,12.0]
+    frame <- animation_frame(&times,0.5,0.25,1.0,false)
+    assert_eq_bool(frame.valid,true)
+    assert_f32_near(animation_scalar(&values,3,1,&frame),3.0,0.0001)
+    assert_f32_near(frame.time,0.75,0.0001)
+    wrap <- animation_frame(&times,1.75,0.5,1.0,true)
+    assert_f32_near(wrap.time,0.25,0.0001)
+    reverse <- animation_frame(&times,0.1,0.5,-1.0,true)
+    assert_f32_near(reverse.time,1.6,0.0001)
+    clamp <- animation_frame(&times,1.9,1.0,1.0,false)
+    assert_f32_near(clamp.time,2.0,0.0001)
+    ret 0
+
+test_animation_rejects_bad_times_and_preserves_quaternion_sign <- () -> i64:
+    bad <- [0.0,1.0,1.0]
+    frame <- animation_frame(&bad,0.0,1.0,1.0,true)
+    assert_eq_bool(frame.valid,false)
+    times <- [0.0,1.0]
+    keys <- [0.0,0.0,0.0,1.0, 0.0,0.0,0.0,-1.0]
+    between <- animation_frame(&times,0.5,0.0,1.0,false)
+    rotation <- animation_rotation(&keys,&between)
+    assert_f32_near(rotation[3],1.0,0.0001)
+    ret 0

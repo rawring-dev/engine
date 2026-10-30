@@ -6,11 +6,11 @@ test_strings <- () -> i64:
     ret 0
 
 test_string_helpers <- () -> i64:
-    lines := str::lines("aa\nbb\ncc")
+    lines <- str::lines("aa\nbb\ncc")
     assert_eq_i64(lines.len() as i64, 3)
-    fields := str::fields(" x  y ")
+    fields <- str::fields(" x  y ")
     assert_eq_i64(fields.len() as i64, 2)
-    parts := str::split("1/2/3", "/")
+    parts <- str::split("1/2/3", "/")
     assert_eq_i64(parts.len() as i64, 3)
     assert_str_eq(parts[1], "2")
     assert_eq_i64(i64::parse("-42") as i64, 0 - 42)
@@ -24,19 +24,20 @@ test_vectors <- () -> i64:
     values = vec::push(values, 30)
     assert_eq_i64(values.len() as i64, 3)
     assert_eq_i64(values[1], 20)
-    total := values[0] + values[1] + values[2]
+    total <- values[0] + values[1] + values[2]
     assert_eq_i64(total, 60)
     ret 0
 
 test_maps <- () -> i64:
-    scores := map[i64, i64] { 1: 10, 2: 20 }
+    scores <- map[i64, i64] { 1: 10, 2: 20 }
     assert_eq_i64(scores.len() as i64, 2)
     assert_eq_i64(scores[2], 20)
-    names := map[str, i64] { "one": 1 }
+    names <- map[str, i64] { "one": 1 }
     assert_eq_i64(names["one"], 1)
     ret 0
 
-# Single-allocation buffers support numerical algorithms without repeated copies.
+# Single-allocation buffers support numerical algorithms without repeated
+# copies.
 test_vector_zero_buffer <- () -> i64:
     values: [f32] := vec::new(4, 0)
     assert_eq_i64(values.len() as i64, 4)

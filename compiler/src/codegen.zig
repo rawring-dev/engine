@@ -2204,14 +2204,21 @@ const Builder = struct {
                 try self.lowerExpr(inner);
                 const slot = try self.allocLocal("<try>");
                 try self.emit(.{ .store_local = slot });
+                const inner_ty = self.resolvedType(self.exprType(inner) orelse return error.UnsupportedFeature);
+                const is_optional = inner_ty.* == .optional;
+                const failure: i64 = if (is_optional) 0 else std.math.minInt(i64);
                 try self.emit(.{ .load_local = slot });
-                try self.push(std.math.minInt(i64));
+                try self.push(failure);
                 try self.emit(.eq);
                 const ok_jump = try self.emitJump(true);
-                try self.push(std.math.minInt(i64));
+                try self.push(failure);
                 try self.emit(.ret);
                 try self.patch(ok_jump);
                 try self.emit(.{ .load_local = slot });
+                if (is_optional) switch (self.resolvedType(inner_ty.optional).*) {
+                    .bool, .int, .float => try self.emit(.load_mem),
+                    else => {},
+                };
             },
             // Floats are stored as their f64 bit pattern in the uniform i64
             // slot representation; arithmetic/comparisons use the e7_f32_*
@@ -2972,6 +2979,17 @@ const Builder = struct {
         };
         try self.emit(.{ .string_lit = schema });
         try self.lowerExpr(call.args[0]);
+        if (is_encode) {
+            // JSON schemas erase reference layers. Aggregate borrows already
+            // alias their object handle; scalar and optional borrows point to
+            // a storage slot, which must be loaded before walking the schema.
+            var argument_ty = self.resolvedType(self.exprType(call.args[0]) orelse return error.UnsupportedFeature);
+            while (argument_ty.* == .reference) {
+                const child = argument_ty.reference.child;
+                if (!self.isAggregateType(child)) try self.emit(.load_mem);
+                argument_ty = self.resolvedType(child);
+            }
+        }
         try self.runtimeCall(if (is_encode) .json_encode else .json_decode, 2);
         return true;
     }

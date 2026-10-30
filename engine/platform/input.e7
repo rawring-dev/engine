@@ -32,7 +32,7 @@ scancode_for_action <- (code: i64) -> i64:
     ret -1
 
 key_action_down <- (handle: u64, code: i64) -> i64:
-    scancode := scancode_for_action(code)
+    scancode <- scancode_for_action(code)
     if scancode < 0:
         ret 0
     ret key_down(handle, scancode)

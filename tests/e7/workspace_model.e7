@@ -1,5 +1,7 @@
 # e7-test-source: ../../engine/core/ecs.e7
 # e7-test-source: ../../engine/scene/document.e7
+# e7-test-source: ../../engine/core/hierarchy.e7
+# e7-test-source: ../../engine/scene/gltf.e7
 # e7-test-source: ../../engine/editor/inspector.e7
 # e7-test-source: ../../engine/editor/components.e7
 # e7-test-source: ../../engine/editor/model.e7
@@ -22,16 +24,17 @@ WorkspaceTestFlags <- struct
     target_id: i64
 
 test_workspace_paths_and_asset_classification <- () -> i64:
-    assert_str_eq(workspace_parent("engine/scripts/player.e7"), "engine/scripts")
+    assert_str_eq(workspace_parent("engine/scripts/player.e7"),
+        "engine/scripts")
     assert_str_eq(workspace_parent("engine"), ".")
     assert_str_eq(workspace_parent("."), ".")
     assert_eq_bool(workspace_text_file("player.e7"), true)
     assert_eq_bool(workspace_text_file("pbr.e7s"), true)
     assert_eq_bool(workspace_text_file("scene.json"), true)
     assert_eq_bool(workspace_text_file("texture.png"), false)
-    entries := workspace_scan("engine")
+    entries <- workspace_scan("engine")
     assert_eq_bool(entries.len() > 0, true)
-    missing := workspace_scan(".zig-cache/missing-workspace-folder")
+    missing <- workspace_scan(".zig-cache/missing-workspace-folder")
     assert_eq_i64(missing.len() as i64, 0)
     ret 0
 
@@ -40,23 +43,28 @@ test_workspace_play_derives_body_metadata_without_editing_scene <- () -> i64:
     editor_select(&mut state, 1)
     editor_component_add(&mut state, "RigidBody")
     editor_component_add(&mut state, "SphereCollider")
-    authored := json::encode(state.document.objects[1])
-    entries := workspace_components(state.document.objects[1], &state.component_types, 4, true)
-    body := json::decode::<WorkspaceTestId>(entries["BodyId"])
-    flags := json::decode::<WorkspaceTestFlags>(entries["BodyFlags"])
+    authored <- json::encode(state.document.objects[1])
+    entries <-
+        workspace_components(state.document.objects[1], &state.component_types,
+            4, true)
+    body <- json::decode::<WorkspaceTestId>(entries["BodyId"])
+    flags <- json::decode::<WorkspaceTestFlags>(entries["BodyFlags"])
     assert_eq_i64(body.id, 5)
     assert_eq_i64(flags.target_id, 5)
     assert_eq_i64(flags.shape, 1)
     assert_f32_near(flags.radius, 0.5, 0.00001)
     assert_str_eq(json::encode(state.document.objects[1]), authored)
-    stopped := workspace_components(state.document.objects[1], &state.component_types, 4, false)
+    stopped <-
+        workspace_components(state.document.objects[1], &state.component_types,
+            4, false)
     assert_str_eq(stopped["BodyId"], "")
     ret 0
 
 test_workspace_reload_preserves_dirty_baseline_and_undo_history <- () -> i64:
-    state := editor_state(sample_scene(), ".zig-cache/workspace-unsaved.scene.json")
+    state :=
+        editor_state(sample_scene(), ".zig-cache/workspace-unsaved.scene.json")
     editor_nudge(&mut state, 0, 1.0)
-    original_saved := state.saved_json
+    original_saved <- state.saved_json
     assert_eq_bool(editor_store_session(&state), true)
     resumed := editor_resume(sample_scene(), "fallback")
     assert_eq_bool(resumed.dirty, true)
@@ -65,4 +73,17 @@ test_workspace_reload_preserves_dirty_baseline_and_undo_history <- () -> i64:
     editor_undo(&mut resumed, false)
     assert_eq_bool(resumed.dirty, false)
     host::set_reload_state("")
+    ret 0
+
+test_workspace_parented_physics_is_not_run_in_local_space <- () -> i64:
+    state := editor_state(sample_scene(), "scene.json")
+    editor_select(&mut state,1)
+    editor_create_child(&mut state)
+    editor_component_add(&mut state,"RigidBody")
+    authored <- json::encode(state.document.objects[4])
+    playing <- workspace_components(state.document.objects[4],&state.component_types,4,true)
+    assert_eq_bool(playing["RigidBody"].len() > 0,true)
+    assert_str_eq(playing["BodyId"],"")
+    assert_str_eq(playing["BodyFlags"],"")
+    assert_str_eq(json::encode(state.document.objects[4]),authored)
     ret 0

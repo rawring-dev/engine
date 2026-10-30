@@ -162,7 +162,7 @@
           "name": "keyword.control.loop.engine7"
         },
         {
-          "match": "(?<![A-Za-z0-9_])(?:ret|break|cont)(?![A-Za-z0-9_])",
+          "match": "(?<![A-Za-z0-9_])(?:ret|break|cont|disown)(?![A-Za-z0-9_])",
           "name": "keyword.control.flow.engine7"
         },
         {
@@ -170,7 +170,7 @@
           "name": "keyword.control.import.engine7"
         },
         {
-          "match": "(?<![A-Za-z0-9_])(?:struct|enum|table|trigger|sys)(?![A-Za-z0-9_])",
+          "match": "(?<![A-Za-z0-9_])(?:struct|enum|table|trigger|sys|plugin)(?![A-Za-z0-9_])",
           "name": "storage.type.declaration.engine7"
         },
         {
@@ -200,7 +200,7 @@
       ]
     },
     "aggregate-name": {
-      "match": "(?<![A-Za-z0-9_])[a-z_][A-Za-z0-9_]*(?=\\s*(?:<[^<>\\n]*>)?\\s*<-\\s*(?:struct|enum|table|trigger|sys)(?![A-Za-z0-9_]))",
+      "match": "(?<![A-Za-z0-9_])[a-z_][A-Za-z0-9_]*(?=\\s*(?:<[^<>\\n]*>)?\\s*<-\\s*(?:struct|enum|table|trigger|sys|plugin)(?![A-Za-z0-9_]))",
       "name": "entity.name.type.engine7"
     },
     "function-declaration-name": {

@@ -13,6 +13,7 @@
 //!
 //! ```text
 //! e7_image_load(path: str)     -> u64 handle, 0 on failure
+//! e7_image_from_bytes(data: str) -> u64 handle, 0 on failure
 //! e7_image_width(handle)       -> i64, 0 for invalid handles
 //! e7_image_height(handle)      -> i64
 //! e7_image_pixels(handle)      -> str view of width*height*4 RGBA bytes
@@ -205,6 +206,16 @@ pub export fn e7_image_load(path: i64) callconv(.c) i64 {
     const bytes = readFile(path_bytes) orelse return 0;
     defer allocator().free(bytes);
 
+    return registerDecoded(bytes);
+}
+
+/// Decode PNG/JPEG bytes from a glTF buffer or data URI.
+pub export fn e7_image_from_bytes(value: i64) callconv(.c) i64 {
+    const bytes = e7StringBytes(value) orelse return 0;
+    return registerDecoded(bytes);
+}
+
+fn registerDecoded(bytes: []const u8) i64 {
     const decoded = decodeImage(bytes) orelse return 0;
     const image = allocator().create(Image) catch {
         allocator().free(decoded.pixels);
@@ -259,9 +270,10 @@ pub export fn e7_image_free(handle: i64) callconv(.c) i32 {
     return 0;
 }
 
-pub fn symbols() [6]Symbol {
+pub fn symbols() [7]Symbol {
     return .{
         .{ .name = "e7_image_load", .address = @intFromPtr(&e7_image_load) },
+        .{ .name = "e7_image_from_bytes", .address = @intFromPtr(&e7_image_from_bytes) },
         .{ .name = "e7_image_width", .address = @intFromPtr(&e7_image_width) },
         .{ .name = "e7_image_height", .address = @intFromPtr(&e7_image_height) },
         .{ .name = "e7_image_pixels", .address = @intFromPtr(&e7_image_pixels) },

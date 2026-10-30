@@ -1,0 +1,81 @@
+# Build mesh-local joint palettes before rendering. Vertex deformation is
+# performed by the e7s vertex shader.
+use core::ecs::*;
+use core::events::*;
+use core::hierarchy::*;
+use core::skinning::*;
+use gfx::gpu::*;
+
+@trigger(PrepareRender)
+pub prepare_skinning <- sys (gpu: res &Gpu,
+    skins: select &GltfSkin, &MeshRenderer, &Hierarchy from Components,
+    nodes: select &Transform, &Hierarchy from Components,
+    orientations: select &BodyOrientation, &Hierarchy from Components,
+    matrices: select &LocalMatrix, &Hierarchy from Components):
+    local_matrices: map[str,[f32;16]] := map[str,[f32;16]] {}
+    has_matrix: map[str,bool] := map[str,bool] {}
+    rotations: map[str,[f32;4]] := map[str,[f32;4]] {}
+    has_rotation: map[str,bool] := map[str,bool] {}
+    locals: map[str,[f32;16]] := map[str,[f32;16]] {}
+    parents: map[str,str] := map[str,str] {}
+    for (base,node) in matrices:
+        local_matrices[node.id] = base.matrix
+        has_matrix[node.id] = true
+    for (rotation,node) in orientations:
+        rotations[node.id] = [rotation.x,rotation.y,rotation.z,rotation.w]
+        has_rotation[node.id] = true
+    for (transform,node) in nodes:
+        q <- hierarchy_euler(transform.rotation)
+        rotation := q
+        if has_rotation[node.id]:
+            rotation = rotations[node.id]
+        local := matrix_trs(transform.translation,rotation,transform.scale)
+        if has_matrix[node.id]:
+            composed <- matrix_multiply(local_matrices[node.id],local)
+            ptr::free(ffi::handle(&local))
+            local = composed
+        ptr::free(ffi::handle(&q))
+        locals[node.id] = local
+        parents[node.id] = node.parent
+    for (skin, renderer, node) in skins:
+        if renderer.mesh == 0 or not skin_palette_valid(skin):
+            cont
+        mesh_world <- hierarchy_world(node.id,&locals,&parents)
+        mesh_inverse <- skin_inverse_affine(mesh_world)
+        ptr::free(ffi::handle(&mesh_world))
+        if mesh_inverse[15] == 0.0:
+            ptr::free(ffi::handle(&mesh_inverse))
+            cont
+        palette: map[str,[f32;16]] := map[str,[f32;16]] {}
+        valid := true
+        for joint_index in 0..skin.joints.len() as i64:
+            id <- skin.joints[joint_index as usize]
+            if locals[id][15] == 0.0:
+                valid = false
+                cont
+            inverse := matrix_identity()
+            for element in 0..16:
+                inverse[element as usize] = skin.inverse_bind[(joint_index*16+element) as usize]
+            world <- hierarchy_world(id,&locals,&parents)
+            relative <- matrix_multiply(mesh_inverse,world)
+            palette[id] = matrix_multiply(relative,inverse)
+            ptr::free(ffi::handle(&inverse))
+            ptr::free(ffi::handle(&world))
+            ptr::free(ffi::handle(&relative))
+        if valid:
+            for joint_index in 0..skin.joints.len() as i64:
+                gpu.set_skin_joint(renderer.mesh,joint_index,palette[skin.joints[joint_index as usize]])
+        for (id,matrix) in palette:
+            ptr::free(ffi::handle(&matrix))
+        hierarchy_free_scratch_map(ffi::handle(&palette))
+        ptr::free(ffi::handle(&mesh_inverse))
+    for (id,value) in rotations:
+        ptr::free(ffi::handle(&value))
+    for (id,value) in locals:
+        ptr::free(ffi::handle(&value))
+    hierarchy_free_scratch_map(ffi::handle(&local_matrices))
+    hierarchy_free_scratch_map(ffi::handle(&has_matrix))
+    hierarchy_free_scratch_map(ffi::handle(&rotations))
+    hierarchy_free_scratch_map(ffi::handle(&has_rotation))
+    hierarchy_free_scratch_map(ffi::handle(&locals))
+    hierarchy_free_scratch_map(ffi::handle(&parents))

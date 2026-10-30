@@ -183,23 +183,35 @@ and highlighting heuristics:
 
 - [`editors/neovim/`](editors/neovim/README.md) — a legacy Neovim `:syntax`
   plugin (no tree-sitter parser needed) with filetype detection for `.tri`
-  (canonical) plus `.e7` and `.engine7` aliases, and comment/indent filetype
-  settings.
+  (canonical) plus `.e7` and `.engine7` aliases, comment/indent filetype
+  settings, and an LSP client for the language server.
+- [`editors/lsp/`](editors/lsp/README.md) — `e7-lsp`, a Language Server
+  Protocol server over stdio that reuses the compiler front end for
+  diagnostics, document symbols, hover, completion, same-file
+  go-to-definition, and formatting.  It is built with `zig build lsp` and
+  started automatically by the Neovim plugin.
+- [`editors/fmt/`](editors/fmt/README.md) — `e7-fmt`, the e7 formatter
+  (80-column layout, verified `:=` → `<-` rewrites, whitespace/spacing
+  normalization, indented assignment values).  It is built with `zig build fmt`,
+  exposed through the LSP, and run automatically on write by the Neovim plugin.
 - [`editors/vscode/`](editors/vscode/README.md) — a declarative VS Code
   extension (TextMate grammar + language configuration + snippets) that
-  contributes language id `engine7` and scope `source.engine7`.
+  contributes language id `engine7` and scope `source.engine7`; it remains
+  highlight-only for now.
 
-Both are tested against the shared, compiler-parseable fixture
-[`editors/samples/kitchen_sink.tri`](editors/samples/kitchen_sink.tri). From the
-repository root:
+All plugins are tested against the shared, compiler-parseable fixture
+[`editors/samples/kitchen_sink.tri`](editors/samples/kitchen_sink.tri), and the
+language server, formatter, and Neovim client have their own end-to-end
+suites. From the repository root:
 
 ```sh
 bash editors/verify.sh
 ```
 
 The VS Code suite installs `vscode-textmate` and `vscode-oniguruma` into
-`editors/vscode/node_modules` on first run; the Neovim suite only needs
-`nvim --headless`.
+`editors/vscode/node_modules` on first run; the Neovim highlighting suite needs
+`nvim --headless`; the formatter and LSP suites need `nvim`, `python3`, `zig`,
+and the native libraries required to build the compiler module.
 
 ## Design decisions
 
@@ -701,8 +713,12 @@ window, renderer, Neovim, ECS entities (including spawned entities), custom
 resources, physics, simulation time, selection, and undo history stay alive.
 Changes to type layouts, imports, function signatures, or ECS registry identities
 are rejected while the current code continues running.
-Stop restores the authored scene. See [the editor guide](notes/design/editor.md)
-for controls and reload limits.
+Stop restores the authored scene. Open a `.gltf` or `.glb` file using the
+scene path field or the asset explorer, then save its `.scene.json` companion
+to retain engine components and editor-created entities across Blender exports.
+Select a hierarchy object and use **Child +** or **Detach** to edit parent links.
+See [the editor guide](notes/design/editor.md) for supported glTF features,
+controls, and reload limits.
 
 ```sh
 zig build run-editor -- --code engine/gameplay.e7

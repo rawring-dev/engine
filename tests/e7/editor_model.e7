@@ -1,5 +1,7 @@
 # Pure editor command tests; no window, SDL, or GPU is required.
 # e7-test-source: ../../engine/scene/document.e7
+# e7-test-source: ../../engine/core/hierarchy.e7
+# e7-test-source: ../../engine/scene/gltf.e7
 # e7-test-source: ../../engine/editor/inspector.e7
 # e7-test-source: ../../engine/editor/components.e7
 # e7-test-source: ../../engine/editor/model.e7
@@ -18,7 +20,8 @@ test_editor_basics <- () -> i64:
     ret 0
 
 editor_test_fields <- () -> [str]:
-    ret ["test.scene.json", "cube", "Box", "0", "0.5", "0", "0", "20", "0", "0.5", "0.5", "0.5", "1", "0.55", "0.22", "1", ""]
+    ret ["test.scene.json", "cube", "Box", "0", "0.5", "0", "0", "20", "0",
+        "0.5", "0.5", "0.5", "1", "0.55", "0.22", "1", ""]
 
 test_editor_create_all_shapes_and_unique_names <- () -> i64:
     state := editor_state(sample_scene(), ".zig-cache/editor-test.scene.json")
@@ -38,7 +41,7 @@ test_editor_create_all_shapes_and_unique_names <- () -> i64:
 test_editor_duplicate_is_independent_and_undo_restores_selection <- () -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
-    before := json::encode(&state.document)
+    before <- json::encode(&state.document)
     editor_duplicate(&mut state)
     assert_eq_i64(state.selected, 4)
     assert_str_eq(state.document.objects[4].name, "cube copy 1")
@@ -108,7 +111,7 @@ test_editor_inspector_transaction_and_undo <- () -> i64:
 test_editor_invalid_inspector_preserves_entire_scene_and_history <- () -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
-    before := json::encode(&state.document)
+    before <- json::encode(&state.document)
     fields := editor_test_fields()
     fields[3] = "25"
     fields[10] = "-0.5"
@@ -128,32 +131,37 @@ test_editor_save_tracks_clean_point_and_open_reads_saved_document <- () -> i64:
     state := editor_state(sample_scene(), ".zig-cache/editor-model.scene.json")
     editor_select(&mut state, 1)
     editor_nudge(&mut state, 0, 3.0)
-    assert_eq_bool(editor_save(&mut state, ".zig-cache/editor-model.scene.json"), true)
+    assert_eq_bool(editor_save(&mut state,
+        ".zig-cache/editor-model.scene.json"), true)
     assert_eq_bool(state.dirty, false)
     editor_nudge(&mut state, 0, 2.0)
     editor_undo(&mut state, false)
     assert_eq_bool(state.dirty, false)
     editor_undo(&mut state, true)
     assert_eq_bool(state.dirty, true)
-    assert_eq_bool(editor_open(&mut state, ".zig-cache/editor-model.scene.json"), false)
+    assert_eq_bool(editor_open(&mut state,
+        ".zig-cache/editor-model.scene.json"), false)
     assert_f32_near(state.document.objects[1].translation.x, 5.0, 0.000001)
-    assert_eq_bool(editor_open(&mut state, ".zig-cache/editor-model.scene.json"), true)
+    assert_eq_bool(editor_open(&mut state,
+        ".zig-cache/editor-model.scene.json"), true)
     assert_f32_near(state.document.objects[1].translation.x, 3.0, 0.000001)
     assert_eq_bool(state.dirty, false)
     assert_eq_i64(state.undo_stack.len() as i64, 0)
     ret 0
 
-test_editor_failed_save_blocks_reload_and_failed_open_preserves_scene <- () -> i64:
+test_editor_failed_save_blocks_reload_and_failed_open_preserves_scene <- (
+) -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_nudge(&mut state, 0, 1.0)
-    before := json::encode(&state.document)
-    discarded := host::take_reload_request()
+    before <- json::encode(&state.document)
+    discarded <- host::take_reload_request()
     fields := editor_test_fields()
     fields[0] = ".zig-cache/editor-nonexistent-dir/scene.json"
     editor_dispatch(&mut state, 11, fields)
     assert_eq_i64(host::take_reload_request(), 0)
     assert_eq_bool(state.dirty, true)
-    assert_eq_bool(editor_open(&mut state, ".zig-cache/editor-file-does-not-exist.json"), false)
+    assert_eq_bool(editor_open(&mut state,
+        ".zig-cache/editor-file-does-not-exist.json"), false)
     assert_str_eq(scene_to_json(&state.document), before)
     assert_eq_i64(state.undo_stack.len() as i64, 1)
     ret 0
@@ -172,7 +180,7 @@ test_editor_new_requires_explicit_discard_and_keeps_valid_format <- () -> i64:
 
 test_editor_picking_nearest_bounds_and_transient_camera <- () -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
-    cleared := editor_new(&mut state)
+    cleared <- editor_new(&mut state)
     editor_add(&mut state, ShapeKind::Box)
     editor_nudge(&mut state, 1, -0.5)
     state.view_camera.position = Vec3 { x: 0.0, y: 0.0, z: 5.0 }
@@ -185,8 +193,8 @@ test_editor_picking_nearest_bounds_and_transient_camera <- () -> i64:
     assert_eq_i64(editor_pick(&state, 480.0, 270.0, 960.0, 540.0), 1)
     assert_eq_i64(editor_pick(&state, 240.0, 135.0, 480.0, 270.0), 1)
     assert_eq_i64(editor_pick(&state, 0.0, 0.0, 960.0, 540.0), -1)
-    before := json::encode(&state.document)
-    history := state.undo_stack.len() as i64
+    before <- json::encode(&state.document)
+    history <- state.undo_stack.len() as i64
     editor_focus(&mut state)
     assert_str_eq(scene_to_json(&state.document), before)
     assert_eq_i64(state.undo_stack.len() as i64, history)
@@ -198,14 +206,14 @@ test_editor_reload_preserves_save_as_path_selection_and_view <- () -> i64:
     editor_focus(&mut state)
     state.view_camera.position.x = 12.0
     assert_eq_bool(editor_store_session(&state), true)
-    resumed := editor_resume(sample_scene(), "wrong-default.scene.json")
+    resumed <- editor_resume(sample_scene(), "wrong-default.scene.json")
     assert_str_eq(resumed.scene_path, ".zig-cache/editor-reload.scene.json")
     assert_eq_i64(resumed.selected, 2)
     assert_f32_near(resumed.view_camera.position.x, 12.0, 0.00001)
     assert_eq_bool(resumed.dirty, false)
     assert_eq_i64(resumed.document.objects.len() as i64, 4)
     host::set_reload_state("broken json")
-    fallback := editor_resume(sample_scene(), "fallback.scene.json")
+    fallback <- editor_resume(sample_scene(), "fallback.scene.json")
     assert_str_eq(fallback.scene_path, "fallback.scene.json")
     host::set_reload_state("")
     ret 0
@@ -223,7 +231,8 @@ test_editor_unrelated_action_cancels_discard_confirmation <- () -> i64:
     assert_eq_i64(state.document.objects.len() as i64, 0)
     ret 0
 
-test_editor_generic_inspector_exposes_kind_alpha_texture_and_precise_values <- () -> i64:
+test_editor_generic_inspector_exposes_kind_alpha_texture_and_precise_values <- (
+) -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
     assert_eq_i64(state.inspector_fields.len() as i64, 16)
@@ -235,25 +244,30 @@ test_editor_generic_inspector_exposes_kind_alpha_texture_and_precise_values <- (
     values[15] = "images/quote \" image.png"
     assert_eq_bool(editor_apply_inspector(&mut state, values), true)
     assert_str_eq(shape_kind_name(state.document.objects[1].kind), "Sphere")
-    assert_f32_near(state.document.objects[1].translation.x, 1.234567890123, 0.00000000001)
+    assert_f32_near(state.document.objects[1].translation.x, 1.234567890123,
+        0.00000000001)
     assert_f32_near(state.document.objects[1].colour.a, 0.75, 0.000001)
-    assert_str_eq(state.document.objects[1].texture, "images/quote \" image.png")
+    assert_str_eq(state.document.objects[1].texture,
+        "images/quote \" image.png")
     editor_undo(&mut state, false)
     assert_str_eq(shape_kind_name(state.document.objects[1].kind), "Box")
     assert_f32_near(state.document.objects[1].colour.a, 1.0, 0.000001)
     ret 0
 
-test_editor_inspector_paging_preserves_draft_and_commits_one_transaction <- () -> i64:
+test_editor_inspector_paging_preserves_draft_and_commits_one_transaction <- (
+) -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
-    editor_dispatch(&mut state, 44, ["test.scene.json", "hero", "Box", "3.5", "0.5", "0", "0"])
+    editor_dispatch(&mut state, 44, ["test.scene.json", "hero", "Box", "3.5",
+        "0.5", "0", "0"])
     assert_eq_i64(state.inspector_page, 1)
     assert_str_eq(state.inspector_draft[0], "hero")
     assert_str_eq(state.document.objects[1].name, "cube")
-    editor_dispatch(&mut state, 43, ["test.scene.json", "90", "0", "0.5", "0.5", "0.5", "1"])
+    editor_dispatch(&mut state, 43, ["test.scene.json", "90", "0", "0.5", "0.5",
+        "0.5", "1"])
     assert_eq_i64(state.inspector_page, 0)
     assert_str_eq(editor_field_text(&state, 1), "hero")
-    draft := state.inspector_draft
+    draft <- state.inspector_draft
     assert_eq_bool(editor_apply_inspector(&mut state, draft), true)
     assert_str_eq(state.document.objects[1].name, "hero")
     assert_f32_near(state.document.objects[1].translation.x, 3.5, 0.000001)
@@ -294,8 +308,8 @@ test_editor_camera_and_light_inspection_validates_and_undoes <- () -> i64:
 test_editor_inspector_uses_json_numeric_validation_atomically <- () -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
-    before := json::encode(&state.document)
-    invalid := ["", "NaN", "1e999", "1.2.3", "\"text\"", "null", "+1", ".5"]
+    before <- json::encode(&state.document)
+    invalid <- ["", "NaN", "1e999", "1.2.3", "\"text\"", "null", "+1", ".5"]
     for text in invalid:
         values := state.inspector_draft
         values[2] = text
@@ -304,7 +318,8 @@ test_editor_inspector_uses_json_numeric_validation_atomically <- () -> i64:
     assert_eq_i64(state.undo_stack.len() as i64, 0)
     ret 0
 
-test_inspector_choices_reset_and_semantic_noop_do_not_create_history <- () -> i64:
+test_inspector_choices_reset_and_semantic_noop_do_not_create_history <- (
+) -> i64:
     state := editor_state(sample_scene(), "test.scene.json")
     editor_select(&mut state, 1)
     editor_dispatch(&mut state, 61, [])

@@ -2,19 +2,21 @@
 
 ## Project Structure & Module Organization
 
-engine7 is a Zig workspace with four standalone packages: `scheduler/` (numerical scheduling), `compiler/` (language front end and bytecode), `runtime/` (LLVM JIT, ECS, and FFI), and `transpiler/` (e7s shaders to Slang). Each has `build.zig` and `src/`; the root build composes them. `engine/` contains e7 engine modules, demo assets, and shaders. `tests/e7/` holds language-level suites; Zig tests live alongside source or in dedicated test modules. `editors/` contains Neovim and VS Code support and shared fixtures. Treat `grammar.ebnf` as the surface-language specification.
+engine7 is a Zig workspace with four standalone packages: `scheduler/` (numerical scheduling), `compiler/` (language front end and bytecode), `runtime/` (LLVM JIT, ECS, and FFI), and `transpiler/` (e7s shaders to Slang). Each has `build.zig` and `src/`; the root build composes them. `engine/` contains e7 engine modules, demo assets, and shaders. `tests/e7/` holds language-level suites; Zig tests live alongside source or in dedicated test modules. `editors/` contains Neovim and VS Code support, the `e7-lsp` language server (built by the root `lsp` step from `editors/lsp/src`), and shared fixtures. Treat `grammar.ebnf` as the surface-language specification.
 
 ## Build, Test, and Development Commands
 
 Use Zig **0.16.0** and LLVM **23.1.3**. Install the native libraries listed in `README.md` and `runtime/build.zig` before building.
 
-- `zig build test`: run all four packages’ Zig tests.
+- `zig build test`: run all four packages’ Zig tests plus the `e7-lsp` and `e7-fmt` unit tests.
 - `(cd compiler && zig build test)`: run one package’s tests; substitute another package as needed.
 - `zig build test-e7`: run e7 suites; append `-- --filter string` to select tests.
 - `zig build run-engine`: launch the JIT engine demo; append `-- --frames 2 --headless --capture /tmp/engine.ppm` for a capture.
 - `(cd transpiler && zig build)`: build the `e7s` CLI.
 - `zig build shaders`: regenerate both shader sets; requires Slang.
-- `bash editors/verify.sh`: validate editor highlighting; requires Neovim and Node/npm.
+- `zig build lsp`: build/install the `e7-lsp` language server (`zig-out/bin/e7-lsp`); `zig build test-lsp` runs its unit tests.
+- `zig build fmt`: build/install the `e7-fmt` formatter (`zig-out/bin/e7-fmt`); `zig build test-fmt` runs its unit tests. `e7-fmt --check <path>` reports unformatted files.
+- `bash editors/verify.sh`: validate editor highlighting, the formatter, and the language server/Neovim LSP integration; requires Neovim, Node/npm, python3, and Zig.
 
 ## Language Priorities & e7 Design
 

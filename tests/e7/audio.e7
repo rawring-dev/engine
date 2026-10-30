@@ -7,20 +7,20 @@
 # The suite may run from the workspace root or from a package directory, so
 # try the checked-in fixture with the same prefixes the Zig tests use.
 load_test_tone <- () -> AudioClip:
-    first := audio_load_wav("engine/assets/testdata/tone.wav")
+    first <- audio_load_wav("engine/assets/testdata/tone.wav")
     if first.valid():
         ret first
-    second := audio_load_wav("../engine/assets/testdata/tone.wav")
+    second <- audio_load_wav("../engine/assets/testdata/tone.wav")
     if second.valid():
         ret second
     ret audio_load_wav("../../engine/assets/testdata/tone.wav")
 
 # 1 when the active SDL audio driver is the deterministic dummy driver.
 is_dummy_driver <- () -> i64:
-    name := audio_current_driver()
+    name <- audio_current_driver()
     if str::len(name) != 5:
         ret 0
-    data := str::data(name) as u64
+    data <- str::data(name) as u64
     if ptr::load_u8(data) != 100:
         ret 0
     if ptr::load_u8(data + 1) != 117:
@@ -34,7 +34,7 @@ is_dummy_driver <- () -> i64:
     ret 1
 
 test_audio_loads_wav_spec <- () -> i64:
-    clip := load_test_tone()
+    clip <- load_test_tone()
     assert_eq_bool(clip.valid(), true)
     # The fixture is a 100 ms 440 Hz mono 16-bit WAV: 4410 frames, 8820 bytes.
     assert_eq_i64(clip.length, 8820)
@@ -47,19 +47,19 @@ test_audio_loads_wav_spec <- () -> i64:
     ret 0
 
 test_audio_rejects_missing_and_invalid_files <- () -> i64:
-    missing := audio_load_wav("engine/assets/testdata/missing-tone.wav")
+    missing <- audio_load_wav("engine/assets/testdata/missing-tone.wav")
     assert_eq_bool(missing.valid(), false)
     assert_eq_i64(missing.length, 0)
     missing.free()
     # A real file that is not a WAV must also decode to an empty clip.
-    invalid := audio_load_wav("engine/assets/testdata/cube.png")
+    invalid <- audio_load_wav("engine/assets/testdata/cube.png")
     assert_eq_bool(invalid.valid(), false)
     assert_eq_i64(invalid.length, 0)
     invalid.free()
     ret 0
 
 test_audio_playback_dummy_driver <- () -> i64:
-    clip := load_test_tone()
+    clip <- load_test_tone()
     if not clip.valid():
         # Fixture not reachable from this working directory: the load test
         # reports that failure; skip playback here.
@@ -81,7 +81,7 @@ test_audio_playback_dummy_driver <- () -> i64:
 test_audio_plugin_state_degrades_without_device <- () -> i64:
     # A system created with ready=false must no-op on every operation, which is
     # the state the engine plugin inserts when SDL audio initialization fails.
-    clip := load_test_tone()
+    clip <- load_test_tone()
     system := AudioSystem { ready: false, volume: 1.0, stream: 0 }
     assert_eq_i64(system.play(&clip), 0)
     system.stop()

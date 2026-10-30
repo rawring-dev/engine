@@ -24,7 +24,7 @@ pub inspect_char <- (text: str, at: i64) -> str:
 inspect_space <- (text: str, start: i64) -> i64:
     at := start
     while at < text.len() as i64:
-        c := inspect_char(text, at)
+        c <- inspect_char(text, at)
         if c != " " and c != "\t" and c != "\r" and c != "\n":
             break
         at = at + 1
@@ -33,7 +33,7 @@ inspect_space <- (text: str, start: i64) -> i64:
 inspect_string_end <- (text: str, start: i64) -> i64:
     at := start + 1
     while at < text.len() as i64:
-        c := inspect_char(text, at)
+        c <- inspect_char(text, at)
         at = at + 1
         if c == "\\":
             at = at + 1
@@ -42,14 +42,14 @@ inspect_string_end <- (text: str, start: i64) -> i64:
     ret -1
 
 inspect_value_end <- (text: str, start: i64) -> i64:
-    first := inspect_char(text, start)
+    first <- inspect_char(text, start)
     if first == "\"":
         ret inspect_string_end(text, start)
     if first == "{" or first == "[":
         depth := 1
         at := start + 1
         while at < text.len() as i64:
-            c := inspect_char(text, at)
+            c <- inspect_char(text, at)
             if c == "\"":
                 at = inspect_string_end(text, at)
                 if at < 0:
@@ -65,14 +65,15 @@ inspect_value_end <- (text: str, start: i64) -> i64:
         ret -1
     at := start
     while at < text.len() as i64:
-        c := inspect_char(text, at)
-        if c == "," or c == "}" or c == "]" or c == " " or c == "\t" or c == "\n" or c == "\r":
+        c <- inspect_char(text, at)
+        if (c == "," or c == "}" or c == "]" or c == " " or c == "\t" or c ==
+            "\n" or c == "\r"):
             break
         at = at + 1
     ret at
 
 pub inspect_schema_end <- (schema: str, start: i64) -> i64:
-    first := inspect_char(schema, start)
+    first <- inspect_char(schema, start)
     if first == "?" or first == "E":
         ret inspect_schema_end(schema, start + 1)
     if first == "A" or first == "M":
@@ -89,7 +90,7 @@ pub inspect_schema_end <- (schema: str, start: i64) -> i64:
         depth := 1
         at := start + 1
         while at < schema.len() as i64:
-            c := inspect_char(schema, at)
+            c <- inspect_char(schema, at)
             if c == "{" or c == "[" or c == "<" or c == "(":
                 depth = depth + 1
             elif c == "}" or c == "]" or c == ">" or c == ")":
@@ -103,15 +104,15 @@ pub inspect_schema_end <- (schema: str, start: i64) -> i64:
 inspect_member <- (text: str, object_start: i64, name: str) -> InspectSpan:
     at := inspect_space(text, object_start + 1)
     while inspect_char(text, at) == "\"":
-        key_end := inspect_string_end(text, at)
+        key_end <- inspect_string_end(text, at)
         if key_end < 0:
             break
-        key := json::decode::<str>(text.slice(at as usize, key_end as usize))
-        colon := inspect_space(text, key_end)
+        key <- json::decode::<str>(text.slice(at as usize, key_end as usize))
+        colon <- inspect_space(text, key_end)
         if inspect_char(text, colon) != ":":
             break
-        value_start := inspect_space(text, colon + 1)
-        value_end := inspect_value_end(text, value_start)
+        value_start <- inspect_space(text, colon + 1)
+        value_end <- inspect_value_end(text, value_start)
         if value_end <= value_start:
             break
         if key == name:
@@ -130,39 +131,49 @@ inspect_array_count <- (schema: str) -> i64:
         colon = colon + 1
     ret i64::parse(schema.slice(1, colon as usize))
 
-inspect_walk <- (schema: str, source: str, start: i64, end: i64, prefix: str, depth: i64, expand_arrays: bool) -> [InspectField]:
+inspect_walk <- (schema: str, source: str, start: i64, end: i64, prefix: str,
+depth: i64, expand_arrays: bool) -> [InspectField]:
     fields: [InspectField] := []
     if inspect_char(schema, 0) == "{" and depth < 32:
         at := 1
         while at < schema.len() as i64 and inspect_char(schema, at) != "}":
             equal := at
-            while equal < schema.len() as i64 and inspect_char(schema, equal) != "=":
+            while equal < schema.len() as i64 and inspect_char(schema,
+                equal) != "=":
                 equal = equal + 1
-            name := schema.slice(at as usize, equal as usize)
-            type_end := inspect_schema_end(schema, equal + 1)
-            child_schema := schema.slice((equal + 1) as usize, type_end as usize)
-            span := inspect_member(source, start, name)
+            name <- schema.slice(at as usize, equal as usize)
+            type_end <- inspect_schema_end(schema, equal + 1)
+            child_schema <-
+                schema.slice((equal + 1) as usize, type_end as usize)
+            span <- inspect_member(source, start, name)
             path := name
             if prefix.len() > 0:
                 path = prefix + "." + name
             if span.found:
-                children := inspect_walk(child_schema, source, span.start, span.end, path, depth + 1, expand_arrays)
+                children <-
+                    inspect_walk(child_schema, source, span.start, span.end,
+                        path, depth + 1, expand_arrays)
                 for child in children:
                     fields = vec::push(fields, child)
             at = type_end
             if inspect_char(schema, at) == ";":
                 at = at + 1
-    elif expand_arrays and depth < 32 and inspect_array_count(schema) >= 0 and inspect_array_count(schema) <= 16:
+    elif expand_arrays and depth < 32 and inspect_array_count(
+        schema) >= 0 and inspect_array_count(schema) <= 16:
         colon := 1
         while inspect_char(schema, colon) != ":":
             colon = colon + 1
-        child_schema := schema.slice((colon + 1) as usize, schema.len() as usize)
+        child_schema <-
+            schema.slice((colon + 1) as usize, schema.len() as usize)
         at := inspect_space(source, start + 1)
         index: i64 := 0
-        while index < inspect_array_count(schema) and inspect_char(source, at) != "]":
-            value_end := inspect_value_end(source, at)
-            path := prefix + "[" + json::encode(index) + "]"
-            children := inspect_walk(child_schema, source, at, value_end, path, depth + 1, expand_arrays)
+        while index < inspect_array_count(schema) and inspect_char(source,
+            at) != "]":
+            value_end <- inspect_value_end(source, at)
+            path <- prefix + "[" + json::encode(index) + "]"
+            children <-
+                inspect_walk(child_schema, source, at, value_end, path, depth +
+                    1, expand_arrays)
             for child in children:
                 fields = vec::push(fields, child)
             at = inspect_space(source, value_end)
@@ -170,18 +181,23 @@ inspect_walk <- (schema: str, source: str, start: i64, end: i64, prefix: str, de
                 at = inspect_space(source, at + 1)
             index = index + 1
     else:
-        json_value := source.slice(start as usize, end as usize)
+        json_value <- source.slice(start as usize, end as usize)
         text := json_value
-        if schema == "s" or (inspect_char(schema, 0) == "E" and inspect_char(json_value, 0) == "\""):
+        if schema == "s" or (inspect_char(schema, 0) == "E" and inspect_char(
+            json_value, 0) == "\""):
             text = json::decode::<str>(json_value)
-        fields = vec::push(fields, InspectField { path: prefix, schema: schema, text: text, start: start, end: end, choices: inspect_choices(schema) })
+        fields =
+            vec::push(fields, InspectField { path: prefix, schema: schema,
+                text: text, start: start, end: end, choices: inspect_choices(
+                schema) })
     ret fields
 
-inspect_fields_mode <- (schema: str, source: str, expand_arrays: bool) -> [InspectField]:
+inspect_fields_mode <- (schema: str, source: str, expand_arrays: bool) -> [
+InspectField]:
     if schema.len() == 0 or source.len() == 0:
         ret []
-    start := inspect_space(source, 0)
-    end := inspect_value_end(source, start)
+    start <- inspect_space(source, 0)
+    end <- inspect_value_end(source, start)
     if end <= start or inspect_space(source, end) != source.len() as i64:
         ret []
     ret inspect_walk(schema, source, start, end, "", 0, expand_arrays)
@@ -213,7 +229,8 @@ pub inspect_choices <- (schema: str) -> [str]:
     at := 2
     while at < schema.len() as i64 and inspect_char(schema, at) != "}":
         equal := at
-        while equal < schema.len() as i64 and inspect_char(schema, equal) != "=":
+        while equal < schema.len() as i64 and inspect_char(schema,
+            equal) != "=":
             equal = equal + 1
         if inspect_char(schema, equal + 1) != "u":
             ret []
@@ -237,9 +254,12 @@ pub inspect_type_hint <- (schema: str) -> str:
     ret "JSON"
 
 # A pure transaction: replacement spans refer to the original source. Sorting
-# by source offset also handles JSON object keys in a different declaration order.
-# The caller must decode the result as T and validate domain rules before commit.
-pub inspect_patch <- (source: str, fields: &[InspectField], values: &[str]) -> str:
+# by source offset also handles JSON object keys in a different declaration
+# order.
+# The caller must decode the result as T and validate domain rules before
+# commit.
+pub inspect_patch <- (source: str, fields: &[InspectField], values: &[
+str]) -> str:
     if fields.len() != values.len():
         ret ""
     out := ""
@@ -250,25 +270,27 @@ pub inspect_patch <- (source: str, fields: &[InspectField], values: &[str]) -> s
         earliest := source.len() as i64 + 1
         index := 0
         while index < fields.len() as i64:
-            field := fields[index as usize]
+            field <- fields[index as usize]
             if field.start >= position and field.start < earliest:
                 chosen = index
                 earliest = field.start
             index = index + 1
         if chosen < 0:
             ret ""
-        field := fields[chosen as usize]
-        value := values[chosen as usize]
+        field <- fields[chosen as usize]
+        value <- values[chosen as usize]
         replacement := value
         if value == field.text:
             replacement = source.slice(field.start as usize, field.end as usize)
         elif field.schema == "s":
             replacement = json::encode(value)
         elif inspect_char(field.schema, 0) == "E":
-            first := inspect_char(value, inspect_space(value, 0))
+            first <- inspect_char(value, inspect_space(value, 0))
             if first != "{" and first != "\"":
                 replacement = json::encode(value)
-        out = out + source.slice(position as usize, field.start as usize) + replacement
+        out =
+            out + source.slice(position as usize,
+                field.start as usize) + replacement
         position = field.end
         count = count + 1
     ret out + source.slice(position as usize, source.len() as usize)

@@ -73,6 +73,112 @@ pub fn build(b: *std.Build) void {
     const test_e7_step = b.step("test-e7", "Run the e7-authored tests in tests/e7");
     test_e7_step.dependOn(&run_e7_tests.step);
 
+    // e7 editor tooling: `e7-lsp` (language server) and `e7-fmt` (formatter).
+    // Both reuse the compiler front end.  Their sources are split into modules
+    // so the LSP, the formatter core, and the CLI compile against one copy of
+    // each shared interface (`protocol`, `project`, `analysis`, `formatter`).
+    // They are editor tooling rather than language packages, so they are
+    // defined here instead of as standalone workspace dependencies.
+    const protocol_module = b.createModule(.{
+        .root_source_file = b.path("editors/lsp/src/protocol.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const project_module = b.createModule(.{
+        .root_source_file = b.path("editors/lsp/src/project.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    project_module.addImport("compiler", compiler);
+    project_module.linkSystemLibrary("LLVM-23", .{});
+    const analysis_module = b.createModule(.{
+        .root_source_file = b.path("editors/lsp/src/analysis.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    analysis_module.addImport("compiler", compiler);
+    analysis_module.addImport("protocol", protocol_module);
+    analysis_module.addImport("project", project_module);
+    analysis_module.linkSystemLibrary("LLVM-23", .{});
+
+    const formatter_module = b.createModule(.{
+        .root_source_file = b.path("editors/fmt/src/formatter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    formatter_module.addImport("compiler", compiler);
+    formatter_module.addImport("analysis", analysis_module);
+    formatter_module.addImport("project", project_module);
+    formatter_module.linkSystemLibrary("LLVM-23", .{});
+
+    // `zig build lsp` installs `zig-out/bin/e7-lsp`.
+    const lsp_module = b.createModule(.{
+        .root_source_file = b.path("editors/lsp/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lsp_module.addImport("compiler", compiler);
+    lsp_module.addImport("protocol", protocol_module);
+    lsp_module.addImport("project", project_module);
+    lsp_module.addImport("analysis", analysis_module);
+    lsp_module.addImport("formatter", formatter_module);
+    lsp_module.linkSystemLibrary("LLVM-23", .{});
+    const lsp_exe = b.addExecutable(.{ .name = "e7-lsp", .root_module = lsp_module });
+    const install_lsp = b.addInstallArtifact(lsp_exe, .{});
+    const lsp_step = b.step("lsp", "Build the engine7 language server (zig-out/bin/e7-lsp)");
+    lsp_step.dependOn(&install_lsp.step);
+
+    // A module's test blocks only run when that module (not just its imports)
+    // is the root of a test artifact, so each shared module gets its own test
+    // binary.  Keeping every file in exactly one module is also what lets the
+    // LSP, formatter core, and CLI share these sources.
+    const test_lsp_step = b.step("test-lsp", "Run the e7 language server unit tests");
+    inline for (.{
+        .{ "protocol", protocol_module },
+        .{ "project", project_module },
+        .{ "analysis", analysis_module },
+        .{ "server", lsp_module },
+    }) |entry| {
+        const unit_tests = b.addTest(.{ .root_module = entry[1] });
+        const run_unit_tests = std.Build.Step.Run.create(
+            b,
+            b.fmt("run e7-lsp {s} tests", .{entry[0]}),
+        );
+        run_unit_tests.addArtifactArg(unit_tests);
+        run_unit_tests.has_side_effects = true;
+        test_step.dependOn(&run_unit_tests.step);
+        test_lsp_step.dependOn(&run_unit_tests.step);
+    }
+
+    // `zig build fmt` installs `zig-out/bin/e7-fmt`.
+    const fmt_cli_module = b.createModule(.{
+        .root_source_file = b.path("editors/fmt/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    fmt_cli_module.addImport("formatter", formatter_module);
+    fmt_cli_module.addImport("project", project_module);
+    fmt_cli_module.addImport("compiler", compiler);
+    fmt_cli_module.linkSystemLibrary("LLVM-23", .{});
+    const fmt_exe = b.addExecutable(.{ .name = "e7-fmt", .root_module = fmt_cli_module });
+    const install_fmt = b.addInstallArtifact(fmt_exe, .{});
+    const fmt_step = b.step("fmt", "Build the e7 formatter (zig-out/bin/e7-fmt)");
+    fmt_step.dependOn(&install_fmt.step);
+
+    const fmt_tests = b.addTest(.{ .root_module = formatter_module });
+    const run_fmt_tests = std.Build.Step.Run.create(b, "run e7-fmt tests");
+    run_fmt_tests.addArtifactArg(fmt_tests);
+    run_fmt_tests.has_side_effects = true;
+    test_step.dependOn(&run_fmt_tests.step);
+    const test_fmt_step = b.step("test-fmt", "Run the e7 formatter unit tests");
+    test_fmt_step.dependOn(&run_fmt_tests.step);
+
     // Shader assets: the canonical sources are e7s files.  `zig build shaders`
     // transpiles them with the e7s CLI and compiles the generated Slang to
     // SPIR-V for both shader sets:

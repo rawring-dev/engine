@@ -1,0 +1,64 @@
+# CPU reference for testing linear blend skinning. The production renderer
+# builds mesh-local palettes and performs vertex deformation in the e7s shader.
+use core::ecs::*;
+
+pub skin_position <- (skin: &GltfSkin, vertex: i64, palette: &map[str,[f32;16]]) -> [f32;3]:
+    result: [f32;3] := [0.0,0.0,0.0]
+    x <- skin.vertices[(vertex*8) as usize]
+    y <- skin.vertices[(vertex*8+1) as usize]
+    z <- skin.vertices[(vertex*8+2) as usize]
+    for influence in 0..4:
+        slot <- vertex*4+influence
+        joint <- skin.joint_indices[slot as usize]
+        weight <- skin.weights[slot as usize]
+        if weight > 0.0:
+            matrix <- palette[skin.joints[joint as usize]]
+            result[0] = result[0] + weight*(matrix[0]*x + matrix[4]*y + matrix[8]*z + matrix[12])
+            result[1] = result[1] + weight*(matrix[1]*x + matrix[5]*y + matrix[9]*z + matrix[13])
+            result[2] = result[2] + weight*(matrix[2]*x + matrix[6]*y + matrix[10]*z + matrix[14])
+    ret result
+
+pub skin_valid <- (skin: &GltfSkin) -> bool:
+    count <- skin.vertices.len() as i64 / 8
+    if skin.vertices.len() as i64 % 8 != 0 or count == 0 or skin.joints.len() == 0 or skin.joints.len() > 64 or skin.inverse_bind.len() as i64 != skin.joints.len() as i64*16 or skin.joint_indices.len() as i64 != count*4 or skin.weights.len() as i64 != count*4:
+        ret false
+    for joint in skin.joint_indices:
+        if joint < 0 or joint >= skin.joints.len() as i64:
+            ret false
+    ret true
+
+# Vertex attributes are validated when the mesh is uploaded; palette updates
+# must stay proportional to joint count rather than vertex count.
+pub skin_palette_valid <- (skin: &GltfSkin) -> bool:
+    ret skin.joints.len() > 0 and skin.joints.len() <= 64 and skin.inverse_bind.len() as i64 == skin.joints.len() as i64*16
+
+# Invert a column-major affine matrix. A singular result has m[15] == 0.
+pub skin_inverse_affine <- (m: [f32;16]) -> [f32;16]:
+    a <- m[0]
+    b <- m[4]
+    c <- m[8]
+    d <- m[1]
+    e <- m[5]
+    f <- m[9]
+    g <- m[2]
+    h <- m[6]
+    i <- m[10]
+    det <- a*(e*i-f*h)-b*(d*i-f*g)+c*(d*h-e*g)
+    out: [f32;16] := [0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0]
+    if f32::abs(det) < 0.00000001:
+        ret out
+    inv <- 1.0/det
+    out[0] = (e*i-f*h)*inv
+    out[4] = (c*h-b*i)*inv
+    out[8] = (b*f-c*e)*inv
+    out[1] = (f*g-d*i)*inv
+    out[5] = (a*i-c*g)*inv
+    out[9] = (c*d-a*f)*inv
+    out[2] = (d*h-e*g)*inv
+    out[6] = (b*g-a*h)*inv
+    out[10] = (a*e-b*d)*inv
+    out[12] = -(out[0]*m[12]+out[4]*m[13]+out[8]*m[14])
+    out[13] = -(out[1]*m[12]+out[5]*m[13]+out[9]*m[14])
+    out[14] = -(out[2]*m[12]+out[6]*m[13]+out[10]*m[14])
+    out[15] = 1.0
+    ret out

@@ -25,9 +25,9 @@ pub SpatialMap <- struct
 
 pub BroadphasePlugin <- plugin
     broadphase_plugin_init <- sys (commands: &mut Commands):
-        empty_cells := map[i64, [i64]] {}
-        empty_ids: [i64] := []
-        empty_bounds: [f32] := []
+        empty_cells <- map[i64, [i64]] {}
+        empty_ids: [i64] <- []
+        empty_bounds: [f32] <- []
         commands.insert_resource(SpatialMap {
             cell_size: 2.0,
             cells: empty_cells,
@@ -39,23 +39,23 @@ pub BroadphasePlugin <- plugin
 # Floor(world / cell_size) as an i64 cell coordinate.  Truncation is corrected
 # for negative non-integer values.
 pub cell_floor <- (value: f32, cell_size: f32) -> i64:
-    scaled := value / cell_size
-    truncated := (scaled) as i64
-    rounded_back := (truncated) as f32
+    scaled <- value / cell_size
+    truncated <- (scaled) as i64
+    rounded_back <- (truncated) as f32
     if rounded_back > scaled:
         ret truncated - 1
     ret truncated
 
 pub cell_key <- (cx: i64, cy: i64, cz: i64) -> i64:
-    hx := cx * 73856093
-    hy := cy * 19349663
-    hz := cz * 83492791
+    hx <- cx * 73856093
+    hy <- cy * 19349663
+    hz <- cz * 83492791
     ret hx + hy + hz
 
 append_unique <- (ids: [i64], id: i64) -> [i64]:
     known := false
     index := 0
-    count := ids.len() as i64
+    count <- ids.len() as i64
     while index < count:
         if ids[index as usize] == id:
             known = true
@@ -74,19 +74,19 @@ pub broadphase_insert <- (
     minimum: Vec3,
     maximum: Vec3,
 ) -> nil:
-    min_cx := cell_floor(minimum.x, cell_size)
-    min_cy := cell_floor(minimum.y, cell_size)
-    min_cz := cell_floor(minimum.z, cell_size)
-    max_cx := cell_floor(maximum.x, cell_size)
-    max_cy := cell_floor(maximum.y, cell_size)
-    max_cz := cell_floor(maximum.z, cell_size)
+    min_cx <- cell_floor(minimum.x, cell_size)
+    min_cy <- cell_floor(minimum.y, cell_size)
+    min_cz <- cell_floor(minimum.z, cell_size)
+    max_cx <- cell_floor(maximum.x, cell_size)
+    max_cy <- cell_floor(maximum.y, cell_size)
+    max_cz <- cell_floor(maximum.z, cell_size)
     cx := min_cx
     while cx <= max_cx:
         cy := min_cy
         while cy <= max_cy:
             cz := min_cz
             while cz <= max_cz:
-                key := cell_key(cx, cy, cz)
+                key <- cell_key(cx, cy, cz)
                 cell_ids := cells[key]
                 cell_ids = append_unique(cell_ids, id)
                 cells[key] = cell_ids
@@ -104,21 +104,21 @@ pub query_cells <- (
     maximum: Vec3,
 ) -> [i64]:
     result: [i64] := []
-    min_cx := cell_floor(minimum.x, cell_size)
-    min_cy := cell_floor(minimum.y, cell_size)
-    min_cz := cell_floor(minimum.z, cell_size)
-    max_cx := cell_floor(maximum.x, cell_size)
-    max_cy := cell_floor(maximum.y, cell_size)
-    max_cz := cell_floor(maximum.z, cell_size)
+    min_cx <- cell_floor(minimum.x, cell_size)
+    min_cy <- cell_floor(minimum.y, cell_size)
+    min_cz <- cell_floor(minimum.z, cell_size)
+    max_cx <- cell_floor(maximum.x, cell_size)
+    max_cy <- cell_floor(maximum.y, cell_size)
+    max_cz <- cell_floor(maximum.z, cell_size)
     cx := min_cx
     while cx <= max_cx:
         cy := min_cy
         while cy <= max_cy:
             cz := min_cz
             while cz <= max_cz:
-                key := cell_key(cx, cy, cz)
-                cell_ids := cells[key]
-                member_count := cell_ids.len() as i64
+                key <- cell_key(cx, cy, cz)
+                cell_ids <- cells[key]
+                member_count <- cell_ids.len() as i64
                 member := 0
                 while member < member_count:
                     result = append_unique(result, cell_ids[member as usize])
@@ -130,7 +130,8 @@ pub query_cells <- (
 
 # Candidate body ids whose broadphase cells intersect the world-space AABB
 # [minimum, maximum].  Deduplicated; caller must narrowphase-test each id.
-pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64]:
+pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [
+i64]:
     ret query_cells(&spatial.cells, spatial.cell_size, minimum, maximum)
 
 # Ray candidates: sample the ray at cell-size steps up to `max_distance` and
@@ -138,21 +139,21 @@ pub query_region <- (spatial: &SpatialMap, minimum: Vec3, maximum: Vec3) -> [i64
 # enough for the demo and avoids a separate DDA implementation.
 pub query_ray <- (spatial: &SpatialMap, ray: Ray, max_distance: f32) -> [i64]:
     result: [i64] := []
-    step := spatial.cell_size
+    step <- spatial.cell_size
     distance := 0.0
     while distance <= max_distance:
-        point := Vec3 {
+        point <- Vec3 {
             x: ray.origin.x + ray.direction.x * distance,
             y: ray.origin.y + ray.direction.y * distance,
             z: ray.origin.z + ray.direction.z * distance,
         }
-        patch := 0.05
-        candidates := query_region(
+        patch <- 0.05
+        candidates <- query_region(
             spatial,
             Vec3 { x: point.x - patch, y: point.y - patch, z: point.z - patch },
             Vec3 { x: point.x + patch, y: point.y + patch, z: point.z + patch },
         )
-        candidate_count := candidates.len() as i64
+        candidate_count <- candidates.len() as i64
         index := 0
         while index < candidate_count:
             result = append_unique(result, candidates[index as usize])

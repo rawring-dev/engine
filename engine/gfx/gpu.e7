@@ -26,13 +26,15 @@ pub Gpu <- struct
 
 
 # Inherent Gpu methods: the raw e7_engine_scene_* platform functions and the
-# host::read_shader native method are confined here; game code calls methods such as
+# host::read_shader native method are confined here; game code calls methods
+# such as
 # `gpu.set_camera(...)`, `gpu.begin_frame()`, `gpu.draw_renderable(...)`.
 impl Gpu:
     pub read_shader <- (gpu: &Gpu, path: str) -> str:
         ret host::read_shader(path)
 
-    pub create_scene <- (gpu: &mut Gpu, window: &Window, vert: str, frag: str) -> nil:
+    pub create_scene <- (gpu: &mut Gpu, window: &Window, vert: str,
+        frag: str) -> nil:
         gpu.scene = e7_engine_scene_create(window.handle, vert, frag)
         window_pump(window.handle)
         window_pump(window.handle)
@@ -111,7 +113,8 @@ impl Gpu:
         texture: u64,
     ) -> nil:
         e7_engine_scene_draw_shape_rot(
-            gpu.scene, kind, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb, texture,
+            gpu.scene, kind, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb,
+            texture,
         )
         ret
 
@@ -137,7 +140,8 @@ impl Gpu:
         texture: u64,
     ) -> nil:
         e7_engine_scene_draw_shape_quat(
-            gpu.scene, kind, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb, texture,
+            gpu.scene, kind, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb,
+            texture,
         )
         ret
 
@@ -161,7 +165,8 @@ impl Gpu:
         texture: u64,
     ) -> nil:
         e7_engine_scene_draw_custom_quat(
-            gpu.scene, mesh, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb, texture,
+            gpu.scene, mesh, px, py, pz, sx, sy, sz, qx, qy, qz, qw, tr, tg, tb,
+            texture,
         )
         ret
 
@@ -184,9 +189,19 @@ impl Gpu:
         texture: u64,
     ) -> nil:
         e7_engine_scene_draw_custom_rot(
-            gpu.scene, mesh, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb, texture,
+            gpu.scene, mesh, px, py, pz, sx, sy, sz, rx, ry, rz, tr, tg, tb,
+            texture,
         )
         ret
+
+    pub draw_matrix <- (gpu: &Gpu, mesh: u64, shape: i32, matrix: [f32; 16], tint: [f32; 3], texture: u64) -> nil:
+        e7_engine_scene_draw_matrix(gpu.scene,mesh,shape,matrix,tint,texture)
+
+    pub destroy_texture_safely <- (gpu: &Gpu, texture: u64) -> nil:
+        e7_engine_scene_texture_destroy_safely(gpu.scene,texture)
+
+    pub destroy_mesh <- (gpu: &Gpu, mesh: u64) -> nil:
+        e7_engine_scene_mesh_destroy(gpu.scene,mesh)
 
     pub upload_texture <- (gpu: &mut Gpu, image_handle: u64) -> u64:
         ret e7_engine_scene_texture_create(gpu.scene, image_handle)
@@ -202,6 +217,12 @@ impl Gpu:
         layout: i32,
     ) -> u64:
         ret e7_engine_scene_mesh_upload(gpu.scene, vertices, indices, layout)
+
+    pub upload_skinned_mesh <- (gpu: &mut Gpu, vertices: [f32], indices: [i32], joints: [i64], weights: [f32]) -> u64:
+        ret e7_engine_scene_mesh_upload_skinned(gpu.scene, vertices, indices, joints, weights)
+
+    pub set_skin_joint <- (gpu: &Gpu, mesh: u64, joint: i64, matrix: [f32;16]) -> nil:
+        e7_engine_scene_mesh_set_joint(gpu.scene, mesh, joint, matrix)
 
     # Screen-space UI quad: pixel coordinates from the top-left, RGBA 0..255.
     # Call after world draws (inside begin_frame/end_frame); texture 0 is a
@@ -222,7 +243,8 @@ impl Gpu:
         ret
 
 
-# Asset text reader wrapper (OBJ/shader text).  The host::read_shader call stays here.
+# Asset text reader wrapper (OBJ/shader text). The host::read_shader call stays
+# here.
 pub read_asset <- (path: str) -> str:
     ret host::read_shader(path)
 
@@ -287,41 +309,41 @@ pub CullMode <- enum
 # Overloaded deployment entry points. The runtime ABI exposes the Vulkan calls;
 # these declarations are the e7-facing resource wrappers. The body is filled
 # once the compiler can lower `res &mut` sys parameter bodies.
-pub gpu_deploy_raster_pipeline <- async (
+pub gpu_deploy_raster_pipeline <- async(
     gpu: &mut Gpu,
     deploy: ShaderDeploy,
     options: PipelineOptions,
 ) -> u64:
     ret 0
 
-pub gpu_deploy_compute_pipeline <- async (
+pub gpu_deploy_compute_pipeline <- async(
     gpu: &mut Gpu,
     shader: ShaderModule,
     workgroup_size: [u32; 3],
 ) -> u64:
     ret 0
 
-pub gpu_create_mesh <- async (
+pub gpu_create_mesh <- async(
     gpu: &mut Gpu,
     vertices: [f32],
     indices: [u32],
 ) -> u64:
     ret 0
 
-pub gpu_set_uniform <- async (
+pub gpu_set_uniform <- async(
     gpu: &mut Gpu,
     name: str,
     value: [f32; 4],
 ) -> !nil:
     ret
 
-pub gpu_begin_frame <- async (gpu: &mut Gpu) -> !nil:
+pub gpu_begin_frame <- async(gpu: &mut Gpu) -> !nil:
     ret
 
-pub gpu_end_frame <- async (gpu: &mut Gpu) -> !nil:
+pub gpu_end_frame <- async(gpu: &mut Gpu) -> !nil:
     ret
 
-pub gpu_draw_mesh <- async (
+pub gpu_draw_mesh <- async(
     gpu: &mut Gpu,
     mesh: Mesh,
     transform: Transform,
@@ -329,4 +351,3 @@ pub gpu_draw_mesh <- async (
     light: &PointLight,
 ) -> !nil:
     ret
-

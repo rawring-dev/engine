@@ -1,0 +1,204 @@
+{
+  "asset": {
+    "version": "2.0"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Root",
+      "translation": [
+        2,
+        0,
+        0
+      ],
+      "children": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "Triangle",
+      "translation": [
+        0,
+        1,
+        0
+      ],
+      "mesh": 0,
+      "skin": 0
+    },
+    {
+      "name": "Joint",
+      "translation": [
+        0,
+        1,
+        0
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2,
+            "JOINTS_0": 6,
+            "WEIGHTS_0": 7
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.3,
+          0.8,
+          0.4,
+          1
+        ]
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "skinned.bin",
+      "byteLength": 240
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 96,
+      "byteStride": 32
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 6
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 104,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 116,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 152,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 164,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 176,
+      "byteLength": 64
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 0,
+      "byteOffset": 12,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 0,
+      "byteOffset": 24,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5121,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5121,
+      "normalized": true,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 1,
+      "type": "MAT4"
+    }
+  ],
+  "animations": [
+    {
+      "samplers": [
+        {
+          "input": 4,
+          "output": 5,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 2,
+            "path": "translation"
+          }
+        }
+      ]
+    }
+  ],
+  "skins": [
+    {
+      "joints": [
+        99
+      ],
+      "inverseBindMatrices": 8
+    }
+  ]
+}

@@ -227,8 +227,19 @@ impl_decl       = "impl", [ generic_params ], type, [ "for", type ],
                   [ where_clause ], impl_body ;
 
 binding_decl    = IDENT, [ ":", type ],
-                  ( ( "<-" | ":=" ), expression
+                  ( ( "<-" | ":=" ), assignment_value
                   | (* uninitialized mutable declaration *) ) ;
+
+(* The right-hand side of a binding or assignment may be an indented layout
+   container holding exactly one expression.  This is the form the formatter
+   uses when the value does not fit on one line:
+
+       colour <-
+           if focused: white
+           else: grey
+*)
+assignment_value = expression
+                 | NEWLINE, INDENT, expression, [ separator ], DEDENT ;
 
 param_list      = param, { ",", param }, [ "," ] ;
 
@@ -348,7 +359,7 @@ unsafe_stmt     = "unsafe", block ;
 (* `name: T` declares a mutable, initially undefined local. *)
 uninitialized_decl = IDENT, ":", type ;
 
-expr_or_assign  = expression, [ assign_op, expression ] ;
+expr_or_assign  = expression, [ assign_op, assignment_value ] ;
 
 assign_op       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
 

@@ -75,11 +75,18 @@ pub UIState <- struct
 
 pub Ui <- plugin
     init <- sys (commands: &mut Commands):
-        font := e7_font_load("/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 20)
+        font :=
+            e7_font_load(
+                "/usr/share/fonts/liberation/LiberationSans-Regular.ttf", 20)
         if font == 0:
-            font = e7_font_load("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 20)
+            font =
+                e7_font_load(
+                    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                    20)
         if font == 0:
-            font = e7_font_load("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+            font =
+                e7_font_load("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    20)
         if font == 0:
             font = e7_font_load("/usr/share/fonts/TTF/DejaVuSans.ttf", 20)
         commands.insert_resource(UIState {
@@ -105,20 +112,21 @@ pub TextTexture <- struct
     width: i64
     height: i64
 
-make_text_texture <- (gpu: &mut Gpu, font: u64, text: str, colour: [f32; 4]) -> TextTexture:
+make_text_texture <- (gpu: &mut Gpu, font: u64, text: str, colour: [
+f32; 4]) -> TextTexture:
     if font == 0:
         ret TextTexture { texture: 0, width: 0, height: 0 }
     if text.len() == 0:
         ret TextTexture { texture: 0, width: 0, height: 0 }
-    r := (f32::clamp(colour[0] * 255.0, 0.0, 255.0)) as i64
-    g := (f32::clamp(colour[1] * 255.0, 0.0, 255.0)) as i64
-    b := (f32::clamp(colour[2] * 255.0, 0.0, 255.0)) as i64
-    image := e7_text_image(font, text, r, g, b)
+    r <- (f32::clamp(colour[0] * 255.0, 0.0, 255.0)) as i64
+    g <- (f32::clamp(colour[1] * 255.0, 0.0, 255.0)) as i64
+    b <- (f32::clamp(colour[2] * 255.0, 0.0, 255.0)) as i64
+    image <- e7_text_image(font, text, r, g, b)
     if image == 0:
         ret TextTexture { texture: 0, width: 0, height: 0 }
-    width := image::width(image)
-    height := image::height(image)
-    texture := gpu.upload_texture(image)
+    width <- image::width(image)
+    height <- image::height(image)
+    texture <- gpu.upload_texture(image)
     image::free(image)
     ret TextTexture { texture: texture, width: width, height: height }
 
@@ -132,36 +140,38 @@ ensure_cached_text <- (
     if text.len() == 0:
         ret
     existing := 0
-    entry := state.textures[entity]
+    entry <- state.textures[entity]
     if entry.len() > 0:
         existing = entry[0]
     if existing != 0:
         ret
-    made := make_text_texture(gpu, state.font, text, colour)
+    made <- make_text_texture(gpu, state.font, text, colour)
     if made.texture != 0:
         state.textures[entity] = [made.texture as i64, made.width, made.height]
 
-ensure_field_texture <- (gpu: &mut Gpu, state: &mut UIState, field: &mut UITextField) -> nil:
-    if field.revision == field.rendered_revision:
-        ret
+ensure_field_texture <- (
+    gpu: &mut Gpu,
+    state: &mut UIState,
+    field: &mut UITextField
+) -> nil:
+    if field.revision == field.rendered_revision: ret
     if field.texture != 0:
         gpu.destroy_texture(field.texture)
         field.texture = 0
-    display := field.text
-    if display.len() == 0:
-        display = "type here"
-    colour := [0.82, 0.86, 0.92, 1.0]
-    if field.focused:
-        colour = [1.0, 1.0, 1.0, 1.0]
-    made := make_text_texture(gpu, state.font, display, colour)
+
+    display <-
+        if field.text.len() != 0: field.text
+        else: "text here"
+    colour <-
+        if field.focused: [1.0, 1.0, 1.0, 1.0]
+        else: [0.82, 0.86, 0.92, 1.0]
+
+    made <- make_text_texture(gpu, state.font, display, colour)
+
     field.texture = made.texture
     field.texture_w = made.width
     field.texture_h = made.height
     field.rendered_revision = field.revision
-
-# ---------------------------------------------------------------------------
-# Interaction
-# ---------------------------------------------------------------------------
 
 @plugin(Ui)
 @trigger(UiInput)
@@ -169,21 +179,27 @@ pub ui_interact <- sys (
     input: res &Input,
     gpu: res &mut Gpu,
     state: res &mut UIState,
-    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
+    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton,
+    &mut UITextField from Components,
 ):
-    mouse_x := input.cursor_x()
-    mouse_y := input.cursor_y()
-    down := input.mouse_down(0)
-    clicked := down and not state.mouse_was_down
+    mouse_x <- input.cursor_x()
+    mouse_y <- input.cursor_y()
+    down <- input.mouse_down(0)
+
+    clicked <- down and not state.mouse_was_down
+
     state.mouse_x = mouse_x
     state.mouse_y = mouse_y
     state.hover_entity = 0
+
     clicked_field := false
     clicked_ui := false
 
     for (rect, panel, label, button, field) in widgets:
-        entity := widgets.entity()
-        hit := mouse_x >= rect.x and mouse_x <= rect.x + rect.w and mouse_y >= rect.y and mouse_y <= rect.y + rect.h
+        entity <- widgets.entity()
+        hit <-
+            (mouse_x >= rect.x and mouse_x <= rect.x + rect.w and mouse_y >=
+                rect.y and mouse_y <= rect.y + rect.h)
         if hit:
             state.hover_entity = entity
             if clicked:
@@ -202,7 +218,7 @@ pub ui_interact <- sys (
                 state.focused_entity = entity
                 clicked_field = true
                 field.select_all = true
-            focused := state.focused_entity == entity
+            focused <- state.focused_entity == entity
             if focused != field.focused:
                 field.focused = focused
                 field.revision = field.revision + 1
@@ -212,9 +228,10 @@ pub ui_interact <- sys (
             if focused:
                 if input.key_down(14) and input.key_down(2):
                     field.select_all = true
-                typed := input.text_input()
-                text_len := field.text.len() as i64
-                if typed.len() > 0 and (text_len < field.max_len or field.select_all):
+                typed <- input.text_input()
+                text_len <- field.text.len() as i64
+                if typed.len() > 0 and (text_len < field.max_len or
+                    field.select_all):
                     if field.select_all:
                         field.text = ""
                         field.select_all = false
@@ -227,7 +244,9 @@ pub ui_interact <- sys (
                         field.text = ""
                         field.select_all = false
                     else:
-                        field.text = field.text.slice(0, (field.text.len() as i64 - 1) as usize)
+                        field.text =
+                            field.text.slice(0, (field.text.len() as i64 -
+                                1) as usize)
                     field.revision = field.revision + 1
                 if input.key_down(13):
                     state.focused_entity = 0
@@ -280,22 +299,24 @@ draw_text_texture <- (
 
 # Respect the requested font size and keep schema paths / JSON values inside
 # their controls. Rasterization stays cached at the shared font's resolution.
-draw_fitted_text <- (gpu: &Gpu, texture: u64, width: f32, height: f32, rect: &UIRect, size: i64, font_size: i64, centered: bool) -> nil:
+draw_fitted_text <- (gpu: &Gpu, texture: u64, width: f32, height: f32,
+rect: &UIRect, size: i64, font_size: i64, centered: bool) -> nil:
     if width <= 0.0 or height <= 0.0 or rect.w <= 20.0 or rect.h <= 2.0:
         ret
     scale := (size as f32) / (font_size as f32)
-    fit_x := (rect.w - 20.0) / width
-    fit_y := (rect.h - 2.0) / height
+    fit_x <- (rect.w - 20.0) / width
+    fit_y <- (rect.h - 2.0) / height
     if fit_x < scale:
         scale = fit_x
     if fit_y < scale:
         scale = fit_y
-    fitted_width := width * scale
-    fitted_height := height * scale
+    fitted_width <- width * scale
+    fitted_height <- height * scale
     x := rect.x + 10.0
     if centered:
         x = rect.x + (rect.w - fitted_width) * 0.5
-    draw_text_texture(gpu, texture, fitted_width, fitted_height, x, rect.y + (rect.h - fitted_height) * 0.5)
+    draw_text_texture(gpu, texture, fitted_width, fitted_height, x, rect.y + (
+        rect.h - fitted_height) * 0.5)
 
 pub draw_widget <- (
     gpu: &Gpu,
@@ -311,13 +332,19 @@ pub draw_widget <- (
     if panel.colour[3] > 0.0:
         background := panel.colour
         if button.action != 0 and state.hover_entity == entity:
-            background = [f32::clamp(panel.colour[0] * 1.35, 0.0, 1.0), f32::clamp(panel.colour[1] * 1.35, 0.0, 1.0), f32::clamp(panel.colour[2] * 1.35, 0.0, 1.0), panel.colour[3]]
+            background =
+                [f32::clamp(panel.colour[0] * 1.35, 0.0, 1.0), f32::clamp(
+                    panel.colour[1] * 1.35, 0.0, 1.0), f32::clamp(panel.colour[
+                    2] * 1.35, 0.0, 1.0), panel.colour[3]]
         if field.max_len > 0 and field.focused:
-            background = [f32::clamp(panel.colour[0] * 1.25, 0.0, 1.0), f32::clamp(panel.colour[1] * 1.25, 0.0, 1.0), f32::clamp(panel.colour[2] * 1.25, 0.0, 1.0), panel.colour[3]]
+            background =
+                [f32::clamp(panel.colour[0] * 1.25, 0.0, 1.0), f32::clamp(
+                    panel.colour[1] * 1.25, 0.0, 1.0), f32::clamp(panel.colour[
+                    2] * 1.25, 0.0, 1.0), panel.colour[3]]
         quad(gpu, rect.x, rect.y, rect.w, rect.h, background)
 
     if label.text.len() > 0:
-        entry := state.textures[entity]
+        entry <- state.textures[entity]
         texture: u64 := 0
         width := 0
         height := 0
@@ -326,10 +353,11 @@ pub draw_widget <- (
             width = entry[1]
             height = entry[2]
         if texture != 0:
-            draw_fitted_text(gpu, texture, width as f32, height as f32, rect, label.size, state.font_size, false)
+            draw_fitted_text(gpu, texture, width as f32, height as f32, rect,
+                label.size, state.font_size, false)
 
     if button.action != 0:
-        entry := state.textures[entity]
+        entry <- state.textures[entity]
         texture: u64 := 0
         width := 0
         height := 0
@@ -338,10 +366,12 @@ pub draw_widget <- (
             width = entry[1]
             height = entry[2]
         if texture != 0:
-            draw_fitted_text(gpu, texture, width as f32, height as f32, rect, label.size, state.font_size, true)
+            draw_fitted_text(gpu, texture, width as f32, height as f32, rect,
+                label.size, state.font_size, true)
 
     if field.max_len > 0 and field.texture != 0:
-        draw_fitted_text(gpu, field.texture, field.texture_w as f32, field.texture_h as f32, rect, label.size, state.font_size, false)
+        draw_fitted_text(gpu, field.texture, field.texture_w as f32,
+            field.texture_h as f32, rect, label.size, state.font_size, false)
 
 @plugin(Ui)
 @trigger(DeInit)

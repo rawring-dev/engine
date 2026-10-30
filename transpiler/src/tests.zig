@@ -593,3 +593,14 @@ test "diagnostics: separate texture and sampler still cannot share a binding" {
         \\tex_sampler: SamplerState
     , "duplicate resource binding");
 }
+
+test "matrix array fields emit column major layout and index as matrices" {
+    try expectContains(std.testing.allocator,
+        \\Scene <- struct
+        \\    joints: [[f32; 4, 4]; 64]
+        \\@binding(0, 0)
+        \\scene: Scene
+        \\f <- (index: u32, position: [f32; 4]) -> [f32; 4]:
+        \\    ret scene.joints[index] * position
+    , &.{ "column_major float4x4 joints[64];", "mul(scene.joints[index], position)" });
+}

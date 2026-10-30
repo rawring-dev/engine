@@ -8,7 +8,7 @@ pub ComponentType <- struct
     schema: str
 
 pub component_short_name <- (name: str) -> str:
-    parts := str::split(name, ":")
+    parts <- str::split(name, ":")
     ret parts[(parts.len() as i64 - 1) as usize]
 
 pub component_type_index <- (types: &[ComponentType], name: str) -> i64:
@@ -22,14 +22,14 @@ pub component_type_index <- (types: &[ComponentType], name: str) -> i64:
 pub component_named <- (types: &[ComponentType], short_name: str) -> str:
     index := 0
     while index < types.len() as i64:
-        name := types[index as usize].name
+        name <- types[index as usize].name
         if component_short_name(name) == short_name:
             ret name
         index = index + 1
     ret ""
 
 pub component_default <- (schema: str) -> str:
-    tag := inspect_char(schema, 0)
+    tag <- inspect_char(schema, 0)
     if tag == "s":
         ret "\"\""
     if tag == "b":
@@ -44,9 +44,10 @@ pub component_default <- (schema: str) -> str:
         ret "{}"
     if tag == "A" or tag == "M":
         colon := 1
-        while inspect_char(schema, colon) != ":" and colon < schema.len() as i64:
+        while inspect_char(schema, colon) != ":" and colon < schema.len(
+        ) as i64:
             colon = colon + 1
-        count := i64::parse(schema.slice(1, colon as usize))
+        count <- i64::parse(schema.slice(1, colon as usize))
         element := schema.slice((colon + 1) as usize, schema.len() as usize)
         if tag == "M":
             element = "A" + element
@@ -63,28 +64,35 @@ pub component_default <- (schema: str) -> str:
         at := 1
         while at < schema.len() as i64 and inspect_char(schema, at) != "}":
             equal := at
-            while inspect_char(schema, equal) != "=" and equal < schema.len() as i64:
+            while inspect_char(schema, equal) != "=" and equal < schema.len(
+            ) as i64:
                 equal = equal + 1
-            end := inspect_schema_end(schema, equal + 1)
+            end <- inspect_schema_end(schema, equal + 1)
             if at > 1:
                 out = out + ","
-            out = out + json::encode(schema.slice(at as usize, equal as usize)) + ":" + component_default(schema.slice((equal + 1) as usize, end as usize))
+            out =
+                out + json::encode(schema.slice(at as usize,
+                    equal as usize)) + ":" + component_default(schema.slice((
+                    equal + 1) as usize, end as usize))
             at = end
             if inspect_char(schema, at) == ";":
                 at = at + 1
         ret out + "}"
     if tag == "E":
         equal := 2
-        while inspect_char(schema, equal) != "=" and equal < schema.len() as i64:
+        while inspect_char(schema, equal) != "=" and equal < schema.len(
+        ) as i64:
             equal = equal + 1
-        name := schema.slice(2, equal as usize)
+        name <- schema.slice(2, equal as usize)
         if inspect_char(schema, equal + 1) == "u":
             ret json::encode(name)
         values: [str] := []
         at := equal + 2
         while inspect_char(schema, at) != ")" and at < schema.len() as i64:
-            end := inspect_schema_end(schema, at)
-            values = vec::push(values, component_default(schema.slice(at as usize, end as usize)))
+            end <- inspect_schema_end(schema, at)
+            values =
+                vec::push(values, component_default(schema.slice(at as usize,
+                    end as usize)))
             at = end
             if inspect_char(schema, at) == ",":
                 at = at + 1
@@ -104,8 +112,9 @@ pub component_default <- (schema: str) -> str:
 # Defaults that have a meaningful identity rather than zero (scale, mass,
 # gravity, radii, camera lens). Other/custom types use their schema recursively.
 pub component_initial <- (component: ComponentType) -> str:
-    name := component_short_name(component.name)
-    if component.name != name and component.name != "core::ecs::" + name and component.name != "gfx::gpu::Material":
+    name <- component_short_name(component.name)
+    if (component.name != name and component.name != "core::ecs::" + name and
+        component.name != "gfx::gpu::Material"):
         ret component_default(component.schema)
     if name == "Transform":
         ret "{\"translation\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}"
@@ -132,7 +141,7 @@ pub component_initial <- (component: ComponentType) -> str:
     ret component_default(component.schema)
 
 pub component_canonical <- (schema: str, source: str) -> str:
-    value := json::decode_value(schema, source)
+    value <- json::decode_value(schema, source)
     if value == 0:
         ret ""
     ret json::encode_value(schema, value)

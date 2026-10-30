@@ -183,7 +183,11 @@ fn emitField(s: *Session, field: ast.Field, struct_public: bool) Error!void {
         return s.fail("a matrix field cannot have both @row_major and @column_major", .{});
     }
 
-    const is_matrix = types.isMatrixType(field.ty);
+    const matrix_array = switch (field.ty.*) {
+        .array => |array| if (array.columns == null and array.length != null and types.isMatrixType(array.element)) array else null,
+        else => null,
+    };
+    const is_matrix = types.isMatrixType(field.ty) or matrix_array != null;
     if ((layout_row_major or layout_column_major) and !is_matrix) {
         return s.fail("matrix layout attributes are only valid on matrix fields", .{});
     }
@@ -204,8 +208,15 @@ fn emitField(s: *Session, field: ast.Field, struct_public: bool) Error!void {
             try s.out.raw("column_major ", .{});
         }
     }
-    try types.writeType(s, field.ty);
-    try s.out.raw(" {s}", .{field.name});
+    if (matrix_array) |array| {
+        const length = astx.intValue(array.length.?) orelse return s.fail("matrix array length must be an integer literal", .{});
+        if (length < 1 or length > 1024) return s.fail("matrix array length must be between 1 and 1024", .{});
+        try types.writeType(s, array.element);
+        try s.out.raw(" {s}[{d}]", .{ field.name, length });
+    } else {
+        try types.writeType(s, field.ty);
+        try s.out.raw(" {s}", .{field.name});
+    }
     if (semantic) |name| try s.out.raw(" : {s}", .{name});
     try s.out.line(";", .{});
 }

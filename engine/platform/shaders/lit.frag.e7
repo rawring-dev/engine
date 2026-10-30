@@ -2,10 +2,10 @@
 # Scene block (set 0, binding 0) and the per-object combined albedo sampler
 # (set 1, binding 1).
 #
-# This reproduces the original GLSL-derived `lit.frag.spv` exactly:
-#   n           = (0, 0, 1)
+# The surface normal is reconstructed from world-space derivatives:
+#   n           = normalize(cross(ddx(world_pos), ddy(world_pos)))
 #   to_light    = light_pos.xyz - world_pos
-#   diffuse     = max(dot(n, normalize(to_light)), 0)
+#   diffuse     = abs(dot(n, normalize(to_light)))
 #   attenuation = 1 / (1 + 0.15*dist + 0.02*dist*dist)
 #   light       = light_color.xyz * (light_color.w * attenuation)
 #   ambient     = params.xyz * params.w
@@ -41,10 +41,11 @@ In <- struct
 
 @fragment
 main <- (input: In) -> [f32; 4]:
-    n := [0.0, 0.0, 1.0] as [f32; 3]
+    surface := cross(ddx(input.world_pos), ddy(input.world_pos))
+    n := surface / max(length(surface), 0.00001)
     to_light := scene.light_pos.xyz - input.world_pos
     distance_to_light := length(to_light)
-    diffuse := max(dot(n, normalize(to_light)), 0.0)
+    diffuse := abs(dot(n, to_light / max(distance_to_light, 0.00001)))
 
     # Inverse-square-ish falloff with a linear term, as in the original shader.
     attenuation := 1.0 / (1.0 + 0.15 * distance_to_light + 0.02 * distance_to_light * distance_to_light)

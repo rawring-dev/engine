@@ -60,7 +60,7 @@ pub empty_image <- () -> Image:
 # Load an image into an e7 `Image`.  Missing/undecodable files produce a
 # zeroed Image (handle 0) instead of failing the plugin.
 pub load_image <- (path: str) -> Image:
-    handle := image::load(path)
+    handle <- image::load(path)
     if handle == 0:
         ret empty_image()
     ret Image {
@@ -90,8 +90,10 @@ pub AudioAssets <- struct
 
 impl ImageAssets:
     pub count <- (assets: &ImageAssets) -> i64 = assets.images.file_count()
-    pub folder_count <- (assets: &ImageAssets) -> i64 = assets.images.folder_count()
-    pub has_image <- (assets: &ImageAssets, path: str) -> bool = assets.images.has_file(path)
+    pub folder_count <- (
+        assets: &ImageAssets) -> i64 = assets.images.folder_count()
+    pub has_image <- (assets: &ImageAssets,
+        path: str) -> bool = assets.images.has_file(path)
     pub image <- (assets: &ImageAssets, path: str) -> Image:
         if assets.images.has_file(path):
             ret assets.images.files[path]
@@ -101,24 +103,30 @@ impl ImageAssets:
 
 impl MeshAssets:
     pub count <- (assets: &MeshAssets) -> i64 = assets.meshes.file_count()
-    pub folder_count <- (assets: &MeshAssets) -> i64 = assets.meshes.folder_count()
-    pub has_mesh <- (assets: &MeshAssets, path: str) -> bool = assets.meshes.has_file(path)
+    pub folder_count <- (
+        assets: &MeshAssets) -> i64 = assets.meshes.folder_count()
+    pub has_mesh <- (assets: &MeshAssets,
+        path: str) -> bool = assets.meshes.has_file(path)
     pub mesh <- (assets: &MeshAssets, path: str) -> obj::ObjMesh:
         if assets.meshes.has_file(path):
             ret assets.meshes.files[path]
         ret obj::empty_mesh()
-    pub folder_meshes <- (assets: &MeshAssets, folder: str) -> map[str, obj::ObjMesh]:
+    pub folder_meshes <- (assets: &MeshAssets, folder: str) -> map[str,
+        obj::ObjMesh]:
         ret assets.meshes.folder_files(folder)
 
 impl AudioAssets:
     pub count <- (assets: &AudioAssets) -> i64 = assets.clips.file_count()
-    pub folder_count <- (assets: &AudioAssets) -> i64 = assets.clips.folder_count()
-    pub has_audio <- (assets: &AudioAssets, path: str) -> bool = assets.clips.has_file(path)
+    pub folder_count <- (
+        assets: &AudioAssets) -> i64 = assets.clips.folder_count()
+    pub has_audio <- (assets: &AudioAssets,
+        path: str) -> bool = assets.clips.has_file(path)
     pub audio <- (assets: &AudioAssets, path: str) -> AudioClip:
         if assets.clips.has_file(path):
             ret assets.clips.files[path]
         ret AudioClip { data: 0, length: 0, format: 0, channels: 0, freq: 0 }
-    pub folder_audio <- (assets: &AudioAssets, folder: str) -> map[str, AudioClip]:
+    pub folder_audio <- (assets: &AudioAssets, folder: str) -> map[str,
+        AudioClip]:
         ret assets.clips.folder_files(folder)
 
 # Category processors: plain function values passed to the higher-order scan.
@@ -131,7 +139,8 @@ mesh_processor <- (path: str) -> obj::ObjMesh:
 
 audio_processor <- (path: str) -> AudioClip = audio_load_wav(path)
 
-# --------------------------------------------------------------- asset server --
+# --------------------------------------------------------------- asset server
+# --
 
 @resource
 pub AssetServer <- struct
@@ -152,9 +161,11 @@ impl AssetServer:
         ret server.audio.audio(path)
     pub folder_images <- (server: &AssetServer, folder: str) -> map[str, Image]:
         ret server.images.folder_images(folder)
-    pub folder_meshes <- (server: &AssetServer, folder: str) -> map[str, obj::ObjMesh]:
+    pub folder_meshes <- (server: &AssetServer, folder: str) -> map[str,
+        obj::ObjMesh]:
         ret server.meshes.folder_meshes(folder)
-    pub folder_audio <- (server: &AssetServer, folder: str) -> map[str, AudioClip]:
+    pub folder_audio <- (server: &AssetServer, folder: str) -> map[str,
+        AudioClip]:
         ret server.audio.folder_audio(folder)
 
 # Owns the CPU-side asset caches and the SDL audio subsystem lifecycle for the
@@ -176,20 +187,24 @@ pub AssetServerPlugin <- plugin
             volume: 1.0,
             stream: 0,
         })
-        image_root := "engine/assets/images"
-        mesh_root := "engine/assets/meshes"
-        audio_root := "engine/assets/audio"
+        image_root <- "engine/assets/images"
+        mesh_root <- "engine/assets/meshes"
+        audio_root <- "engine/assets/audio"
         commands.insert_resource(AssetServer {
-            images: ImageAssets { images: server::scan_assets<Image>(image_root, image_processor) },
-            meshes: MeshAssets { meshes: server::scan_assets<obj::ObjMesh>(mesh_root, mesh_processor) },
-            audio: AudioAssets { clips: server::scan_assets<AudioClip>(audio_root, audio_processor) },
+            images: ImageAssets { images: server::scan_assets<Image>(image_root,
+                image_processor) },
+            meshes: MeshAssets { meshes: server::scan_assets<obj::ObjMesh>(
+                mesh_root, mesh_processor) },
+            audio: AudioAssets { clips: server::scan_assets<AudioClip>(
+                audio_root, audio_processor) },
             image_root: image_root,
             mesh_root: mesh_root,
             audio_root: audio_root,
         })
 
 @trigger(DeInit)
-pub shutdown_asset_server <- sys (server: res &mut AssetServer, audio: res &mut AudioSystem):
+pub shutdown_asset_server <- sys (server: res &mut AssetServer,
+audio: res &mut AudioSystem):
     for (path, image) in server.images.images.files:
         image.free()
     for (path, clip) in server.audio.clips.files:
@@ -224,13 +239,13 @@ pub upload_assets <- sys (
     meshes: select &mut MeshRenderer from Components,
 ):
     if server.images.has_image("cube/cube.png"):
-        scanned_image := server.image("cube/cube.png")
+        scanned_image <- server.image("cube/cube.png")
         if scanned_image.handle != 0:
             if assets.cube_image.handle != 0:
                 assets.cube_image.free()
             assets.cube_image = scanned_image
     if server.meshes.has_mesh("cube/cube.obj"):
-        scanned_mesh := server.mesh("cube/cube.obj")
+        scanned_mesh <- server.mesh("cube/cube.obj")
         if scanned_mesh.indices.len() > 0:
             assets.cube_mesh = scanned_mesh
     if gpu.scene == 0:

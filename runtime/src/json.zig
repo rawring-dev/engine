@@ -13,7 +13,8 @@
 //!   * map:    aggregate `[length, capacity, entries*]` of (key, value) slots
 //!   * str:    aggregate `[len, bytes...]`, accessed through `e7_str_*`
 //!   * bool/int: i64 slot value; float: f64 bit pattern in an i64 slot
-//!   * optional: one i64 slot; `0` is null (see limitations below)
+//!   * optional: `0` is null; present scalar children use a one-slot box,
+//!     while present aggregate children retain their object handle
 //!
 //! Schema grammar (compiler-generated, acyclic):
 //!
@@ -459,7 +460,11 @@ fn encodeNode(out: *std.ArrayList(u8), node: *const Node, value: i64) Error!void
             if (value == 0) {
                 try emitSlice(out, "null");
             } else {
-                try encodeNode(out, child, value);
+                const payload = switch (child.*) {
+                    .bool_, .int, .float => aggregate.e7_load_i64(value),
+                    else => value,
+                };
+                try encodeNode(out, child, payload);
             }
         },
         .map => |map| {
@@ -918,7 +923,16 @@ fn decodeNode(cursor: *JsonCursor, node: *const Node) Error!i64 {
                 try cursor.expectKeyword("null");
                 return 0;
             }
-            return decodeNode(cursor, child);
+            const payload = try decodeNode(cursor, child);
+            return switch (child.*) {
+                .bool_, .int, .float => blk: {
+                    const box = aggregate.e7_alloc_i64(1);
+                    if (box == 0) return error.OutOfMemory;
+                    aggregate.e7_store_i64(box, payload);
+                    break :blk box;
+                },
+                else => payload,
+            };
         },
         .map => |map| {
             const value = aggregate.e7_map_new();
@@ -1274,4 +1288,18 @@ test "json rejects invalid schemas" {
     try std.testing.expectEqual(@as(i64, 0), e7_json_encode(newString("Q"), 0));
     try std.testing.expectEqual(@as(i64, 0), e7_json_encode(newString("{a=i"), 0));
     try std.testing.expectEqual(@as(i64, 0), e7_json_decode(newString("E{"), newString("null")));
+}
+
+test "json optional scalars preserve zero and false separately from null" {
+    for ([_][]const u8{ "?i", "?f", "?b" }, [_][]const u8{ "0", "0.0", "false" }) |schema, source| {
+        const present = decodeForTest(schema, source);
+        try std.testing.expect(present != 0);
+        try std.testing.expectEqual(@as(i64, 0), aggregate.e7_load_i64(present));
+        const encoded = try encodeForTest(schema, present);
+        const roundtrip = decodeForTest(schema, encoded);
+        try std.testing.expect(roundtrip != 0);
+        try std.testing.expectEqual(@as(i64, 0), aggregate.e7_load_i64(roundtrip));
+        try std.testing.expectEqual(@as(i64, 0), decodeForTest(schema, "null"));
+        try std.testing.expectEqualStrings("null", try encodeForTest(schema, 0));
+    }
 }

@@ -29,8 +29,8 @@ use core::time::*;
 
 # ------------------------------------------------------------- main loop -----
 
-pub main <- async () -> i32:
-    commands := await query &mut Commands
+pub main <- async() -> i32:
+    commands <- await query & mut Commands
     commands.add_plugin(core::window::WindowPlugin)
     commands.add_plugin(core::input::InputPlugin)
     commands.add_plugin(core::time::TimePlugin)
@@ -43,13 +43,13 @@ pub main <- async () -> i32:
     commands.add_plugin(editor::Editor)
     disown commands
 
-    window := await query &Window
+    window <- await query & Window
     await Init()
     if window.handle == 0:
         await DeInit()
         ret 1
 
-    input := await query &mut Input
+    input := await query & mut Input
     input.window = window.handle
     input.release_mouse()
     disown input
@@ -57,7 +57,7 @@ pub main <- async () -> i32:
     await WorkspaceRestore()
     # Spawn the initial scene rows from the loaded document.
     await EditorRefresh()
-    state := await query &mut EditorState
+    state := await query & mut EditorState
     state.refresh_needed = false
     disown state
 
@@ -66,7 +66,7 @@ pub main <- async () -> i32:
         await WorkspaceTick()
         await UiInput()
 
-        ui_state := await query &mut UIState
+        ui_state := await query & mut UIState
         if ui_state.clicked_action != 0:
             ui_state.action = ui_state.clicked_action
             ui_state.clicked_action = 0
@@ -75,8 +75,8 @@ pub main <- async () -> i32:
             ui_state.action = 0
 
         await EditorInput()
-        editor := await query &mut EditorState
-        refresh := editor.refresh_needed
+        editor := await query & mut EditorState
+        refresh <- editor.refresh_needed
         editor.refresh_needed = false
         disown editor
         if refresh:
@@ -84,13 +84,14 @@ pub main <- async () -> i32:
         await workspace_simulate()
         await EditorUpdate()
         await WorkspaceCapture()
+        await PrepareRender()
         await Render()
 
         # Future tasks enter the new generation. The current main loop,
         # window, renderer, UI, ECS rows/resources and Neovim stay alive.
         if host::take_reload_request() != 0:
-            applied := editor::apply()
-            state := await query &mut EditorState
+            applied <- editor::apply()
+            state := await query & mut EditorState
             state.status = editor::diagnostic()
             disown state
 

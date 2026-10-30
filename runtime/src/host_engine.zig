@@ -119,6 +119,8 @@ pub export fn e7_engine_read_shader(path: i64) callconv(.c) i64 {
     const text = stringSlice(path);
     const data = readAsset(text) catch return 0;
     defer std.heap.c_allocator.free(data);
+    // Zig may use a non-address sentinel for an empty allocation.
+    if (data.len == 0) return aggregate.e7_str_new(0, 0);
     return aggregate.e7_str_new(@intCast(@intFromPtr(data.ptr)), @intCast(data.len));
 }
 

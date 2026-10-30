@@ -18,6 +18,8 @@ checked-in `.spv` files by path at runtime.
 | `ui.vert.e7` | `ui.vert.spv` | vertex | screen-space UI quad (position/uv/colour, stride 32) |
 | `ui.frag.e7` | `ui.frag.spv` | fragment | combined image-sampler at set 0, binding 0, `texture * colour` |
 | `lit.vert.e7` | `lit.vert.spv` | vertex | lit mesh draw with the 320-byte `Scene` UBO (set 0, binding 0) |
+| `skinned.vert.e7` | `skinned.vert.spv` | vertex | four-weight GPU skinning with 64 joint matrices and a 64-byte vertex stride |
+| `lit_wide.vert.e7` | `lit_wide.vert.spv` | vertex | lit meshes with position, colour and UV attributes (stride 32) |
 | `lit.frag.e7` | `lit.frag.spv` | fragment | point-light/ambient formula, combined albedo sampler at set 1, binding 1 |
 
 Every `.spv` in this directory is generated from a sibling `.e7` source by
@@ -82,13 +84,16 @@ Generated Slang is not checked in; only the `.spv` artifacts are.
 - `lit.frag.e7` declares the same 320-byte `Scene` block at set 0, binding 0,
   reads locations 0 (`world_pos`, `vec3`), 1 (`vcolor`, `vec3`) and 2 (`uv`,
   `vec2`), samples the combined albedo image-sampler at set 1, binding 1, and
-  writes the lit colour to location 0.  Its formula matches the original
-  GLSL-derived `lit.frag.spv`:
+  writes the lit colour to location 0.  Surface normals are reconstructed from
+  world-position derivatives, giving flat face lighting. The formula is:
   `albedo * tint.xyz * (ambient + light * diffuse)` with the
   `1 / (1 + 0.15*d + 0.02*d*d)` attenuation, `light_color.w` intensity and
   `params.w` ambient strength.
-- `lit.vert.e7` reproduces the original uv derivation exactly:
-  `position.xy + 0.5`.
+- `skinned.vert.e7` adds integer joint indices at location 3, weights at
+  location 4, and a 64-matrix palette starting at UBO byte 320. Dynamic
+  uniform slots are 4608 bytes to preserve 256-byte alignment.
+- `lit.vert.e7` derives UVs from `position.xy + 0.5`; the wide vertex shader
+  reads the supplied location 2 UV attribute instead.
 
 ## Combined image samplers
 

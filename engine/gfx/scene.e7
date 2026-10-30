@@ -2,29 +2,37 @@ use core::ecs::*;
 use core::events::*;
 use gfx::gpu::*;
 use ui::*;
+use core::hierarchy::*;
 
 @trigger(Render)
 pub render_scene <- sys (
     gpu: res &mut Gpu,
     window: res &mut Window,
-    renderables: select &Transform, &Renderable, &BodyBounds, &Material, &BodyOrientation from Components,
-    meshes: select &Transform, &MeshRenderer, &Material, &BodyOrientation from Components,
+    renderables: select &Transform, &Renderable, &BodyBounds, &Material,
+    &BodyOrientation from Components,
+    meshes: select &Transform, &MeshRenderer, &Material,
+    &BodyOrientation from Components,
+    nodes: select &Transform, &Hierarchy from Components,
+    orientations: select &BodyOrientation, &Hierarchy from Components,
+    matrices: select &LocalMatrix, &Hierarchy from Components,
     lights: select &PointLight from Components,
     cameras: select &Camera from Components,
     ui_state: res &mut UIState,
     images: select &UIRect, &UIImage from Components,
-    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton, &mut UITextField from Components,
+    widgets: select &mut UIRect, &mut UIPanel, &mut UILabel, &mut UIButton,
+    &mut UITextField from Components,
 ):
     # Follow window resizes before projecting so the swapchain and aspect
     # ratio always match the client area.
-    if gpu.scene != 0 and (gpu.width != window.width or gpu.height != window.height):
+    if gpu.scene != 0 and (gpu.width != window.width or gpu.height !=
+        window.height):
         if window.width > 0 and window.height > 0:
             gpu.resize_scene(window.width, window.height)
 
     # First-person: the ECS camera is the eye.  Every renderable shares it.
     for camera in cameras:
-        yaw_degrees := camera.yaw * 57.2957795
-        pitch_degrees := camera.pitch * 57.2957795
+        yaw_degrees <- camera.yaw * 57.2957795
+        pitch_degrees <- camera.pitch * 57.2957795
         gpu.set_camera(
             f32::to_milli(camera.position[0]),
             f32::to_milli(camera.position[1]),
@@ -47,13 +55,48 @@ pub render_scene <- sys (
 
     # Frame submission is e7 policy: configure camera/light, begin the frame,
     # draw one procedural shape per renderable, then end/present it.
+    # Snapshot local transforms first: parents can appear after their children
+    # in ECS storage. LocalMatrix preserves imported affine transforms.
+    local_matrices: map[str,[f32;16]] := map[str,[f32;16]] {}
+    has_matrix: map[str,bool] := map[str,bool] {}
+    rotations: map[str,[f32;4]] := map[str,[f32;4]] {}
+    has_rotation: map[str,bool] := map[str,bool] {}
+    locals: map[str,[f32;16]] := map[str,[f32;16]] {}
+    parents: map[str,str] := map[str,str] {}
+    identities: map[i64,str] := map[i64,str] {}
+    for (base,node) in matrices:
+        local_matrices[node.id] = base.matrix
+        has_matrix[node.id] = true
+    for (rotation,node) in orientations:
+        rotations[node.id] = [rotation.x,rotation.y,rotation.z,rotation.w]
+        has_rotation[node.id] = true
+    for (transform,node) in nodes:
+        # Euler fallback for empty transform parents without BodyOrientation.
+        q <- hierarchy_euler(transform.rotation)
+        rotation := q
+        if has_rotation[node.id]:
+            rotation = rotations[node.id]
+        local := matrix_trs(transform.translation,rotation,transform.scale)
+        if has_matrix[node.id]:
+            composed <- matrix_multiply(local_matrices[node.id],local)
+            ptr::free(ffi::handle(&local))
+            local = composed
+        ptr::free(ffi::handle(&q))
+        locals[node.id] = local
+        parents[node.id] = node.parent
+        identities[nodes.entity()] = node.id
     gpu.begin_frame()
     for (transform, renderable, bounds, material, orientation) in renderables:
         # Physics bodies keep their visual size in BodyBounds; the procedural
         # meshes are unit-sized, so the scale is half-extent based.
-        sx := bounds.half_extents[0] * transform.scale[0]
-        sy := bounds.half_extents[1] * transform.scale[1]
-        sz := bounds.half_extents[2] * transform.scale[2]
+        id <- identities[renderables.entity()]
+        sx := bounds.half_extents[0]
+        sy := bounds.half_extents[1]
+        sz := bounds.half_extents[2]
+        if id.len() == 0:
+            sx = sx*transform.scale[0]
+            sy = sy*transform.scale[1]
+            sz = sz*transform.scale[2]
         if renderable.kind == 1:
             # Sphere: radius is the largest half-extent on every axis.
             radius := sx
@@ -82,52 +125,62 @@ pub render_scene <- sys (
         # Orientation comes from the physics quaternion (BodyOrientation) and
         # goes straight into the model matrix; Transform.rotation is never read
         # for dynamic bodies.
-        gpu.draw_renderable_quat(
-            renderable.kind,
-            f32::to_milli(transform.translation[0]),
-            f32::to_milli(transform.translation[1]),
-            f32::to_milli(transform.translation[2]),
-            f32::to_milli(sx),
-            f32::to_milli(sy),
-            f32::to_milli(sz),
-            orientation.x,
-            orientation.y,
-            orientation.z,
-            orientation.w,
-            f32::to_milli(material.tint[0]),
-            f32::to_milli(material.tint[1]),
-            f32::to_milli(material.tint[2]),
-            material.texture,
-        )
+        if id.len() == 0:
+            gpu.draw_renderable_quat(renderable.kind,
+                f32::to_milli(transform.translation[0]),f32::to_milli(transform.translation[1]),f32::to_milli(transform.translation[2]),
+                f32::to_milli(sx),f32::to_milli(sy),f32::to_milli(sz),
+                orientation.x,orientation.y,orientation.z,orientation.w,
+                f32::to_milli(material.tint[0]),f32::to_milli(material.tint[1]),f32::to_milli(material.tint[2]),material.texture)
+            cont
+        world <- hierarchy_world(id,&locals,&parents)
+        # Bounds are geometry dimensions, not inherited transform scale.
+        scale <- matrix_scale(sx,sy,sz)
+        model <- matrix_multiply(world,scale)
+        gpu.draw_matrix(0,renderable.kind,model,material.tint,material.texture)
+        ptr::free(ffi::handle(&world))
+        ptr::free(ffi::handle(&scale))
+        ptr::free(ffi::handle(&model))
+    # Deform a private mapped vertex buffer per instance. Joint matrices are
+    # world * inverse-bind, so the resulting vertices are already world-space.
     # Custom OBJ meshes uploaded by AssetsPlugin.  `mesh` is assigned at
     # FrameInit; rows with mesh 0 are skipped until the upload completes.
-    for (mesh_transform, mesh_renderer, mesh_material, mesh_orientation) in meshes:
+    for (mesh_transform, mesh_renderer, mesh_material,
+        mesh_orientation) in meshes:
         if mesh_renderer.mesh == 0:
             cont
-        gpu.draw_custom_quat(
-            mesh_renderer.mesh,
-            f32::to_milli(mesh_transform.translation[0]),
-            f32::to_milli(mesh_transform.translation[1]),
-            f32::to_milli(mesh_transform.translation[2]),
-            f32::to_milli(mesh_transform.scale[0]),
-            f32::to_milli(mesh_transform.scale[1]),
-            f32::to_milli(mesh_transform.scale[2]),
-            mesh_orientation.x,
-            mesh_orientation.y,
-            mesh_orientation.z,
-            mesh_orientation.w,
-            f32::to_milli(mesh_material.tint[0]),
-            f32::to_milli(mesh_material.tint[1]),
-            f32::to_milli(mesh_material.tint[2]),
-            mesh_material.texture,
-        )
+        id <- identities[meshes.entity()]
+        if id.len() == 0:
+            gpu.draw_custom_quat(mesh_renderer.mesh,
+                f32::to_milli(mesh_transform.translation[0]),f32::to_milli(mesh_transform.translation[1]),f32::to_milli(mesh_transform.translation[2]),
+                f32::to_milli(mesh_transform.scale[0]),f32::to_milli(mesh_transform.scale[1]),f32::to_milli(mesh_transform.scale[2]),
+                mesh_orientation.x,mesh_orientation.y,mesh_orientation.z,mesh_orientation.w,
+                f32::to_milli(mesh_material.tint[0]),f32::to_milli(mesh_material.tint[1]),f32::to_milli(mesh_material.tint[2]),mesh_material.texture)
+            cont
+        world <- hierarchy_world(id,&locals,&parents)
+        gpu.draw_matrix(mesh_renderer.mesh,0,world,mesh_material.tint,mesh_material.texture)
+        ptr::free(ffi::handle(&world))
+    # The renderer creates these maps and their quaternion/local matrix values
+    # for this frame. Component-owned base matrices and IDs stay in the ECS.
+    for (key,value) in rotations:
+        ptr::free(ffi::handle(&value))
+    for (key,value) in locals:
+        ptr::free(ffi::handle(&value))
+    hierarchy_free_scratch_map(ffi::handle(&local_matrices))
+    hierarchy_free_scratch_map(ffi::handle(&has_matrix))
+    hierarchy_free_scratch_map(ffi::handle(&rotations))
+    hierarchy_free_scratch_map(ffi::handle(&has_rotation))
+    hierarchy_free_scratch_map(ffi::handle(&locals))
+    hierarchy_free_scratch_map(ffi::handle(&parents))
+    hierarchy_free_scratch_map(ffi::handle(&identities))
     # UI hook: screen-space panels/buttons/text after the 3D world and before
     # end_frame.  The UI library owns textures/caches; scene owns submission.
     for (rect, panel, label, button, field) in widgets:
-        draw_widget(gpu, ui_state, widgets.entity(), rect, panel, label, button, field)
+        draw_widget(gpu, ui_state, widgets.entity(), rect, panel, label, button,
+            field)
     for (rect, image) in images:
         if image.texture != 0 and rect.w > 0.0 and rect.h > 0.0:
-            gpu.draw_ui_quad(image.texture, rect.x as i64, rect.y as i64, rect.w as i64, rect.h as i64, 255, 255, 255, 255)
+            gpu.draw_ui_quad(image.texture, rect.x as i64, rect.y as i64,
+                rect.w as i64, rect.h as i64, 255, 255, 255, 255)
     gpu.end_frame()
 
     window.quit_requested = window.should_close()

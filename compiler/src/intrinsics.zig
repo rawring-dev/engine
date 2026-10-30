@@ -81,6 +81,7 @@ pub const functions = [_]Function{
 
     // Low-level image loading (PNG/JPEG -> RGBA8); see runtime/src/image.zig.
     .{ .name = "e7_image_load", .params = &.{.str_}, .result = .u64_ },
+    .{ .name = "e7_image_from_bytes", .params = &.{.str_}, .result = .u64_ },
     .{ .name = "e7_image_width", .params = &.{.u64_}, .result = .i64_ },
     .{ .name = "e7_image_height", .params = &.{.u64_}, .result = .i64_ },
     .{ .name = "e7_image_pixels", .params = &.{.u64_}, .result = .str_ },

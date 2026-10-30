@@ -28,31 +28,31 @@ bind_sdl <- (name: str) -> u64:
     ret ffi::bind("SDL3", name)
 
 video_init <- (driver: str) -> i64:
-    key := str::cstr("SDL_VIDEODRIVER")
-    value := str::cstr(driver)
-    set_hint := bind_sdl("SDL_SetHint")
+    key <- str::cstr("SDL_VIDEODRIVER")
+    value <- str::cstr(driver)
+    set_hint <- bind_sdl("SDL_SetHint")
     ffi::call2(set_hint, key, value)
     ptr::free(key)
     ptr::free(value)
-    init := bind_sdl("SDL_InitSubSystem")
+    init <- bind_sdl("SDL_InitSubSystem")
     rc := ffi::call1(init, 32)
     if rc == 0:
-        init_all := bind_sdl("SDL_Init")
+        init_all <- bind_sdl("SDL_Init")
         rc = ffi::call1(init_all, 32)
     if rc != 0:
         ret 1
     ret 0
 
 video_quit <- () -> nil:
-    quit := bind_sdl("SDL_QuitSubSystem")
+    quit <- bind_sdl("SDL_QuitSubSystem")
     ffi::call1(quit, 32)
 
 # Start SDL video without forcing a driver (real window on a desktop session).
 video_start <- () -> i64:
-    init := bind_sdl("SDL_InitSubSystem")
+    init <- bind_sdl("SDL_InitSubSystem")
     rc := ffi::call1(init, 32)
     if rc == 0:
-        init_all := bind_sdl("SDL_Init")
+        init_all <- bind_sdl("SDL_Init")
         rc = ffi::call1(init_all, 32)
     if rc != 0:
         ret 1
@@ -61,10 +61,10 @@ video_start <- () -> i64:
 # Enable keyboard text input for this window; dispatches SDL_EVENT_TEXT_INPUT
 # events that `window_handle_event` buffers as UTF-8.
 start_text_input <- (state: u64) -> nil:
-    window := ptr::load_u64(state)
+    window <- ptr::load_u64(state)
     if window == 0:
         ret
-    start := bind_sdl("SDL_StartTextInput")
+    start <- bind_sdl("SDL_StartTextInput")
     ffi::call1(start, window)
     ret
 
@@ -76,10 +76,10 @@ append_text <- (state: u64, text: i64, length: i64) -> nil:
         ret
     if length <= 0:
         ret
-    current := ptr::load_u32(state + 200)
+    current <- ptr::load_u32(state + 200)
     if current >= 256:
         ret
-    available := 256 - current
+    available <- 256 - current
     count := length
     if count > available:
         count = available
@@ -101,8 +101,8 @@ text_input_reset <- (state: u64) -> nil:
 
 # Return the pending UTF-8 text as an e7 str and clear the pending length.
 text_input_pending <- (state: u64) -> str:
-    length := ptr::load_u32(state + 200)
-    buffer := ptr::load_u64(state + 192)
+    length <- ptr::load_u32(state + 200)
+    buffer <- ptr::load_u64(state + 192)
     ptr::store_u32(state + 200, 0)
     if length <= 0:
         ret str::from_bytes(0, 0)
@@ -111,7 +111,7 @@ text_input_pending <- (state: u64) -> str:
     ret str::from_bytes(buffer as u64, length)
 
 free_text_buffer <- (state: u64) -> nil:
-    buffer := ptr::load_u64(state + 192)
+    buffer <- ptr::load_u64(state + 192)
     if buffer != 0:
         ptr::free(buffer)
         ptr::store_u64(state + 192, 0)
@@ -122,17 +122,17 @@ free_text_buffer <- (state: u64) -> nil:
 # Relative mouse capture: hide the cursor and stop text input while the
 # first-person camera owns the pointer, and restore both for UI interaction.
 set_relative_mouse <- (state: u64, enabled: i64) -> nil:
-    window := ptr::load_u64(state)
-    set_mode := bind_sdl("SDL_SetWindowRelativeMouseMode")
+    window <- ptr::load_u64(state)
+    set_mode <- bind_sdl("SDL_SetWindowRelativeMouseMode")
     ffi::call2(set_mode, window, enabled)
     if enabled != 0:
-        hide := bind_sdl("SDL_HideCursor")
+        hide <- bind_sdl("SDL_HideCursor")
         ffi::call0(hide)
-        stop := bind_sdl("SDL_StopTextInput")
+        stop <- bind_sdl("SDL_StopTextInput")
         ffi::call1(stop, window)
         ptr::store_u32(state + 208, 1)
     else:
-        show := bind_sdl("SDL_ShowCursor")
+        show <- bind_sdl("SDL_ShowCursor")
         ffi::call0(show)
         start_text_input(state)
         ptr::store_u32(state + 208, 0)
@@ -143,32 +143,32 @@ mouse_captured <- (state: u64) -> i64:
 
 # SDL3 creates windows hidden; call this for visible desktop windows.
 window_show <- (state: u64) -> nil:
-    window := ptr::load_u64(state)
+    window <- ptr::load_u64(state)
     if window == 0:
         ret
-    show := bind_sdl("SDL_ShowWindow")
+    show <- bind_sdl("SDL_ShowWindow")
     ffi::call1(show, window)
-    raise := bind_sdl("SDL_RaiseWindow")
+    raise <- bind_sdl("SDL_RaiseWindow")
     ffi::call1(raise, window)
     ret
 
 # Give the compositor a moment to map/configure a shown window before the
 # engine queries its pixel size for swapchain creation.
 wait_ms <- (milliseconds: i64) -> nil:
-    delay := bind_sdl("SDL_Delay")
+    delay <- bind_sdl("SDL_Delay")
     ffi::call1(delay, milliseconds)
     ret
 
 window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
-    create := bind_sdl("SDL_CreateWindow")
-    title_z := str::cstr(title)
-    win := ffi::call4(create, title_z, width, height, flags)
+    create <- bind_sdl("SDL_CreateWindow")
+    title_z <- str::cstr(title)
+    win <- ffi::call4(create, title_z, width, height, flags)
     ptr::free(title_z)
     if win == 0:
         ret 0
-    state := ptr::alloc(256) as u64
+    state <- ptr::alloc(256) as u64
     if state == 0:
-        destroy := bind_sdl("SDL_DestroyWindow")
+        destroy <- bind_sdl("SDL_DestroyWindow")
         ffi::call1(destroy, win)
         ret 0
     ptr::store_u64(state, win)
@@ -186,7 +186,7 @@ window_create <- (title: str, width: i64, height: i64, flags: i64) -> u64:
 # `window_pump` so engine tests can drive synthetic events without a device.
 window_handle_event <- (state: u64, event: u64) -> nil:
     editor::event(event)
-    kind := ptr::load_u32(event)
+    kind <- ptr::load_u32(event)
     # SDL3: QUIT=256, WINDOW_CLOSE_REQUESTED=528 (526 is FOCUS_GAINED).
     if kind == 256 or kind == 528:
         ptr::store_u32(state + 8, 1)
@@ -195,8 +195,8 @@ window_handle_event <- (state: u64, event: u64) -> nil:
         # windowID/which/state are 32-bit, so no 8-byte padding before x).
         ptr::store_u32(state + 12, ptr::load_u32(event + 28))
         ptr::store_u32(state + 16, ptr::load_u32(event + 32))
-        dx := ptr::load_f32(state + 20) + ptr::load_f32(event + 36)
-        dy := ptr::load_f32(state + 24) + ptr::load_f32(event + 40)
+        dx <- ptr::load_f32(state + 20) + ptr::load_f32(event + 36)
+        dy <- ptr::load_f32(state + 24) + ptr::load_f32(event + 40)
         ptr::store_f32(state + 20, dx)
         ptr::store_f32(state + 24, dy)
     if kind == 526:
@@ -209,10 +209,10 @@ window_handle_event <- (state: u64, event: u64) -> nil:
             set_relative_mouse(state, 0)
     if kind == 771:
         # SDL_TextInputEvent.text lives at offset 24; the event is a C string.
-        text := ptr::load_u64(event + 24)
+        text <- ptr::load_u64(event + 24)
         if text != 0:
-            strlen := bind_sdl("SDL_strlen")
-            length := ffi::call1(strlen, text) as i64
+            strlen <- bind_sdl("SDL_strlen")
+            length <- ffi::call1(strlen, text) as i64
             append_text(state, text, length)
     ret
 
@@ -225,9 +225,9 @@ mouse_reset_delta <- (state: u64) -> nil:
 # Poll one event.  Callers pump repeatedly per frame; keeping this loop-free
 # also avoids a known LLVM instcombine non-fixpoint on the generated CFG.
 window_pump <- (state: u64) -> i64:
-    poll := bind_sdl("SDL_PollEvent")
-    event := state + 64
-    rc := ffi::call1(poll, event)
+    poll <- bind_sdl("SDL_PollEvent")
+    event <- state + 64
+    rc <- ffi::call1(poll, event)
     if rc != 0:
         window_handle_event(state, event)
     ret ptr::load_u32(state + 8)
@@ -236,26 +236,27 @@ window_should_close <- (state: u64) -> i64:
     ret ptr::load_u32(state + 8)
 
 window_size <- (state: u64, out_width: u64, out_height: u64) -> i64:
-    win := ptr::load_u64(state)
-    size := bind_sdl("SDL_GetWindowSizeInPixels")
+    win <- ptr::load_u64(state)
+    size <- bind_sdl("SDL_GetWindowSizeInPixels")
     ret ffi::call3(size, win, out_width, out_height) as i64
 
 # Query the current pixel size, record it, and flag a pending resize.
 window_sync_size <- (state: u64) -> nil:
-    window := ptr::load_u64(state)
+    window <- ptr::load_u64(state)
     if window == 0:
         ret
-    width := ptr::alloc(4)
-    height := ptr::alloc(4)
-    get_size := bind_sdl("SDL_GetWindowSizeInPixels")
+    width <- ptr::alloc(4)
+    height <- ptr::alloc(4)
+    get_size <- bind_sdl("SDL_GetWindowSizeInPixels")
     ffi::call3(get_size, window, width, height)
-    new_width := ptr::load_u32(width)
-    new_height := ptr::load_u32(height)
+    new_width <- ptr::load_u32(width)
+    new_height <- ptr::load_u32(height)
     ptr::free(width)
     ptr::free(height)
     if new_width == 0 or new_height == 0:
         ret
-    if new_width != ptr::load_u32(state + 40) or new_height != ptr::load_u32(state + 44):
+    if new_width != ptr::load_u32(state + 40) or new_height != ptr::load_u32(
+        state + 44):
         ptr::store_u32(state + 40, new_width)
         ptr::store_u32(state + 44, new_height)
         ptr::store_u32(state + 212, 1)
@@ -274,8 +275,8 @@ window_destroy <- (state: u64) -> nil:
     if state == 0:
         ret
     free_text_buffer(state)
-    win := ptr::load_u64(state)
-    destroy := bind_sdl("SDL_DestroyWindow")
+    win <- ptr::load_u64(state)
+    destroy <- bind_sdl("SDL_DestroyWindow")
     ffi::call1(destroy, win)
     ptr::free(state)
     ret
@@ -283,8 +284,8 @@ window_destroy <- (state: u64) -> nil:
 key_down <- (state: u64, scancode: i64) -> i64:
     keyboard := ptr::load_u64(state + 32)
     if keyboard == 0:
-        get_state := bind_sdl("SDL_GetKeyboardState")
-        numkeys := ptr::alloc(8)
+        get_state <- bind_sdl("SDL_GetKeyboardState")
+        numkeys <- ptr::alloc(8)
         keyboard = ffi::call1(get_state, numkeys) as i64
         ptr::store_u64(state + 32, keyboard)
         ptr::store_u64(state + 48, ptr::load_u64(numkeys))
@@ -320,10 +321,10 @@ mouse_button_mask_down <- (mask: i64, button: i64) -> i64:
     ret 0
 
 mouse_buttons <- (state: u64) -> i64:
-    get_mouse := bind_sdl("SDL_GetMouseState")
-    x := ptr::alloc(4)
-    y := ptr::alloc(4)
-    buttons := ffi::call2(get_mouse, x, y)
+    get_mouse <- bind_sdl("SDL_GetMouseState")
+    x <- ptr::alloc(4)
+    y <- ptr::alloc(4)
+    buttons <- ffi::call2(get_mouse, x, y)
     ptr::store_u32(state + 12, ptr::load_u32(x))
     ptr::store_u32(state + 16, ptr::load_u32(y))
     ptr::free(x)
@@ -331,6 +332,6 @@ mouse_buttons <- (state: u64) -> i64:
     ret buttons as i64
 
 window_flags <- (state: u64) -> i64:
-    win := ptr::load_u64(state)
-    flags := bind_sdl("SDL_GetWindowFlags")
+    win <- ptr::load_u64(state)
+    flags <- bind_sdl("SDL_GetWindowFlags")
     ret ffi::call1(flags, win) as i64

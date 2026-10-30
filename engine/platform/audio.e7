@@ -5,7 +5,7 @@
 # through `ffi::call*`, exactly like the SDL window and Vulkan platform layers.
 #
 # Types exposed to the engine:
-#   AudioClip    one decoded WAV buffer plus its SDL_AudioSpec (path independent)
+# AudioClip one decoded WAV buffer plus its SDL_AudioSpec (path independent)
 #   AudioSystem  resource holding the audio subsystem state, one one-shot
 #                playback stream, and the current gain
 #
@@ -20,7 +20,7 @@
 #   SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK  0xFFFFFFFF
 #   SDL_LoadWAV(const char*, SDL_AudioSpec*, Uint8**, Uint32*) -> bool
 #   SDL_OpenAudioDeviceStream(SDL_AudioDeviceID, const SDL_AudioSpec*,
-#                             SDL_AudioStreamCallback, void*) -> SDL_AudioStream*
+# SDL_AudioStreamCallback, void*) -> SDL_AudioStream*
 #
 # All functions fail gracefully: an empty `AudioClip` or a 0 stream means
 # "unavailable" and never aborts the engine.
@@ -30,14 +30,14 @@ bind_audio <- (name: str) -> u64:
 
 # SDL_AudioFormat low byte stores the sample size in bits.
 audio_format_bytes <- (format: i64) -> i64:
-    bits := format % 256
+    bits <- format % 256
     if bits <= 0:
         ret 0
     ret bits / 8
 
 # Bytes per sample frame for a loaded clip (0 when the spec is unusable).
 audio_frame_bytes <- (format: i32, channels: i32) -> i64:
-    sample_bytes := audio_format_bytes(format as i64)
+    sample_bytes <- audio_format_bytes(format as i64)
     if sample_bytes <= 0:
         ret 0
     if channels <= 0:
@@ -64,7 +64,7 @@ impl AudioClip:
         ret audio_frame_bytes(clip.format, clip.channels)
 
     pub frame_count <- (clip: AudioClip) -> i64:
-        frame_bytes := clip.bytes_per_frame()
+        frame_bytes <- clip.bytes_per_frame()
         if frame_bytes <= 0:
             ret 0
         ret clip.length / frame_bytes
@@ -72,7 +72,7 @@ impl AudioClip:
     pub duration_ms <- (clip: AudioClip) -> i64:
         if clip.freq <= 0:
             ret 0
-        frames := clip.frame_count()
+        frames <- clip.frame_count()
         ret (frames * 1000) / (clip.freq as i64)
 
     # Release the PCM buffer.  Stop any stream playing this clip first: SDL
@@ -80,7 +80,7 @@ impl AudioClip:
     # caller until it is explicitly freed.
     pub free <- (clip: AudioClip) -> nil:
         if clip.data != 0:
-            free_fn := bind_audio("SDL_free")
+            free_fn <- bind_audio("SDL_free")
             ffi::call1(free_fn, clip.data)
         ret
 
@@ -92,26 +92,27 @@ empty_clip <- () -> AudioClip:
 # Load a WAV file into an `AudioClip`.  Missing or undecodable files return an
 # empty clip (data 0, length 0) instead of aborting the caller.
 pub audio_load_wav <- (path: str) -> AudioClip:
-    spec := ptr::alloc(16) as u64
-    data_out := ptr::alloc(8) as u64
-    length_out := ptr::alloc(4) as u64
+    spec <- ptr::alloc(16) as u64
+    data_out <- ptr::alloc(8) as u64
+    length_out <- ptr::alloc(4) as u64
     if spec == 0 or data_out == 0 or length_out == 0:
         ptr::free(spec)
         ptr::free(data_out)
         ptr::free(length_out)
         ret empty_clip()
-    path_c := str::cstr(path)
-    load := bind_audio("SDL_LoadWAV")
-    ok := ffi::call4(load, path_c, spec, data_out, length_out)
+    path_c <- str::cstr(path)
+    load <- bind_audio("SDL_LoadWAV")
+    ok <- ffi::call4(load, path_c, spec, data_out, length_out)
     ptr::free(path_c)
     loaded := empty_clip()
     if ok != 0:
-        data := ptr::load_u64(data_out)
-        length := ptr::load_u32(length_out)
-        format := ptr::load_u32(spec)
-        channels := ptr::load_u32(spec + 4)
-        freq := ptr::load_u32(spec + 8)
-        if data != 0 and length > 0 and format > 0 and channels > 0 and freq > 0:
+        data <- ptr::load_u64(data_out)
+        length <- ptr::load_u32(length_out)
+        format <- ptr::load_u32(spec)
+        channels <- ptr::load_u32(spec + 4)
+        freq <- ptr::load_u32(spec + 8)
+        if (data != 0 and length > 0 and format > 0 and channels > 0 and freq >
+            0):
             loaded = AudioClip {
                 data: data as u64,
                 length: length,
@@ -129,24 +130,25 @@ pub audio_load_wav <- (path: str) -> AudioClip:
 # Open a one-shot playback device stream for a clip spec.  `gain` is applied
 # with SDL_SetAudioStreamGain; the stream converts from the clip format to the
 # device format.  Returns 0 when no playback device could be opened.
-pub audio_stream_open <- (format: i32, channels: i32, freq: i32, gain: f32) -> u64:
+pub audio_stream_open <- (format: i32, channels: i32, freq: i32,
+gain: f32) -> u64:
     if audio_frame_bytes(format, channels) <= 0:
         ret 0
     if freq <= 0:
         ret 0
-    spec := ptr::alloc(16) as u64
+    spec <- ptr::alloc(16) as u64
     if spec == 0:
         ret 0
     ptr::store_u32(spec, format as i64)
     ptr::store_u32(spec + 4, channels as i64)
     ptr::store_u32(spec + 8, freq as i64)
-    open := bind_audio("SDL_OpenAudioDeviceStream")
-    default_playback := 4294967295
-    stream := ffi::call4(open, default_playback, spec, 0, 0)
+    open <- bind_audio("SDL_OpenAudioDeviceStream")
+    default_playback <- 4294967295
+    stream <- ffi::call4(open, default_playback, spec, 0, 0)
     ptr::free(spec)
     if stream == 0:
         ret 0
-    gain_fn := bind_audio("SDL_SetAudioStreamGain")
+    gain_fn <- bind_audio("SDL_SetAudioStreamGain")
     ffi::call_f32_2(gain_fn, stream, f32::clamp(gain, 0.0, 1.0))
     ret stream
 
@@ -157,16 +159,16 @@ pub audio_stream_play <- (stream: u64, clip: &AudioClip) -> i64:
         ret 0
     if clip.data == 0 or clip.length <= 0:
         ret 0
-    clear := bind_audio("SDL_ClearAudioStream")
+    clear <- bind_audio("SDL_ClearAudioStream")
     ffi::call1(clear, stream)
-    put := bind_audio("SDL_PutAudioStreamData")
+    put <- bind_audio("SDL_PutAudioStreamData")
     # SDL takes the byte count as a C int; clips are small enough for the low
     # 32 bits to be exact.
-    put_ok := ffi::call3(put, stream, clip.data, clip.length)
+    put_ok <- ffi::call3(put, stream, clip.data, clip.length)
     if put_ok == 0:
         ret 0
-    resume := bind_audio("SDL_ResumeAudioStreamDevice")
-    resumed := ffi::call1(resume, stream)
+    resume <- bind_audio("SDL_ResumeAudioStreamDevice")
+    resumed <- ffi::call1(resume, stream)
     if resumed == 0:
         ret 0
     ret 1
@@ -176,9 +178,9 @@ pub audio_stream_play <- (stream: u64, clip: &AudioClip) -> i64:
 pub audio_stream_stop <- (stream: u64) -> nil:
     if stream == 0:
         ret
-    pause := bind_audio("SDL_PauseAudioStreamDevice")
+    pause <- bind_audio("SDL_PauseAudioStreamDevice")
     ffi::call1(pause, stream)
-    clear := bind_audio("SDL_ClearAudioStream")
+    clear <- bind_audio("SDL_ClearAudioStream")
     ffi::call1(clear, stream)
     ret
 
@@ -187,7 +189,7 @@ pub audio_stream_stop <- (stream: u64) -> nil:
 pub audio_stream_free <- (stream: u64) -> nil:
     if stream == 0:
         ret
-    destroy := bind_audio("SDL_DestroyAudioStream")
+    destroy <- bind_audio("SDL_DestroyAudioStream")
     ffi::call1(destroy, stream)
     ret
 
@@ -196,7 +198,7 @@ pub audio_stream_free <- (stream: u64) -> nil:
 pub audio_stream_queued <- (stream: u64) -> i64:
     if stream == 0:
         ret 0
-    queued := bind_audio("SDL_GetAudioStreamQueued")
+    queued <- bind_audio("SDL_GetAudioStreamQueued")
     ret ffi::call1(queued, stream) as i64
 
 pub audio_stream_playing <- (stream: u64) -> i64:
@@ -209,55 +211,55 @@ pub audio_stream_playing <- (stream: u64) -> i64:
 pub audio_stream_set_gain <- (stream: u64, gain: f32) -> nil:
     if stream == 0:
         ret
-    gain_fn := bind_audio("SDL_SetAudioStreamGain")
+    gain_fn <- bind_audio("SDL_SetAudioStreamGain")
     ffi::call_f32_2(gain_fn, stream, f32::clamp(gain, 0.0, 1.0))
     ret
 
 # -------------------------------------------------------------- subsystem ---
 
-# Initialize SDL audio.  A non-empty driver sets the SDL_AUDIO_DRIVER hint first,
+# Initialize SDL audio. A non-empty driver sets the SDL_AUDIO_DRIVER hint first,
 # which lets headless engine runs use the deterministic "dummy" driver.  Returns
 # 1 on success and 0 when no audio device/driver is available.
 pub audio_init <- (driver: str) -> i64:
     if str::len(driver) > 0:
         # SDL3 canonical hint spelling; the SDL2-era "SDL_AUDIODRIVER" name is
         # not recognized by SDL 3.x.
-        key := str::cstr("SDL_AUDIO_DRIVER")
-        value := str::cstr(driver)
-        set_hint := bind_audio("SDL_SetHint")
+        key <- str::cstr("SDL_AUDIO_DRIVER")
+        value <- str::cstr(driver)
+        set_hint <- bind_audio("SDL_SetHint")
         ffi::call2(set_hint, key, value)
         ptr::free(key)
         ptr::free(value)
-    init := bind_audio("SDL_InitSubSystem")
-    rc := ffi::call1(init, 16)
+    init <- bind_audio("SDL_InitSubSystem")
+    rc <- ffi::call1(init, 16)
     if rc != 0:
         ret 1
     ret 0
 
 pub audio_quit <- () -> nil:
-    quit := bind_audio("SDL_QuitSubSystem")
+    quit <- bind_audio("SDL_QuitSubSystem")
     ffi::call1(quit, 16)
 
 # Last SDL audio error as text ("; " separated, per SDL_GetError); empty when
 # the last operation succeeded.  Kept for reporting failed loads/devices.
 pub audio_error <- () -> str:
-    get := bind_audio("SDL_GetError")
-    message := ffi::call0(get)
+    get <- bind_audio("SDL_GetError")
+    message <- ffi::call0(get)
     if message == 0:
         ret ""
-    strlen := bind_audio("SDL_strlen")
-    length := ffi::call1(strlen, message)
+    strlen <- bind_audio("SDL_strlen")
+    length <- ffi::call1(strlen, message)
     ret str::from_bytes(message, length as i64)
 
 # Active SDL audio driver name ("dummy" for headless runs), empty when the
 # audio subsystem is not initialized.
 pub audio_current_driver <- () -> str:
-    get := bind_audio("SDL_GetCurrentAudioDriver")
-    name := ffi::call0(get)
+    get <- bind_audio("SDL_GetCurrentAudioDriver")
+    name <- ffi::call0(get)
     if name == 0:
         ret ""
-    strlen := bind_audio("SDL_strlen")
-    length := ffi::call1(strlen, name)
+    strlen <- bind_audio("SDL_strlen")
+    length <- ffi::call1(strlen, name)
     ret str::from_bytes(name, length as i64)
 
 # ------------------------------------------------------------ engine system ---
@@ -283,7 +285,9 @@ impl AudioSystem:
         if audio.stream != 0:
             audio_stream_free(audio.stream)
             audio.stream = 0
-        audio.stream = audio_stream_open(clip.format, clip.channels, clip.freq, audio.volume)
+        audio.stream =
+            audio_stream_open(clip.format, clip.channels, clip.freq,
+                audio.volume)
         if audio.stream == 0:
             ret 0
         ret audio_stream_play(audio.stream, clip)

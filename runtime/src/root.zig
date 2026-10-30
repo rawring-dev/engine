@@ -3204,6 +3204,10 @@ test "host asset write/read round-trip and reload request flag" {
     const length = aggregate.e7_str_len(read);
     const ptr: [*]const u8 = @ptrFromInt(@as(usize, @intCast(read + 8)));
     try std.testing.expectEqualStrings(payload, ptr[0..@intCast(length)]);
+    try std.testing.expectEqual(@as(i64, 0), host_engine.e7_engine_write_asset(path_handle, makeTestString("")));
+    const empty = host_engine.e7_engine_read_shader(path_handle);
+    try std.testing.expect(empty != 0);
+    try std.testing.expectEqual(@as(i64, 0), aggregate.e7_str_len(empty));
     // Missing parent directory is reported as failure, not a panic.
     try std.testing.expectEqual(
         @as(i64, -1),
@@ -3300,10 +3304,14 @@ fn compileWorkspaceFixture(allocator: std.mem.Allocator, entry: []const u8, vers
     defer std.testing.allocator.free(fixture_source);
     const changed = try std.mem.replaceOwned(u8, allocator, fixture_source, "workspace_fixture_version <- () -> i64 = 1", if (version == 1) "workspace_fixture_version <- () -> i64 = 1" else "workspace_fixture_version <- () -> i64 = 2");
     defer allocator.free(changed);
+    return compileEditorFixture(allocator, entry, changed);
+}
+
+fn compileEditorFixture(allocator: std.mem.Allocator, entry: []const u8, source: []const u8) !compiler.pipeline.CompileResult {
     const project = loaded: {
         var loaded = try compiler.pipeline.loadProject(allocator, entry);
         errdefer loaded.deinit();
-        const text = try loaded.root_ast.arena.allocator().dupe(u8, changed);
+        const text = try loaded.root_ast.arena.allocator().dupe(u8, source);
         var fixture = switch (try compiler.parser.parse(allocator, text)) {
             .ast => |tree| tree,
             .diagnostic => return error.TestUnexpectedResult,
@@ -3355,4 +3363,28 @@ test "live editor applies script edits preserving play pause physics and custom 
     try std.testing.expectEqual(@as(i64, 0), task.e7_task_await(main_ctor()));
     try std.testing.expect(test_live_preserved);
     try std.testing.expectEqual(@as(usize, 1), program.reloads());
+}
+
+test "editor imports a textured GLB and preserves a companion scene across refresh" {
+    const allocator = std.testing.allocator;
+    host.reset();
+    defer host.reset();
+    host.setHeadless(true);
+    host.setCaptureEnabled(true);
+    defer ecs.e7_ecs_reset();
+    const path = try editorProjectPath();
+    defer allocator.free(path);
+    const fixture = readRepoTextForTest("tests/editor_gltf_flow.e7") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(fixture);
+    var program = try live_reload.Program.init(allocator, try compileEditorFixture(allocator, path, fixture));
+    defer program.deinit();
+    task.e7_task_set_inline(1);
+    defer task.e7_task_set_inline(0);
+    const main_ctor = try program.main();
+    const result = task.e7_task_await(main_ctor());
+    if (result != 0) std.debug.print("glTF editor fixture returned {d}\n", .{result});
+    try std.testing.expectEqual(@as(i64, 0), result);
+    var capture = host.takeCapture() orelse return error.TestUnexpectedResult;
+    defer capture.deinit();
+    try std.testing.expect(host.captureHasContent(capture));
 }

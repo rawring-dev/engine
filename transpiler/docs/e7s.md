@@ -315,8 +315,10 @@ is a scalar type.
 | `[u32; N]` | `uint2`/`uint3`/`uint4` |
 | `[bool; N]` | `bool2`/`bool3`/`bool4` |
 
-`N` outside 2..4, or a non-scalar element type, is rejected. Large arrays only
-appear as `StructuredBuffer<T>` / `RWStructuredBuffer<T>` element storage.
+`N` outside 2..4, or a non-scalar element type, is rejected in ordinary value
+positions. Struct fields may also contain fixed arrays of matrices, such as
+`joints: [[f32; 4, 4]; 64]`; these preserve matrix layout and support indexing.
+Use `StructuredBuffer<T>` / `RWStructuredBuffer<T>` for large buffer storage.
 
 Vector construction uses a list literal in a vector type context (see §5.4):
 

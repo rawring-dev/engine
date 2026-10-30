@@ -8,3 +8,9 @@ mod input
 mod time
 mod window
 mod bootstrap
+
+mod hierarchy
+
+mod animation
+
+mod skinning

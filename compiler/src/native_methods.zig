@@ -19,7 +19,8 @@
 //!   host::list_dir(path)    host::write_asset(path, text)
 //!   host::capture(pixels, w, h)
 //!   host::request_reload()  host::take_reload_request()
-//!   image::load(path)       image::width(handle)      image::free(handle)
+//!   image::load(path)       image::from_bytes(data)   image::width(handle)
+//!   image::free(handle)
 //!
 //! The namespace names are ordinary identifiers in the grammar (`f32::sin` is
 //! parsed as a two-segment path), so no parser changes are required.  A
@@ -202,6 +203,7 @@ const host_methods = [_]Method{
 
 const image_methods = [_]Method{
     .{ .name = "load", .params = &.{str_}, .result = u64_, .runtime = .image_load },
+    .{ .name = "from_bytes", .params = &.{str_}, .result = u64_, .runtime = .image_from_bytes },
     .{ .name = "from_argb", .params = &.{ any_, i64_, i64_, i64_ }, .result = u64_, .runtime = .image_from_argb },
     .{ .name = "width", .params = &.{any_}, .result = i64_, .runtime = .image_width },
     .{ .name = "height", .params = &.{any_}, .result = i64_, .runtime = .image_height },

@@ -1,0 +1,86 @@
+# Column-major affine transforms; multiplication preserves shear from rotated
+# children of non-uniformly scaled parents. No TRS decomposition is required.
+pub matrix_identity <- () -> [f32; 16]:
+    ret [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+pub matrix_multiply <- (a: [f32; 16], b: [f32; 16]) -> [f32; 16]:
+    out := matrix_identity()
+    for column in 0..4:
+        for row in 0..4:
+            value: f32 := 0.0
+            for k in 0..4:
+                value =
+                    value + a[(k * 4 + row) as usize] * b[(column * 4 +
+                        k) as usize]
+            out[(column * 4 + row) as usize] = value
+    ret out
+
+pub matrix_trs <- (t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> [f32; 16]:
+    x <- q[0]
+    y <- q[1]
+    z <- q[2]
+    w <- q[3]
+    ret [(1.0 - 2.0 * (y * y + z * z)) * s[0], (2.0 * (x * y + z * w)) * s[0], (
+        2.0 * (x * z - y * w)) * s[0], 0.0,
+        (2.0 * (x * y - z * w)) * s[1], (1.0 - 2.0 * (x * x + z * z)) * s[1], (
+            2.0 * (y * z + x * w)) * s[1], 0.0,
+        (2.0 * (x * z + y * w)) * s[2], (2.0 * (y * z - x * w)) * s[2], (1.0 -
+            2.0 * (x * x + y * y)) * s[2], 0.0,
+        t[0], t[1], t[2], 1.0]
+
+# Missing parents and cycles return the entity's local matrix. Bound traversal
+# by node count so invalid user-authored links cannot hang a frame.
+pub hierarchy_world <- (id: str, locals: &map[str, [f32; 16]], parents: &map[
+str, str]) -> [f32; 16]:
+    # Return an owned matrix so render callers can release frame scratch.
+    result := matrix_copy(locals[id])
+    parent := parents[id]
+    depth := 0
+    while parent.len() > 0:
+        if depth >= locals.len() as i64:
+            ptr::free(ffi::handle(&result))
+            ret matrix_copy(locals[id])
+        candidate <- locals[parent]
+        if candidate[15] == 0.0:
+            break
+        next <- matrix_multiply(candidate, result)
+        ptr::free(ffi::handle(&result))
+        result = next
+        parent = parents[parent]
+        depth = depth + 1
+    ret result
+
+pub matrix_copy <- (source: [f32; 16]) -> [f32; 16]:
+    result := matrix_identity()
+    for index in 0..16:
+        result[index as usize] = source[index as usize]
+    ret result
+
+pub matrix_scale <- (x: f32, y: f32, z: f32) -> [f32; 16]:
+    result := matrix_identity()
+    result[0] = x
+    result[5] = y
+    result[10] = z
+    ret result
+
+# Scratch maps own the map storage but not their keys or values. This uses the
+# runtime aggregate layout (three slots: length, capacity, entry storage).
+pub hierarchy_free_scratch_map <- (handle: u64) -> nil:
+    if handle != 0:
+        ptr::free(ptr::load_u64(handle + 16))
+        ptr::free(handle)
+
+# Intrinsic XYZ Euler degrees, matching authored Transform.rotation.
+pub hierarchy_euler <- (rotation: [f32; 3]) -> [f32; 4]:
+    hx <- rotation[0] * 0.008726646259971648
+    hy <- rotation[1] * 0.008726646259971648
+    hz <- rotation[2] * 0.008726646259971648
+    cx <- f32::cos(hx)
+    sx <- f32::sin(hx)
+    cy <- f32::cos(hy)
+    sy <- f32::sin(hy)
+    cz <- f32::cos(hz)
+    sz <- f32::sin(hz)
+    ret [sx * cy * cz - cx * sy * sz, cx * sy * cz + sx * cy * sz, cx * cy *
+        sz - sx * sy * cz, cx * cy * cz + sx * sy * sz]

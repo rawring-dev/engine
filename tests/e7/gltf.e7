@@ -1,0 +1,237 @@
+# e7-test-source: ../../engine/scene/document.e7
+# e7-test-source: ../../engine/core/hierarchy.e7
+# e7-test-source: ../../engine/scene/gltf.e7
+
+test_gltf_external_interleaved_hierarchy <- () -> i64:
+    loaded <- gltf_load("engine/assets/testdata/gltf/hierarchy.gltf")
+    assert_str_eq(loaded.error, "")
+    if loaded.error.len() > 0:
+        ret 1
+    assert_eq_bool(document_is_valid(&loaded.document), true)
+    assert_eq_i64(loaded.document.objects.len() as i64, 3)
+    assert_eq_i64(loaded.geometry.len() as i64, 1)
+    assert_eq_i64(loaded.geometry[0].vertices.len() as i64, 24)
+    assert_eq_i64(loaded.geometry[0].indices[2] as i64, 2)
+    assert_f32_near(loaded.geometry[0].vertices[0], -0.5, 0.00001)
+    assert_f32_near(loaded.geometry[0].vertices[14], 1.0, 0.00001)
+    object <- loaded.document.objects[1]
+    entries <- json::decode::<map[str, str]>(json::encode(object.components))
+    node <- json::decode::<SceneHierarchyValue>(entries["core::ecs::Hierarchy"])
+    assert_str_eq(node.id, "gltf/Triangle")
+    assert_str_eq(node.parent, "gltf/Root")
+    ret 0
+
+test_gltf_glb_and_embedded_buffers <- () -> i64:
+    glb <- gltf_load("engine/assets/testdata/gltf/hierarchy.glb")
+    embedded <- gltf_load("engine/assets/testdata/gltf/embedded.gltf")
+    assert_str_eq(glb.error, "")
+    assert_str_eq(embedded.error, "")
+    if glb.error.len() > 0 or embedded.error.len() > 0:
+        ret 1
+    assert_str_eq(json::encode(glb.geometry[0].vertices), json::encode(
+        embedded.geometry[0].vertices))
+    ret 0
+
+test_gltf_rejects_bounds_and_cycles <- () -> i64:
+    truncated <- gltf_load("engine/assets/testdata/gltf/truncated.gltf")
+    cycle <- gltf_load("engine/assets/testdata/gltf/cycle.gltf")
+    missing <- gltf_load("engine/assets/testdata/gltf/missing.gltf")
+    overflow <- gltf_load("engine/assets/testdata/gltf/invalid_offset.gltf")
+    assert_eq_bool(overflow.error.len() > 0, true)
+    assert_eq_bool(truncated.error.len() > 0, true)
+    assert_eq_bool(cycle.error.len() > 0, true)
+    assert_eq_bool(missing.error.len() > 0, true)
+    ret 0
+
+test_hierarchy_nested_scale_rotation_and_invalid_links <- () -> i64:
+    locals: map[str, [f32; 16]] := map[str, [f32; 16]] {}
+    parents: map[str, str] := map[str, str] {}
+    locals["root"] =
+        matrix_trs([2.0, 0.0, 0.0], hierarchy_euler([0.0, 0.0, 90.0]), [2.0,
+            3.0, 1.0])
+    locals["child"] =
+        matrix_trs([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0])
+    parents["child"] = "root"
+    world <- hierarchy_world("child", &locals, &parents)
+    assert_f32_near(world[12], 2.0, 0.0001)
+    assert_f32_near(world[13], 2.0, 0.0001)
+    parents["root"] = "child"
+    cycle <- hierarchy_world("child", &locals, &parents)
+    assert_f32_near(cycle[12], 1.0, 0.0001)
+    parents["root"] = "missing"
+    orphan <- hierarchy_world("child", &locals, &parents)
+    assert_f32_near(orphan[13], 2.0, 0.0001)
+    ret 0
+
+test_gltf_reimport_preserves_component_overrides_and_extras <- () -> i64:
+    initial <- gltf_load("engine/assets/testdata/gltf/hierarchy.gltf")
+    saved := json::decode::<SceneDocument>(json::encode(&initial.document))
+    saved.imported =
+        json::decode::<?[SceneObject]>(json::encode(&initial.document.objects))
+    entries :=
+        json::decode::<map[str, str]>(json::encode(saved.objects[1].components))
+    entries["game::Health"] = "{\"value\":75}"
+    saved.objects[1].components =
+        json::decode::<?map[str, str]>(json::encode(entries))
+    extra <- sample_scene()
+    saved.objects = vec::push(saved.objects, extra.objects[1])
+    fresh <- gltf_load("engine/assets/testdata/gltf/reordered.gltf")
+    merged <- gltf_merge(&fresh.document, &saved)
+    assert_eq_i64(merged.objects.len() as i64, 4)
+    triangle <- merged.objects[0]
+    components <-
+        json::decode::<map[str, str]>(json::encode(triangle.components))
+    assert_str_eq(components["game::Health"], "{\"value\":75}")
+    root <- merged.objects[2]
+    root_components <-
+        json::decode::<map[str, str]>(json::encode(root.components))
+    matrix <-
+        json::decode::<map[str, [f32; 16]]>(root_components[
+            "core::ecs::LocalMatrix"])
+    assert_f32_near(matrix["matrix"][12], 4.0, 0.0001)
+    assert_str_eq(merged.objects[3].name, "cube")
+    ret 0
+
+test_gltf_textures_external_data_uri_and_glb <- () -> i64:
+    external <- gltf_load("engine/assets/testdata/gltf/textured.gltf")
+    binary <- gltf_load("engine/assets/testdata/gltf/textured.glb")
+    embedded <- gltf_load("engine/assets/testdata/gltf/textured_embedded.gltf")
+    assert_str_eq(external.error, "")
+    assert_str_eq(binary.error, "")
+    assert_str_eq(embedded.error, "")
+    if external.error.len() > 0 or binary.error.len() > 0 or embedded.error.len(
+    ) > 0:
+        ret 1
+    assert_eq_i64(external.images.len() as i64, 1)
+    assert_eq_bool(external.images[0] == binary.images[0], true)
+    assert_eq_bool(external.images[0] == embedded.images[0], true)
+    image_handle <- image::from_bytes(binary.images[0])
+    assert_eq_bool(image_handle != 0, true)
+    assert_eq_i64(image::width(image_handle), 2)
+    assert_eq_i64(image::height(image_handle), 2)
+    released <- image::free(image_handle)
+    entries <-
+        json::decode::<map[str, str]>(json::encode(binary.document.objects[
+            2].components))
+    ref <-
+        json::decode::<GltfTextureReference>(entries["core::ecs::GltfTexture"])
+    assert_eq_i64(ref.image, 0)
+    assert_str_eq(ref.path, "engine/assets/testdata/gltf/textured.glb")
+    ret 0
+
+test_gltf_companion_rejects_corrupt_data <- () -> i64:
+    path <- ".zig-cache/gltf-corrupt-test.gltf"
+    written <-
+        host::write_asset(path, host::read_asset(
+            "engine/assets/testdata/gltf/hierarchy.gltf"))
+    copied <-
+        host::write_asset(".zig-cache/triangle.bin", host::read_asset(
+            "engine/assets/testdata/gltf/triangle.bin"))
+    damaged <- host::write_asset(path + ".scene.json", "{ not a scene")
+    assert_eq_i64(written, 0)
+    assert_eq_i64(copied, 0)
+    assert_eq_i64(damaged, 0)
+    scene <- open_scene_asset(path)
+    assert_eq_bool(document_is_valid(&scene), false)
+    ret 0
+
+test_gltf_missing_node_returns_with_authored_components <- () -> i64:
+    original <- gltf_load("engine/assets/testdata/gltf/hierarchy.gltf")
+    saved := json::decode::<SceneDocument>(json::encode(&original.document))
+    saved.imported =
+        json::decode::<?[SceneObject]>(json::encode(&original.document.objects))
+    entries :=
+        json::decode::<map[str, str]>(json::encode(saved.objects[1].components))
+    entries["game::Health"] = "{\"value\":75}"
+    saved.objects[1].components =
+        json::decode::<?map[str, str]>(json::encode(entries))
+    missing <- gltf_load("engine/assets/testdata/gltf/missing_node.gltf")
+    orphaned <- gltf_merge(&missing.document, &saved)
+    assert_eq_i64(orphaned.objects.len() as i64, 3)
+    orphan_components <-
+        json::decode::<map[str, str]>(json::encode(orphaned.objects[
+            1].components))
+    assert_str_eq(orphan_components["game::Health"], "{\"value\":75}")
+    assert_eq_bool(orphan_components["core::ecs::GltfMissing"].len() > 0, true)
+    restored <- gltf_merge(&original.document, &orphaned)
+    restored_components <-
+        json::decode::<map[str, str]>(json::encode(restored.objects[
+            1].components))
+    assert_str_eq(restored_components["game::Health"], "{\"value\":75}")
+    assert_str_eq(restored_components["core::ecs::GltfMissing"], "")
+    ret 0
+
+test_gltf_companion_save_and_reimport_same_path <- () -> i64:
+    path <- ".zig-cache/gltf-reimport-test.gltf"
+    first <-
+        host::write_asset(path, host::read_asset(
+            "engine/assets/testdata/gltf/hierarchy.gltf"))
+    buffer <-
+        host::write_asset(".zig-cache/triangle.bin", host::read_asset(
+            "engine/assets/testdata/gltf/triangle.bin"))
+    clear <- host::write_asset(path + ".scene.json", "")
+    assert_eq_i64(first, 0)
+    assert_eq_i64(buffer, 0)
+    assert_eq_i64(clear, 0)
+    scene := open_scene_asset(path)
+    assert_eq_bool(document_is_valid(&scene), true)
+    entries :=
+        json::decode::<map[str, str]>(json::encode(scene.objects[1].components))
+    entries["game::Health"] = "{\"value\":75}"
+    scene.objects[1].components =
+        json::decode::<?map[str, str]>(json::encode(entries))
+    assert_eq_i64(save_scene(path + ".scene.json", &scene), 0)
+    changed <-
+        host::write_asset(path, host::read_asset(
+            "engine/assets/testdata/gltf/reordered.gltf"))
+    assert_eq_i64(changed, 0)
+    reopened <- open_scene_asset(path)
+    assert_eq_bool(document_is_valid(&reopened), true)
+    updated <-
+        json::decode::<map[str, str]>(json::encode(reopened.objects[
+            0].components))
+    assert_str_eq(updated["game::Health"], "{\"value\":75}")
+    root <-
+        json::decode::<map[str, str]>(json::encode(reopened.objects[
+            2].components))
+    matrix <-
+        json::decode::<map[str, [f32; 16]]>(root["core::ecs::LocalMatrix"])
+    assert_f32_near(matrix["matrix"][12], 4.0, 0.0001)
+    ret 0
+
+test_gltf_imports_node_animation_and_rejects_unsupported_interpolation <- () -> i64:
+    loaded <- gltf_load("engine/assets/testdata/gltf/animated.gltf")
+    assert_str_eq(loaded.error, "")
+    if loaded.error.len() > 0:
+        ret 1
+    root <- loaded.document.objects[0]
+    entries <- json::decode::<map[str, str]>(json::encode(root.components))
+    track <- json::decode::<GltfAnimationValue>(entries["core::ecs::TransformAnimation"])
+    assert_eq_i64(track.times.len() as i64, 3)
+    assert_f32_near(track.translations[3], 3.0, 0.0001)
+    assert_eq_bool(track.playing, true)
+    base <- json::decode::<map[str, [f32; 3]]>(entries["core::ecs::Transform"])
+    assert_f32_near(base["translation"][0], 2.0, 0.0001)
+    matrix <- json::decode::<map[str, [f32; 16]]>(entries["core::ecs::LocalMatrix"])
+    assert_f32_near(matrix["matrix"][12], 0.0, 0.0001)
+    unsupported <- gltf_load("engine/assets/testdata/gltf/animation_unsupported.gltf")
+    assert_eq_bool(unsupported.error.len() > 0, true)
+    ret 0
+
+test_gltf_imports_skin_influences_and_inverse_bind <- () -> i64:
+    loaded <- gltf_load("engine/assets/testdata/gltf/skinned.gltf")
+    assert_str_eq(loaded.error, "")
+    if loaded.error.len() > 0:
+        ret 1
+    assert_eq_i64(loaded.document.objects.len() as i64, 4)
+    mesh <- loaded.document.objects[2]
+    entries <- json::decode::<map[str, str]>(json::encode(mesh.components))
+    skin <- json::decode::<GltfSkinValue>(entries["core::ecs::GltfSkin"])
+    assert_str_eq(skin.joints[0], "gltf/Joint")
+    assert_eq_i64(skin.inverse_bind.len() as i64, 16)
+    assert_eq_i64(skin.joint_indices.len() as i64, 12)
+    assert_f32_near(skin.weights[0], 1.0, 0.0001)
+    assert_f32_near(skin.inverse_bind[15], 1.0, 0.0001)
+    invalid <- gltf_load("engine/assets/testdata/gltf/skinned_invalid.gltf")
+    assert_eq_bool(invalid.error.len() > 0, true)
+    ret 0

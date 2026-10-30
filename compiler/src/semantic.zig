@@ -1931,3 +1931,53 @@ test "component catalogue metadata does not bypass JSON derive validation" {
         \\catalog <- () -> str = ecs::component_catalog(1)
     , "takes no arguments");
 }
+
+test "diagnostics record the enclosing module path" {
+    var result = try analyzeSource(
+        \\mod inner {
+        \\    f <- () -> i32:
+        \\        x := 1
+        \\        x = "no"
+        \\        0
+        \\}
+    );
+    defer result.parsed.deinit();
+    defer result.analysis.deinit();
+
+    var saw_inner = false;
+    for (result.analysis.diagnostics) |diagnostic| {
+        if (!std.mem.eql(u8, diagnostic.module_path, "inner")) continue;
+        saw_inner = true;
+        try std.testing.expect(std.mem.indexOf(u8, diagnostic.message, "type mismatch") != null);
+    }
+    try std.testing.expect(saw_inner);
+}
+
+test "reports mutable bindings that are never mutated" {
+    const source =
+        \\g <- (x: &mut i32) -> nil:
+        \\    ret nil
+        \\f <- () -> i32:
+        \\    kept := 1
+        \\    changed := 2
+        \\    changed = 3
+        \\    borrowed := 4
+        \\    g(&mut borrowed)
+        \\    ret kept + changed + borrowed
+    ;
+    var result = try analyzeSource(source);
+    defer result.parsed.deinit();
+    defer result.analysis.deinit();
+
+    var saw_kept = false;
+    for (result.analysis.never_mutated_bindings) |binding| {
+        try std.testing.expect(!std.mem.eql(u8, binding.name, "changed"));
+        try std.testing.expect(!std.mem.eql(u8, binding.name, "borrowed"));
+        if (std.mem.eql(u8, binding.name, "kept")) {
+            saw_kept = true;
+            try std.testing.expectEqual(@as(usize, 0), binding.module_path.len);
+            try std.testing.expectEqual(std.mem.indexOf(u8, source, "kept").?, binding.offset);
+        }
+    }
+    try std.testing.expect(saw_kept);
+}

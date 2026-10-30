@@ -10,7 +10,7 @@ e7_engine_window_flags <- (headless: i64) -> i64:
     ret 268435488
 
 e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
-    headless := host::headless()
+    headless <- host::headless()
     initialized := 0
     if headless != 0:
         initialized = video_init("dummy")
@@ -21,8 +21,8 @@ e7_engine_window_create <- (title: str, width: i64, height: i64) -> u64:
         initialized = video_start()
     if initialized == 0:
         ret 0
-    flags := e7_engine_window_flags(headless)
-    created := window_create(title, width, height, flags)
+    flags <- e7_engine_window_flags(headless)
+    created <- window_create(title, width, height, flags)
     if created != 0:
         # SDL3 creates windows hidden by default; desktop runs must show it.
         if headless == 0:
@@ -60,7 +60,8 @@ e7_engine_window_pump <- (handle: u64) -> i64:
     window_sync_size(handle)
     ret window_should_close(handle)
 
-e7_engine_window_take_resize <- (handle: u64, out_width: u64, out_height: u64) -> i64:
+e7_engine_window_take_resize <- (handle: u64, out_width: u64,
+out_height: u64) -> i64:
     if handle == 0:
         ret 0
     ret window_take_resize(handle, out_width, out_height)

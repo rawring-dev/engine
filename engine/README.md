@@ -143,15 +143,14 @@ not perform swept collision detection, so sufficiently fast bodies can tunnel.
   `Material` row, one `draw_custom_rot` per uploaded OBJ mesh row, one
   `draw_ui_quad` per widget layer, and `end_frame`.  The draw calls receive the
   full `Transform.rotation` XYZ Euler triple, so physics rotation around any
-  axis is rendered.  There is a per-frame recording capacity of 256 3D draws
-  and 512 total draws including UI quads;
+  axis is rendered.  There is a per-frame recording capacity of 512 3D draws
+  and 768 total draws including UI quads;
   object count below those caps is dynamic.
 - Frames are recorded, not submitted per draw: `engine/platform/scene.e7`
   writes one 80-byte entry per object into the scene draw list (pipeline,
-  buffers, per-object 320-byte `Scene` UBO slot, texture descriptor sets) and
+  buffers, per-object 4608-byte aligned `Scene` UBO slot, texture descriptor sets) and
   `scene_draw` captures the whole list in a single command buffer.  The 3D
-  entries use the lit pipeline (`lit.vert`/`lit.frag`: 320-byte dynamic
-  `Scene` UBO at set 0, combined image-sampler at set 1 binding 1), so the
+  entries use the lit pipeline (`lit.vert`/`lit.frag`: dynamic `Scene` UBO at set 0, combined image-sampler at set 1 binding 1), so the
   material tint and texture are applied per object.  UI entries are appended
   after the 3D entries and use the blended UI pipeline (`ui.vert`/`ui.frag`,
   set 0 binding 0) with a 256-quad dynamic vertex buffer updated at draw time;

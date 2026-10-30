@@ -177,6 +177,8 @@ pub const RuntimeFunction = enum(u8) {
     editor_initial_file,
     editor_alive,
     editor_diagnostic,
+    // Appended to preserve existing serialized runtime-function IDs.
+    image_from_bytes,
 
     pub fn symbol(self: RuntimeFunction) []const u8 {
         return switch (self) {
@@ -254,6 +256,7 @@ pub const RuntimeFunction = enum(u8) {
             .json_encode => "e7_json_encode",
             .json_decode => "e7_json_decode",
             .image_load => "e7_image_load",
+            .image_from_bytes => "e7_image_from_bytes",
             .image_from_argb => "e7_image_from_argb",
             .image_width => "e7_image_width",
             .image_height => "e7_image_height",
@@ -368,7 +371,7 @@ pub const RuntimeFunction = enum(u8) {
             .float_clamp => 3,
             .float_from_i64, .float_to_i64, .float_to_milli, .float_from_milli => 1,
             .json_encode, .json_decode => 2,
-            .image_load, .image_width, .image_height, .image_pixels, .image_free => 1,
+            .image_load, .image_from_bytes, .image_width, .image_height, .image_pixels, .image_free => 1,
             .image_from_argb => 4,
             .str_lines, .str_fields, .parse_i64, .parse_f32 => 1,
             .str_split, .vec_push => 2,
@@ -1343,4 +1346,11 @@ test "bytecode round-trips runtime calls" {
     try verify(std.testing.allocator, &decoded);
     try std.testing.expect(decoded.functions[0].code[2].runtime_call.function == .ecs_register_resource);
     try std.testing.expectEqual(@as(u16, 1), decoded.functions[0].code[5].runtime_call.argc);
+}
+
+test "runtime image extension preserves existing bytecode function IDs" {
+    try std.testing.expectEqual(@as(u8, 53), @intFromEnum(RuntimeFunction.image_load));
+    try std.testing.expectEqual(@as(u8, 54), @intFromEnum(RuntimeFunction.image_from_argb));
+    try std.testing.expectEqual(@as(u8, 128), @intFromEnum(RuntimeFunction.editor_diagnostic));
+    try std.testing.expectEqual(@as(u8, 129), @intFromEnum(RuntimeFunction.image_from_bytes));
 }

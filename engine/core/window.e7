@@ -13,18 +13,22 @@ pub Window <- struct
 # wrappers; call sites use `window.pump()` / `window.should_close()` etc.
 impl Window:
     pub create <- (window: &mut Window, title: str) -> nil:
-        window.handle = e7_engine_window_create(title, window.width as i64, window.height as i64)
+        window.handle =
+            e7_engine_window_create(title, window.width as i64,
+                window.height as i64)
         window.quit_requested = false
         ret
 
     pub pump <- (window: &mut Window) -> nil:
         window.quit_requested = e7_engine_window_pump(window.handle) != 0
-        out_width := ptr::alloc(4)
-        out_height := ptr::alloc(4)
-        resized := e7_engine_window_take_resize(window.handle, out_width as u64, out_height as u64)
+        out_width <- ptr::alloc(4)
+        out_height <- ptr::alloc(4)
+        resized <-
+            e7_engine_window_take_resize(window.handle, out_width as u64,
+                out_height as u64)
         if resized != 0:
-            new_width := ptr::load_u32(out_width)
-            new_height := ptr::load_u32(out_height)
+            new_width <- ptr::load_u32(out_width)
+            new_height <- ptr::load_u32(out_height)
             if new_width > 0 and new_height > 0:
                 window.width = new_width as i32
                 window.height = new_height as i32
@@ -34,7 +38,8 @@ impl Window:
 
     # Window close OR the host frame limiter (`--frames`) requests shutdown.
     pub should_close <- (window: &Window) -> bool:
-        ret e7_engine_window_should_close(window.handle) != 0 or host::should_close() != 0
+        ret e7_engine_window_should_close(
+            window.handle) != 0 or host::should_close() != 0
 
     pub destroy <- (window: &mut Window) -> nil:
         e7_engine_window_destroy(window.handle)
@@ -53,4 +58,3 @@ pub WindowPlugin <- plugin
 @trigger(FrameInit)
 pub poll_window <- sys (window: res &mut Window):
     window.pump()
-

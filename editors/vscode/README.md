@@ -23,10 +23,10 @@ description lives in `editors/README.md` in the engine7 repository.
 - All reserved words grouped by class:
   - conditional `if` `elif` `else` `match`
   - loop `loop` `while` `for` `in`
-  - flow `ret` `break` `cont`
+  - flow `ret` `break` `cont` `disown`
   - import `use` `mod`
-  - declaration keywords `struct` `enum` `table` `trigger` `sys` / `impl`
-    `trait`
+  - declaration keywords `struct` `enum` `table` `trigger` `sys` / `plugin`
+    `impl` `trait`
   - effect modifiers `async` `await` `spawn` `detach` `cancel` `unsafe` `mut`
     `raw`
   - query keywords `select` `from` `where` `res`

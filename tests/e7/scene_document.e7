@@ -6,7 +6,7 @@
 # e7-test-source: ../../engine/scene/document.e7
 
 test_scene_sample_shape <- () -> i64:
-    scene := sample_scene()
+    scene <- sample_scene()
     assert_eq_bool(document_is_valid(&scene), true)
     assert_eq_i64(scene.version, 1)
     assert_eq_i64(scene.objects.len() as i64, 4)
@@ -18,10 +18,10 @@ test_scene_sample_shape <- () -> i64:
     ret 0
 
 test_scene_json_roundtrip <- () -> i64:
-    scene := sample_scene()
-    text := scene_to_json(&scene)
+    scene <- sample_scene()
+    text <- scene_to_json(&scene)
     assert_eq_bool(text.len() > 0, true)
-    copy := scene_from_json(text)
+    copy <- scene_from_json(text)
     assert_eq_bool(document_is_valid(&copy), true)
     assert_str_eq(copy.name, "sample")
     assert_eq_i64(copy.objects.len() as i64, 4)
@@ -33,42 +33,42 @@ test_scene_json_roundtrip <- () -> i64:
     ret 0
 
 test_scene_json_rejects_malformed <- () -> i64:
-    broken := scene_from_json("{ this is not json }")
+    broken <- scene_from_json("{ this is not json }")
     assert_eq_bool(document_is_valid(&broken), false)
     assert_eq_i64(broken.objects.len() as i64, 0)
-    missing := scene_from_json("{\"format\":\"engine7-scene\"}")
+    missing <- scene_from_json("{\"format\":\"engine7-scene\"}")
     assert_eq_bool(document_is_valid(&missing), false)
     # A future/invalid version is rejected instead of half-loaded.
-    future := scene_from_json("{\"format\":\"engine7-scene\",\"version\":2}")
+    future <- scene_from_json("{\"format\":\"engine7-scene\",\"version\":2}")
     assert_eq_bool(document_is_valid(&future), false)
     ret 0
 
 test_scene_save_and_load_file <- () -> i64:
-    path := ".zig-cache/e7-scene-document-test.json"
+    path <- ".zig-cache/e7-scene-document-test.json"
     scene := sample_scene()
     scene.name = "roundtrip"
-    status := save_scene(path, &scene)
+    status <- save_scene(path, &scene)
     assert_eq_i64(status, 0)
-    loaded := load_scene(path)
+    loaded <- load_scene(path)
     assert_eq_bool(document_is_valid(&loaded), true)
     assert_str_eq(loaded.name, "roundtrip")
     assert_eq_i64(loaded.objects.len() as i64, 4)
     ret 0
 
 test_scene_load_missing_falls_back_to_sample <- () -> i64:
-    loaded := load_scene(".zig-cache/e7-scene-does-not-exist.json")
+    loaded <- load_scene(".zig-cache/e7-scene-does-not-exist.json")
     assert_eq_bool(document_is_valid(&loaded), true)
     assert_str_eq(loaded.name, "sample")
     ret 0
 
 test_scene_euler_to_quaternion_identity <- () -> i64:
-    q := euler_to_quaternion(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
+    q <- euler_to_quaternion(Vec3 { x: 0.0, y: 0.0, z: 0.0 })
     assert_eq_i64(f32::to_milli(q.x), 0)
     assert_eq_i64(f32::to_milli(q.y), 0)
     assert_eq_i64(f32::to_milli(q.z), 0)
     assert_eq_i64(f32::to_milli(q.w), 1000)
     # 90 degrees about Y: (0, sin45, 0, cos45).
-    yaw := euler_to_quaternion(Vec3 { x: 0.0, y: 90.0, z: 0.0 })
+    yaw <- euler_to_quaternion(Vec3 { x: 0.0, y: 90.0, z: 0.0 })
     assert_eq_i64(f32::to_milli(yaw.y), 707)
     assert_eq_i64(f32::to_milli(yaw.w), 707)
     ret 0

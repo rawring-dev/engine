@@ -6,4 +6,5 @@ pub FrameInit <- trigger
 pub PreUpdate <- trigger
 pub Update <- trigger
 pub PostUpdate <- trigger
+pub PrepareRender <- trigger
 pub Render <- trigger

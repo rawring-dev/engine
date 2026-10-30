@@ -79,15 +79,17 @@ impl<T> AssetCollection<T>:
 
     # Map of paths relative to `folder` -> processed values.  A missing folder
     # returns an empty map, so callers can iterate or len() unconditionally.
-    pub folder_files <- (collection: &AssetCollection<T>, folder: str) -> map[str, T]:
+    pub folder_files <- (collection: &AssetCollection<T>, folder: str) -> map[
+        str, T]:
         for (key, value) in collection.folders:
             if key == folder:
                 ret value
         ret map[str, T] {}
 
     # Number of files directly inside `folder` (0 for a missing folder).
-    pub folder_file_count <- (collection: &AssetCollection<T>, folder: str) -> i64:
-        files := collection.folder_files(folder)
+    pub folder_file_count <- (collection: &AssetCollection<T>,
+        folder: str) -> i64:
+        files <- collection.folder_files(folder)
         ret files.len() as i64
 
 # ------------------------------------------------------------------- paths ---
@@ -113,14 +115,14 @@ pub join_path <- (root: str, name: str) -> str:
 
 # Directory entries from `host::list_dir` carry a trailing `/`.
 pub is_directory_entry <- (entry: str) -> bool:
-    length := str::len(entry)
+    length <- str::len(entry)
     if length == 0:
         ret false
     ret entry.char_at((length - 1) as usize) == "/"
 
 # Entry name without the directory marker.
 pub entry_name <- (entry: str) -> str:
-    length := str::len(entry)
+    length <- str::len(entry)
     if length > 0 and is_directory_entry(entry):
         ret entry.slice(0, (length - 1) as usize)
     ret entry
@@ -129,17 +131,17 @@ pub entry_name <- (entry: str) -> str:
 
 pub scan_assets<T> <- (root: str, process: (str) -> T) -> AssetCollection<T>:
     collection := empty_collection<T>()
-    normalized := trim_trailing_slashes(root)
-    listing := host::list_dir(normalized)
+    normalized <- trim_trailing_slashes(root)
+    listing <- host::list_dir(normalized)
     for entry in str::lines(listing):
-        name := entry_name(entry)
+        name <- entry_name(entry)
         if str::len(name) == 0:
             cont
-        full := join_path(normalized, name)
+        full <- join_path(normalized, name)
         if not is_directory_entry(entry):
             collection.files[name] = process(full)
             cont
-        child := scan_assets<T>(full, process)
+        child <- scan_assets<T>(full, process)
         # Direct files of this subfolder, keyed relative to the subfolder.
         collection.folders[name] = child.files
         # Descendant folders, keyed relative to this scan root.

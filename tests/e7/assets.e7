@@ -11,7 +11,7 @@
 file_length <- (path: str) -> i64 = str::len(host::read_shader(path))
 
 test_scan_nested_files <- () -> i64:
-    collection := scan_assets<i64>("engine/assets/testdata/scan", file_length)
+    collection <- scan_assets<i64>("engine/assets/testdata/scan", file_length)
     assert_eq_i64(collection.file_count(), 3)
     assert_eq_i64(collection.files.len() as i64, 3)
     assert_eq_i64(collection.files["alpha.txt"], 6)
@@ -20,7 +20,7 @@ test_scan_nested_files <- () -> i64:
     ret 0
 
 test_scan_nested_folders <- () -> i64:
-    collection := scan_assets<i64>("engine/assets/testdata/scan", file_length)
+    collection <- scan_assets<i64>("engine/assets/testdata/scan", file_length)
     # One entry per visited directory: nested" and nested/deep".
     assert_eq_i64(collection.folder_count(), 2)
     assert_eq_bool(collection.has_folder("nested"), true)
@@ -28,11 +28,11 @@ test_scan_nested_folders <- () -> i64:
     assert_eq_bool(collection.has_folder("missing"), false)
     # Folder maps hold that folder's subtree, keyed relative to the folder, so
     # "nested" includes the descending "deep/gamma.txt" entry.
-    nested := collection.folder_files("nested")
+    nested <- collection.folder_files("nested")
     assert_eq_i64(nested.len() as i64, 2)
     assert_eq_i64(nested["beta.txt"], 5)
     assert_eq_i64(nested["deep/gamma.txt"], 6)
-    deep := collection.folder_files("nested/deep")
+    deep <- collection.folder_files("nested/deep")
     assert_eq_i64(deep.len() as i64, 1)
     assert_eq_i64(deep["gamma.txt"], 6)
     assert_eq_i64(collection.folder_file_count("nested"), 2)
@@ -41,13 +41,14 @@ test_scan_nested_folders <- () -> i64:
     ret 0
 
 test_scan_trailing_slash <- () -> i64:
-    collection := scan_assets<i64>("engine/assets/testdata/scan/", file_length)
+    collection <- scan_assets<i64>("engine/assets/testdata/scan/", file_length)
     assert_eq_i64(collection.file_count(), 3)
     assert_eq_i64(collection.files["alpha.txt"], 6)
     ret 0
 
 test_scan_missing_root <- () -> i64:
-    collection := scan_assets<i64>("engine/assets/testdata/does-not-exist", file_length)
+    collection <-
+        scan_assets<i64>("engine/assets/testdata/does-not-exist", file_length)
     assert_eq_i64(collection.file_count(), 0)
     assert_eq_i64(collection.folder_count(), 0)
     assert_eq_bool(collection.has_file("alpha.txt"), false)
@@ -55,8 +56,9 @@ test_scan_missing_root <- () -> i64:
 
 test_scan_callback_receives_full_path <- () -> i64:
     # Processor sees `<root>/<relative path>`, not a bare entry name.
-    collection := scan_assets<str>("engine/assets/testdata/scan", identity)
-    assert_str_eq(collection.files["nested/beta.txt"], "engine/assets/testdata/scan/nested/beta.txt")
+    collection <- scan_assets<str>("engine/assets/testdata/scan", identity)
+    assert_str_eq(collection.files["nested/beta.txt"],
+        "engine/assets/testdata/scan/nested/beta.txt")
     ret 0
 
 identity <- (path: str) -> str = path

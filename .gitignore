@@ -11,3 +11,10 @@ zig-out/
 
 # Team worktrees
 .team/
+
+# Python bytecode from the editor/LSP test harnesses
+__pycache__/
+*.pyc
+
+# Neovim startup log (written when its server socket is unavailable)
+nvim.log

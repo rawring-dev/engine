@@ -208,6 +208,7 @@ check("in", "for entry in query", "in", "e7Repeat")
 check("ret", "ret a.x * b.x", "ret", "e7Statement")
 check("break", "            break", "break", "e7Statement")
 check("cont", "            cont", "cont", "e7Statement")
+check("disown", "    disown commands", "disown", "e7Statement")
 
 -- include keywords
 check("use", "use crate::ecs::World;", "use", "e7Include")
@@ -219,6 +220,7 @@ check("enum", "pub Color <- enum:", "enum", "e7Structure")
 check("table", "pub Entity <- table:", "table", "e7Structure")
 check("trigger", "pub Update <- trigger:", "trigger", "e7Structure")
 check("sys", "update <- sys(query", "sys", "e7Structure")
+check("plugin", "pub KitchenPlugin <- plugin", "plugin", "e7Structure")
 
 -- keyword class
 check("impl", "impl Drawable for Body:", "impl", "e7Keyword")

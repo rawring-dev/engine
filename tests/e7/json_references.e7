@@ -1,0 +1,35 @@
+@derive(Serialize, Deserialize)
+JsonOptionalRecord <- struct
+    label: ?str
+
+# JSON schemas erase borrows; codegen must load scalar/optional storage slots
+# while preserving the handle representation of ordinary aggregate borrows.
+test_json_encode_scalar_and_optional_references <- () -> i64:
+    number: i64 <- 42
+    assert_str_eq(json::encode(&number), "42")
+    text <- json::decode::<?str>("\"hello\"")
+    assert_str_eq(json::encode(&text), "\"hello\"")
+    missing <- json::decode::<?str>("null")
+    assert_str_eq(json::encode(&missing), "null")
+    values <- json::decode::<?map[str, str]>("{\"key\":\"value\"}")
+    assert_str_eq(json::encode(&values), "{\"key\":\"value\"}")
+    record <- json::decode::<JsonOptionalRecord>("{\"label\":\"test\"}")
+    assert_str_eq(json::encode(&record.label), "\"test\"")
+    assert_str_eq(json::encode(&record), "{\"label\":\"test\"}")
+    ret 0
+
+optional_increment <- (value: ?i64) -> i64:
+    number <- value?
+    ret number + 1
+
+test_json_optional_scalar_zero_and_unwrap <- () -> i64:
+    zero <- json::decode::<?i64>("0")
+    nine <- json::decode::<?i64>("9")
+    empty <- json::decode::<?i64>("null")
+    flag <- json::decode::<?bool>("false")
+    assert_str_eq(json::encode(zero), "0")
+    assert_str_eq(json::encode(flag), "false")
+    assert_eq_i64(optional_increment(zero), 1)
+    assert_eq_i64(optional_increment(nine), 10)
+    assert_eq_i64(optional_increment(empty), 0)
+    ret 0

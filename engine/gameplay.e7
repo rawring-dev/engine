@@ -10,6 +10,9 @@ pub Gameplay <- plugin
 # speed and saving demonstrates code reload without resetting object positions.
 @plugin(Gameplay)
 @trigger(Update)
-pub pulse_light <- sys (lights: select &mut PointLight from Components, time: res &Time):
+pub pulse_light <- sys (
+    lights: select &mut PointLight from Components,
+    time: res &Time
+):
     for light in lights:
         light.intensity = 2.8 + f32::sin(time.elapsed * 1.5) * 0.25

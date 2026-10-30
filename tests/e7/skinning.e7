@@ -1,0 +1,28 @@
+# e7-test-source: ../../engine/core/ecs.e7
+# e7-test-source: ../../engine/core/skinning.e7
+
+test_skinning_blends_joint_matrices_and_checks_bounds <- () -> i64:
+    skin <- GltfSkin { joints: ["a", "b"], inverse_bind: [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0, 1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0], vertices: [1.0,2.0,3.0,0.0,1.0,0.0,0.0,0.0], joint_indices: [0,1,0,0], weights: [0.25,0.75,0.0,0.0] }
+    palette: map[str,[f32;16]] := map[str,[f32;16]] {}
+    palette["a"] = [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 4.0,0.0,0.0,1.0]
+    palette["b"] = [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,4.0,0.0,1.0]
+    assert_eq_bool(skin_valid(&skin), true)
+    position <- skin_position(&skin,0,&palette)
+    assert_f32_near(position[0],2.0,0.0001)
+    assert_f32_near(position[1],5.0,0.0001)
+    assert_f32_near(position[2],3.0,0.0001)
+    ret 0
+
+test_skinning_inverse_affine_handles_scale_translation_and_singular <- () -> i64:
+    matrix <- [2.0,0.0,0.0,0.0, 0.0,4.0,0.0,0.0, 0.0,0.0,5.0,0.0, 6.0,8.0,10.0,1.0]
+    inverse <- skin_inverse_affine(matrix)
+    assert_f32_near(inverse[0],0.5,0.0001)
+    assert_f32_near(inverse[5],0.25,0.0001)
+    assert_f32_near(inverse[10],0.2,0.0001)
+    assert_f32_near(inverse[12],-3.0,0.0001)
+    assert_f32_near(inverse[13],-2.0,0.0001)
+    assert_f32_near(inverse[14],-2.0,0.0001)
+    singular <- [0.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]
+    bad <- skin_inverse_affine(singular)
+    assert_f32_near(bad[15],0.0,0.0001)
+    ret 0

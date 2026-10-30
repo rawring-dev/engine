@@ -6,31 +6,31 @@ bind_ttf <- (name: str) -> u64:
     ret ffi::bind("SDL3_ttf", name)
 
 e7_font_load <- (path: str, size: i64) -> u64:
-    init := bind_ttf("TTF_Init")
+    init <- bind_ttf("TTF_Init")
     ffi::call0(init)
-    open_font := bind_ttf("TTF_OpenFont")
-    path_c := str::cstr(path)
-    font := ffi::call_f32_2(open_font, path_c, (size) as f32)
+    open_font <- bind_ttf("TTF_OpenFont")
+    path_c <- str::cstr(path)
+    font <- ffi::call_f32_2(open_font, path_c, (size) as f32)
     ptr::free(path_c)
     ret font
 
 e7_font_free <- (font: u64) -> i64:
     if font == 0:
         ret 0
-    close_font := bind_ttf("TTF_CloseFont")
+    close_font <- bind_ttf("TTF_CloseFont")
     ffi::call1(close_font, font)
     ret 0
 
 e7_text_measure <- (font: u64, text: str) -> i64:
     if font == 0:
         ret 0
-    text_c := str::cstr(text)
-    width_out := ptr::alloc(4)
-    height_out := ptr::alloc(4)
-    measure := bind_ttf("TTF_GetStringSize")
-    ok := ffi::call5(measure, font, text_c, 0, width_out, height_out)
-    width := ptr::load_u32(width_out)
-    height := ptr::load_u32(height_out)
+    text_c <- str::cstr(text)
+    width_out <- ptr::alloc(4)
+    height_out <- ptr::alloc(4)
+    measure <- bind_ttf("TTF_GetStringSize")
+    ok <- ffi::call5(measure, font, text_c, 0, width_out, height_out)
+    width <- ptr::load_u32(width_out)
+    height <- ptr::load_u32(height_out)
     ptr::free(text_c)
     ptr::free(width_out)
     ptr::free(height_out)
@@ -41,18 +41,18 @@ e7_text_measure <- (font: u64, text: str) -> i64:
 e7_text_image <- (font: u64, text: str, r: i64, g: i64, b: i64) -> u64:
     if font == 0:
         ret 0
-    text_c := str::cstr(text)
-    color := r + g * 256 + b * 65536 + 255 * 16777216
-    render := bind_ttf("TTF_RenderText_Blended")
-    surface := ffi::call4(render, font, text_c, 0, color)
+    text_c <- str::cstr(text)
+    color <- r + g * 256 + b * 65536 + 255 * 16777216
+    render <- bind_ttf("TTF_RenderText_Blended")
+    surface <- ffi::call4(render, font, text_c, 0, color)
     ptr::free(text_c)
     if surface == 0:
         ret 0
-    width := ptr::load_u32(surface + 8)
-    height := ptr::load_u32(surface + 12)
-    pitch := ptr::load_u32(surface + 16)
-    pixels := ptr::load_u64(surface + 24)
-    handle := image::from_argb(pixels as u64, width, height, pitch)
-    destroy := ffi::bind("SDL3", "SDL_DestroySurface")
+    width <- ptr::load_u32(surface + 8)
+    height <- ptr::load_u32(surface + 12)
+    pitch <- ptr::load_u32(surface + 16)
+    pixels <- ptr::load_u64(surface + 24)
+    handle <- image::from_argb(pixels as u64, width, height, pitch)
+    destroy <- ffi::bind("SDL3", "SDL_DestroySurface")
     ffi::call1(destroy, surface)
     ret handle

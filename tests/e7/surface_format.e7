@@ -4,7 +4,7 @@
 # HDR is often advertised first. The capture ABI requires BGRA8, regardless
 # of driver enumeration order; a different format must not reach readback.
 test_capture_surface_format <- () -> i64:
-    formats := ptr::alloc(32) as u64
+    formats <- ptr::alloc(32) as u64
     ptr::store_u32(formats, 97)
     ptr::store_u32(formats + 4, 1000104002)
     ptr::store_u32(formats + 8, 50)

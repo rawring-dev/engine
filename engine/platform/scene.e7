@@ -5,20 +5,21 @@
 #   96 views, 104 layout.
 # The scene owns everything except the SDL window.
 
-scene_create <- (window_state: u64, requested_width: i64, requested_height: i64) -> u64:
-    scene := ptr::alloc(2048) as u64
+scene_create <- (window_state: u64, requested_width: i64,
+requested_height: i64) -> u64:
+    scene <- ptr::alloc(2048) as u64
     ptr::store_u64(scene, window_state)
     ptr::store_u32(scene + 232, 0)
 
-    ext_count := ptr::alloc(4) as u64
-    get_ext := ffi::bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
-    exts := ffi::call1(get_ext, ext_count)
+    ext_count <- ptr::alloc(4) as u64
+    get_ext <- ffi::bind("SDL3", "SDL_Vulkan_GetInstanceExtensions")
+    exts <- ffi::call1(get_ext, ext_count)
     if exts == 0:
         ptr::free(scene)
         ptr::free(ext_count)
         ret 0
-    count := ptr::load_u32(ext_count)
-    ext_array := ptr::alloc(count * 8) as u64
+    count <- ptr::load_u32(ext_count)
+    ext_array <- ptr::alloc(count * 8) as u64
     if count > 0:
         ptr::store_u64(ext_array, ptr::load_u64(exts))
     if count > 1:
@@ -28,17 +29,17 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     if count > 3:
         ptr::store_u64(ext_array + 24, ptr::load_u64(exts + 24))
 
-    instance_out := ptr::alloc(8) as u64
+    instance_out <- ptr::alloc(8) as u64
     if vulkan_instance_create(ext_array, count, instance_out) != 0:
         ptr::free(scene)
         ptr::free(ext_count)
         ptr::free(ext_array)
         ptr::free(instance_out)
         ret 0
-    instance := ptr::load_u64(instance_out)
+    instance <- ptr::load_u64(instance_out)
     ptr::store_u64(scene + 8, instance)
 
-    surface_out := ptr::alloc(8) as u64
+    surface_out <- ptr::alloc(8) as u64
     if vulkan_surface_create(window_state, instance, surface_out) == 0:
         vulkan_instance_destroy(instance)
         ptr::free(scene)
@@ -47,14 +48,15 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
         ptr::free(instance_out)
         ptr::free(surface_out)
         ret 0
-    surface := ptr::load_u64(surface_out)
+    surface <- ptr::load_u64(surface_out)
     ptr::store_u64(scene + 16, surface)
 
-    device_out := ptr::alloc(8) as u64
-    queue_out := ptr::alloc(8) as u64
-    family_out := ptr::alloc(4) as u64
-    physical_out := ptr::alloc(8) as u64
-    if vulkan_device_create(instance, surface, device_out, queue_out, family_out, physical_out) == 0:
+    device_out <- ptr::alloc(8) as u64
+    queue_out <- ptr::alloc(8) as u64
+    family_out <- ptr::alloc(4) as u64
+    physical_out <- ptr::alloc(8) as u64
+    if vulkan_device_create(instance, surface, device_out, queue_out,
+        family_out, physical_out) == 0:
         vulkan_surface_destroy(instance, surface)
         vulkan_instance_destroy(instance)
         ptr::free(scene)
@@ -67,53 +69,57 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
         ptr::free(family_out)
         ptr::free(physical_out)
         ret 0
-    device := ptr::load_u64(device_out)
-    queue := ptr::load_u64(queue_out)
-    family := ptr::load_u32(family_out)
-    physical := ptr::load_u64(physical_out)
+    device <- ptr::load_u64(device_out)
+    queue <- ptr::load_u64(queue_out)
+    family <- ptr::load_u32(family_out)
+    physical <- ptr::load_u64(physical_out)
     ptr::store_u64(scene + 24, physical)
     ptr::store_u64(scene + 32, device)
     ptr::store_u64(scene + 40, queue)
     ptr::store_u32(scene + 48, family)
 
-    swapchain_out := ptr::alloc(8) as u64
-    format_out := ptr::alloc(4) as u64
-    width_out := ptr::alloc(4) as u64
-    height_out := ptr::alloc(4) as u64
-    images_out := ptr::alloc(8) as u64
-    image_count_out := ptr::alloc(4) as u64
-    if vulkan_swapchain_create(device, physical, surface, window_state, swapchain_out, format_out, width_out, height_out, images_out, image_count_out) == 0:
+    swapchain_out <- ptr::alloc(8) as u64
+    format_out <- ptr::alloc(4) as u64
+    width_out <- ptr::alloc(4) as u64
+    height_out <- ptr::alloc(4) as u64
+    images_out <- ptr::alloc(8) as u64
+    image_count_out <- ptr::alloc(4) as u64
+    if vulkan_swapchain_create(device, physical, surface, window_state,
+        swapchain_out, format_out, width_out, height_out, images_out,
+        image_count_out) == 0:
         ret 0
-    swapchain := ptr::load_u64(swapchain_out)
-    format := ptr::load_u32(format_out)
-    width := ptr::load_u32(width_out)
-    height := ptr::load_u32(height_out)
-    images := ptr::load_u64(images_out)
-    image_count := ptr::load_u32(image_count_out)
+    swapchain <- ptr::load_u64(swapchain_out)
+    format <- ptr::load_u32(format_out)
+    width <- ptr::load_u32(width_out)
+    height <- ptr::load_u32(height_out)
+    images <- ptr::load_u64(images_out)
+    image_count <- ptr::load_u32(image_count_out)
     ptr::store_u64(scene + 56, swapchain)
     ptr::store_u32(scene + 52, image_count)
     ptr::store_u32(scene + 88, width)
     ptr::store_u32(scene + 92, height)
 
-    depth_image_out := ptr::alloc(8) as u64
-    depth_memory_out := ptr::alloc(8) as u64
-    depth_view_out := ptr::alloc(8) as u64
-    if vulkan_depth_target(device, physical, width, height, depth_image_out, depth_memory_out, depth_view_out) == 0:
+    depth_image_out <- ptr::alloc(8) as u64
+    depth_memory_out <- ptr::alloc(8) as u64
+    depth_view_out <- ptr::alloc(8) as u64
+    if vulkan_depth_target(device, physical, width, height, depth_image_out,
+        depth_memory_out, depth_view_out) == 0:
         ret 0
     ptr::store_u64(scene + 208, ptr::load_u64(depth_image_out))
     ptr::store_u64(scene + 216, ptr::load_u64(depth_memory_out))
     ptr::store_u64(scene + 224, ptr::load_u64(depth_view_out))
-    depth_view := ptr::load_u64(depth_view_out)
+    depth_view <- ptr::load_u64(depth_view_out)
     ptr::free(depth_image_out)
     ptr::free(depth_memory_out)
     ptr::free(depth_view_out)
-    texture_image_out := ptr::alloc(8) as u64
-    texture_memory_out := ptr::alloc(8) as u64
-    texture_view_out := ptr::alloc(8) as u64
-    texture_sampler_out := ptr::alloc(8) as u64
-    if vulkan_texture_empty(device, physical, 4, 4, texture_image_out, texture_memory_out, texture_view_out, texture_sampler_out) == 0:
+    texture_image_out <- ptr::alloc(8) as u64
+    texture_memory_out <- ptr::alloc(8) as u64
+    texture_view_out <- ptr::alloc(8) as u64
+    texture_sampler_out <- ptr::alloc(8) as u64
+    if vulkan_texture_empty(device, physical, 4, 4, texture_image_out,
+        texture_memory_out, texture_view_out, texture_sampler_out) == 0:
         ret 0
-    texture_pixels := ptr::alloc(64) as u64
+    texture_pixels <- ptr::alloc(64) as u64
     ptr::store_u32(texture_pixels, 4294967295)
     ptr::store_u32(texture_pixels + 4, 4294967295)
     ptr::store_u32(texture_pixels + 8, 4294967295)
@@ -130,13 +136,16 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ptr::store_u32(texture_pixels + 52, 4294967295)
     ptr::store_u32(texture_pixels + 56, 4294967295)
     ptr::store_u32(texture_pixels + 60, 4294967295)
-    if vulkan_texture_upload(device, queue, family, physical, ptr::load_u64(texture_image_out), texture_pixels as u64, 4, 4) == 0:
+    if vulkan_texture_upload(device, queue, family, physical, ptr::load_u64(
+        texture_image_out), texture_pixels as u64, 4, 4) == 0:
         ret 0
     ptr::free(texture_pixels)
-    texture_layout_out := ptr::alloc(8) as u64
-    texture_pool_out := ptr::alloc(8) as u64
-    texture_set_out := ptr::alloc(8) as u64
-    if vulkan_texture_descriptor_one(device, ptr::load_u64(texture_view_out), ptr::load_u64(texture_sampler_out), texture_layout_out, texture_pool_out, texture_set_out) == 0:
+    texture_layout_out <- ptr::alloc(8) as u64
+    texture_pool_out <- ptr::alloc(8) as u64
+    texture_set_out <- ptr::alloc(8) as u64
+    if vulkan_texture_descriptor_one(device, ptr::load_u64(texture_view_out),
+        ptr::load_u64(texture_sampler_out), texture_layout_out,
+        texture_pool_out, texture_set_out) == 0:
         ret 0
     ptr::store_u64(scene + 1056, ptr::load_u64(texture_layout_out))
     ptr::store_u64(scene + 1064, ptr::load_u64(texture_pool_out))
@@ -144,10 +153,12 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ptr::free(texture_layout_out)
     ptr::free(texture_pool_out)
     ptr::free(texture_set_out)
-    static_layout_out := ptr::alloc(8) as u64
-    static_pool_out := ptr::alloc(8) as u64
-    static_set_out := ptr::alloc(8) as u64
-    if vulkan_texture_descriptor_static(device, ptr::load_u64(texture_view_out), ptr::load_u64(texture_sampler_out), static_layout_out, static_pool_out, static_set_out) == 0:
+    static_layout_out <- ptr::alloc(8) as u64
+    static_pool_out <- ptr::alloc(8) as u64
+    static_set_out <- ptr::alloc(8) as u64
+    if vulkan_texture_descriptor_static(device, ptr::load_u64(texture_view_out),
+        ptr::load_u64(texture_sampler_out), static_layout_out, static_pool_out,
+        static_set_out) == 0:
         ret 0
     ptr::store_u64(scene + 1136, ptr::load_u64(static_layout_out))
     ptr::store_u64(scene + 1144, ptr::load_u64(static_pool_out))
@@ -163,44 +174,48 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     ptr::free(texture_memory_out)
     ptr::free(texture_view_out)
     ptr::free(texture_sampler_out)
-    render_pass_out := ptr::alloc(8) as u64
-    views_out := ptr::alloc(8) as u64
-    framebuffers_out := ptr::alloc(8) as u64
-    if vulkan_render_targets(device, images, image_count, format, width, height, depth_view, render_pass_out, views_out, framebuffers_out) == 0:
+    render_pass_out <- ptr::alloc(8) as u64
+    views_out <- ptr::alloc(8) as u64
+    framebuffers_out <- ptr::alloc(8) as u64
+    if vulkan_render_targets(device, images, image_count, format, width, height,
+        depth_view, render_pass_out, views_out, framebuffers_out) == 0:
         ret 0
-    render_pass := ptr::load_u64(render_pass_out)
-    views := ptr::load_u64(views_out)
-    framebuffers := ptr::load_u64(framebuffers_out)
+    render_pass <- ptr::load_u64(render_pass_out)
+    views <- ptr::load_u64(views_out)
+    framebuffers <- ptr::load_u64(framebuffers_out)
     ptr::store_u64(scene + 64, render_pass)
     ptr::store_u64(scene + 80, framebuffers)
     ptr::store_u64(scene + 96, views)
 
-    vert := host::read_shader("engine/platform/shaders/triangle.vert.spv")
-    frag := host::read_shader("engine/platform/shaders/triangle.frag.spv")
-    vert_handle := ffi::handle(vert)
-    frag_handle := ffi::handle(frag)
-    pipeline_out := ptr::alloc(8) as u64
-    layout_out := ptr::alloc(8) as u64
+    vert <- host::read_shader("engine/platform/shaders/triangle.vert.spv")
+    frag <- host::read_shader("engine/platform/shaders/triangle.frag.spv")
+    vert_handle <- ffi::handle(vert)
+    frag_handle <- ffi::handle(frag)
+    pipeline_out <- ptr::alloc(8) as u64
+    layout_out <- ptr::alloc(8) as u64
     if vert_handle == 0 or frag_handle == 0:
         ret 0
-    if vulkan_graphics_pipeline(device, render_pass, vert, frag, pipeline_out, layout_out) == 0:
+    if vulkan_graphics_pipeline(device, render_pass, vert, frag, pipeline_out,
+        layout_out) == 0:
         ret 0
     ptr::store_u64(scene + 72, ptr::load_u64(pipeline_out))
     ptr::store_u64(scene + 104, ptr::load_u64(layout_out))
     ptr::free(vert_handle)
     ptr::free(frag_handle)
 
-    ubo_layout_out := ptr::alloc(8) as u64
-    ubo_pool_out := ptr::alloc(8) as u64
-    ubo_set_out := ptr::alloc(8) as u64
-    ubo_buffer_out := ptr::alloc(8) as u64
-    ubo_memory_out := ptr::alloc(8) as u64
-    ubo_mapped_out := ptr::alloc(8) as u64
-    ubo_size_out := ptr::alloc(8) as u64
-    if vulkan_uniform_resources(device, physical, 256, ubo_layout_out, ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out, ubo_mapped_out, ubo_size_out) == 0:
+    ubo_layout_out <- ptr::alloc(8) as u64
+    ubo_pool_out <- ptr::alloc(8) as u64
+    ubo_set_out <- ptr::alloc(8) as u64
+    ubo_buffer_out <- ptr::alloc(8) as u64
+    ubo_memory_out <- ptr::alloc(8) as u64
+    ubo_mapped_out <- ptr::alloc(8) as u64
+    ubo_size_out <- ptr::alloc(8) as u64
+    if vulkan_uniform_resources(device, physical, 512, ubo_layout_out,
+        ubo_pool_out, ubo_set_out, ubo_buffer_out, ubo_memory_out,
+        ubo_mapped_out, ubo_size_out) == 0:
         ret 0
-    ubo_layout := ptr::load_u64(ubo_layout_out)
-    ubo_mapped := ptr::load_u64(ubo_mapped_out)
+    ubo_layout <- ptr::load_u64(ubo_layout_out)
+    ubo_mapped <- ptr::load_u64(ubo_mapped_out)
     ptr::store_u64(scene + 112, ubo_layout)
     ptr::store_u64(scene + 120, ptr::load_u64(ubo_pool_out))
     ptr::store_u64(scene + 128, ptr::load_u64(ubo_set_out))
@@ -220,39 +235,46 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
         ptr::store_f32(ubo_mapped + 148, 1.0)
         ptr::store_f32(ubo_mapped + 168, 1.0)
         ptr::store_f32(ubo_mapped + 188, 1.0)
-    vertex_buffer_out := ptr::alloc(8) as u64
-    vertex_memory_out := ptr::alloc(8) as u64
-    index_buffer_out := ptr::alloc(8) as u64
-    index_memory_out := ptr::alloc(8) as u64
-    if vulkan_cube_buffers(device, physical, vertex_buffer_out, vertex_memory_out, index_buffer_out, index_memory_out) == 0:
+    vertex_buffer_out <- ptr::alloc(8) as u64
+    vertex_memory_out <- ptr::alloc(8) as u64
+    index_buffer_out <- ptr::alloc(8) as u64
+    index_memory_out <- ptr::alloc(8) as u64
+    if vulkan_cube_buffers(device, physical, vertex_buffer_out,
+        vertex_memory_out, index_buffer_out, index_memory_out) == 0:
         ret 0
     ptr::store_u64(scene + 176, ptr::load_u64(vertex_buffer_out))
     ptr::store_u64(scene + 184, ptr::load_u64(vertex_memory_out))
     ptr::store_u64(scene + 192, ptr::load_u64(index_buffer_out))
     ptr::store_u64(scene + 200, ptr::load_u64(index_memory_out))
-    mesh_vert := host::read_shader("engine/platform/shaders/mesh.vert.spv")
-    mesh_frag := host::read_shader("engine/platform/shaders/mesh.frag.spv")
-    mesh_vert_handle := ffi::handle(mesh_vert)
-    mesh_frag_handle := ffi::handle(mesh_frag)
-    mesh_pipeline_out := ptr::alloc(8) as u64
-    mesh_layout_out := ptr::alloc(8) as u64
+    mesh_vert <- host::read_shader("engine/platform/shaders/mesh.vert.spv")
+    mesh_frag <- host::read_shader("engine/platform/shaders/mesh.frag.spv")
+    mesh_vert_handle <- ffi::handle(mesh_vert)
+    mesh_frag_handle <- ffi::handle(mesh_frag)
+    mesh_pipeline_out <- ptr::alloc(8) as u64
+    mesh_layout_out <- ptr::alloc(8) as u64
     if mesh_vert_handle == 0 or mesh_frag_handle == 0:
         ret 0
-    if vulkan_mesh_pipeline_simple(device, render_pass, mesh_vert, mesh_frag, ubo_layout, mesh_pipeline_out, mesh_layout_out) == 0:
+    if vulkan_mesh_pipeline_simple(device, render_pass, mesh_vert, mesh_frag,
+        ubo_layout, mesh_pipeline_out, mesh_layout_out) == 0:
         ret 0
     ptr::store_u64(scene + 160, ptr::load_u64(mesh_pipeline_out))
     ptr::store_u64(scene + 168, ptr::load_u64(mesh_layout_out))
-    static_vert := host::read_shader("engine/platform/shaders/mesh_simple.vert.spv")
-    static_frag := host::read_shader("engine/platform/shaders/mesh_simple.frag.spv")
-    static_vert_handle := ffi::handle(static_vert)
-    static_frag_handle := ffi::handle(static_frag)
-    static_pipeline_out := ptr::alloc(8) as u64
-    static_pipeline_layout_out := ptr::alloc(8) as u64
+    static_vert <-
+        host::read_shader("engine/platform/shaders/mesh_simple.vert.spv")
+    static_frag <-
+        host::read_shader("engine/platform/shaders/mesh_simple.frag.spv")
+    static_vert_handle <- ffi::handle(static_vert)
+    static_frag_handle <- ffi::handle(static_frag)
+    static_pipeline_out <- ptr::alloc(8) as u64
+    static_pipeline_layout_out <- ptr::alloc(8) as u64
     if static_vert_handle != 0:
         if static_frag_handle != 0:
-            if vulkan_mesh_pipeline_simple(device, render_pass, static_vert, static_frag, ptr::load_u64(scene + 1136), static_pipeline_out, static_pipeline_layout_out) != 0:
+            if vulkan_mesh_pipeline_simple(device, render_pass, static_vert,
+                static_frag, ptr::load_u64(scene + 1136), static_pipeline_out,
+                static_pipeline_layout_out) != 0:
                 ptr::store_u64(scene + 1160, ptr::load_u64(static_pipeline_out))
-                ptr::store_u64(scene + 1168, ptr::load_u64(static_pipeline_layout_out))
+                ptr::store_u64(scene + 1168, ptr::load_u64(
+                    static_pipeline_layout_out))
     ptr::free(static_vert_handle)
     ptr::free(static_frag_handle)
     ptr::free(static_pipeline_out)
@@ -268,51 +290,69 @@ scene_create <- (window_state: u64, requested_width: i64, requested_height: i64)
     #   1288 texture count, 1292 texture free count,
     #   1296 mesh count, 1300 extra draw count,
     #   1304/1312 wide (32-byte vertex stride) lit pipeline + layout.
-    # Extension block: draw list 512 x 80 bytes at 0, texture table 256 x 96 at
-    # 40960, texture free list 256 x 4 at 65536, mesh table 8 x 48 at 66560.
-    extra := ptr::alloc(66944) as u64
+    # Extension block: draw list 768 x 80 bytes at 0, texture table 256 x 96 at
+    # 61440, texture free list 256 x 4 at 86016, mesh table 256 x 48 at 87040.
+    extra <- ptr::alloc(99328) as u64
     ptr::store_u64(scene + 1280, extra)
-    ui_vertex_bytes := 256 * 6 * 32
-    ui_buffer_out := ptr::alloc(8) as u64
-    ui_memory_out := ptr::alloc(8) as u64
-    ui_mapped_out := ptr::alloc(8) as u64
-    if vulkan_dynamic_buffer(device, physical, ui_vertex_bytes, 128, ui_buffer_out, ui_memory_out, ui_mapped_out) != 0:
+    ui_vertex_bytes <- 256 * 6 * 32
+    ui_buffer_out <- ptr::alloc(8) as u64
+    ui_memory_out <- ptr::alloc(8) as u64
+    ui_mapped_out <- ptr::alloc(8) as u64
+    if vulkan_dynamic_buffer(device, physical, ui_vertex_bytes, 128,
+        ui_buffer_out, ui_memory_out, ui_mapped_out) != 0:
         ptr::store_u64(scene + 1208, ptr::load_u64(ui_buffer_out))
         ptr::store_u64(scene + 1216, ptr::load_u64(ui_memory_out))
         ptr::store_u64(scene + 1224, ptr::load_u64(ui_mapped_out))
     ptr::free(ui_buffer_out)
     ptr::free(ui_memory_out)
     ptr::free(ui_mapped_out)
-    static_texture_layout := ptr::load_u64(scene + 1136)
-    lit_texture_layout := ptr::load_u64(scene + 1056)
-    ui_vert := host::read_shader("engine/platform/shaders/ui.vert.spv")
-    ui_frag := host::read_shader("engine/platform/shaders/ui.frag.spv")
-    ui_vert_handle := ffi::handle(ui_vert)
-    ui_frag_handle := ffi::handle(ui_frag)
-    ui_pipeline_out := ptr::alloc(8) as u64
-    ui_layout_out := ptr::alloc(8) as u64
+    static_texture_layout <- ptr::load_u64(scene + 1136)
+    lit_texture_layout <- ptr::load_u64(scene + 1056)
+    ui_vert <- host::read_shader("engine/platform/shaders/ui.vert.spv")
+    ui_frag <- host::read_shader("engine/platform/shaders/ui.frag.spv")
+    ui_vert_handle <- ffi::handle(ui_vert)
+    ui_frag_handle <- ffi::handle(ui_frag)
+    ui_pipeline_out <- ptr::alloc(8) as u64
+    ui_layout_out <- ptr::alloc(8) as u64
     if ui_vert_handle != 0 and ui_frag_handle != 0:
-        if vulkan_ui_pipeline(device, render_pass, ui_vert, ui_frag, static_texture_layout, ui_pipeline_out, ui_layout_out) != 0:
+        if vulkan_ui_pipeline(device, render_pass, ui_vert, ui_frag,
+            static_texture_layout, ui_pipeline_out, ui_layout_out) != 0:
             ptr::store_u64(scene + 1192, ptr::load_u64(ui_pipeline_out))
             ptr::store_u64(scene + 1200, ptr::load_u64(ui_layout_out))
     ptr::free(ui_vert_handle)
     ptr::free(ui_frag_handle)
     ptr::free(ui_pipeline_out)
     ptr::free(ui_layout_out)
-    lit_vert := host::read_shader("engine/platform/shaders/lit.vert.spv")
-    lit_frag := host::read_shader("engine/platform/shaders/lit.frag.spv")
-    lit_vert_handle := ffi::handle(lit_vert)
-    lit_frag_handle := ffi::handle(lit_frag)
-    lit_pipeline_out := ptr::alloc(8) as u64
-    lit_layout_out := ptr::alloc(8) as u64
+    lit_vert <- host::read_shader("engine/platform/shaders/lit.vert.spv")
+    lit_frag <- host::read_shader("engine/platform/shaders/lit.frag.spv")
+    wide_vert <- host::read_shader("engine/platform/shaders/lit_wide.vert.spv")
+    skin_vert <- host::read_shader("engine/platform/shaders/skinned.vert.spv")
+    skin_vert_handle <- ffi::handle(skin_vert)
+    wide_vert_handle <- ffi::handle(wide_vert)
+    lit_vert_handle <- ffi::handle(lit_vert)
+    lit_frag_handle <- ffi::handle(lit_frag)
+    lit_pipeline_out <- ptr::alloc(8) as u64
+    lit_layout_out <- ptr::alloc(8) as u64
     if lit_vert_handle != 0 and lit_frag_handle != 0:
-        if vulkan_mesh_pipeline_two(device, render_pass, lit_vert, lit_frag, ubo_layout, lit_texture_layout, 24, lit_pipeline_out, lit_layout_out) != 0:
+        if vulkan_mesh_pipeline_two(device, render_pass, lit_vert, lit_frag,
+            ubo_layout, lit_texture_layout, 24, lit_pipeline_out,
+            lit_layout_out) != 0:
             ptr::store_u64(scene + 1256, ptr::load_u64(lit_pipeline_out))
             ptr::store_u64(scene + 1264, ptr::load_u64(lit_layout_out))
-        if vulkan_mesh_pipeline_two(device, render_pass, lit_vert, lit_frag, ubo_layout, lit_texture_layout, 32, lit_pipeline_out, lit_layout_out) != 0:
+        if vulkan_mesh_pipeline_two(device, render_pass, wide_vert, lit_frag,
+            ubo_layout, lit_texture_layout, 32, lit_pipeline_out,
+            lit_layout_out) != 0:
             ptr::store_u64(scene + 1304, ptr::load_u64(lit_pipeline_out))
             ptr::store_u64(scene + 1312, ptr::load_u64(lit_layout_out))
+        if skin_vert_handle != 0:
+            if vulkan_mesh_pipeline_two(device, render_pass, skin_vert, lit_frag,
+                ubo_layout, lit_texture_layout, 64, lit_pipeline_out,
+                lit_layout_out) != 0:
+                ptr::store_u64(scene + 1392, ptr::load_u64(lit_pipeline_out))
+                ptr::store_u64(scene + 1400, ptr::load_u64(lit_layout_out))
     ptr::free(lit_vert_handle)
+    ptr::free(wide_vert_handle)
+    ptr::free(skin_vert_handle)
     ptr::free(lit_frag_handle)
     ptr::free(lit_pipeline_out)
     ptr::free(lit_layout_out)
@@ -380,16 +420,18 @@ milli_to_f32 <- (value: i64) -> f32:
     signed := value
     if value > 2147483647:
         signed = value - 4294967296
-    ret ((signed) as f32) / ( 1000.0)
+    ret ((signed) as f32) / (1000.0)
 
-append_draw <- (scene: u64, pipeline: i64, layout: i64, vertex_buffer: i64, index_buffer: i64, index_count: i64, index_type: i64, first: i64, kind: i64, set0: i64, set0_dynamic: i64, dynamic_offset: i64, set1: i64) -> nil:
-    extra := ptr::load_u64(scene + 1280)
+append_draw <- (scene: u64, pipeline: i64, layout: i64, vertex_buffer: i64,
+index_buffer: i64, index_count: i64, index_type: i64, first: i64, kind: i64,
+set0: i64, set0_dynamic: i64, dynamic_offset: i64, set1: i64) -> nil:
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret
-    count := ptr::load_u32(scene + 1300)
-    if count >= 512:
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 768:
         ret
-    entry := extra + count * 80
+    entry <- extra + count * 80
     ptr::store_u64(entry, pipeline)
     ptr::store_u64(entry + 8, layout)
     ptr::store_u64(entry + 16, vertex_buffer)
@@ -410,33 +452,33 @@ append_draw <- (scene: u64, pipeline: i64, layout: i64, vertex_buffer: i64, inde
 # UI set-0 view (static layout, binding 0); `texture_set_lit` is the lit set-1
 # view (binding 1) used by the 3D material path.
 texture_set <- (scene: u64, texture: i64) -> i64:
-    white := ptr::load_u64(scene + 1152)
+    white <- ptr::load_u64(scene + 1152)
     if texture == 0:
         ret white
-    extra := ptr::load_u64(scene + 1280)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret white
-    count := ptr::load_u32(scene + 1288)
+    count <- ptr::load_u32(scene + 1288)
     if texture > count:
         ret white
-    entry := extra + 40960 + (texture as i64 - 1) * 96
-    set := ptr::load_u64(entry + 32)
+    entry <- extra + 61440 + (texture as i64 - 1) * 96
+    set <- ptr::load_u64(entry + 32)
     if set == 0:
         ret white
     ret set
 
 texture_set_lit <- (scene: u64, texture: i64) -> i64:
-    white := ptr::load_u64(scene + 1072)
+    white <- ptr::load_u64(scene + 1072)
     if texture == 0:
         ret white
-    extra := ptr::load_u64(scene + 1280)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret white
-    count := ptr::load_u32(scene + 1288)
+    count <- ptr::load_u32(scene + 1288)
     if texture > count:
         ret white
-    entry := extra + 40960 + (texture as i64 - 1) * 96
-    set := ptr::load_u64(entry + 56)
+    entry <- extra + 61440 + (texture as i64 - 1) * 96
+    set <- ptr::load_u64(entry + 56)
     if set == 0:
         ret white
     ret set
@@ -445,11 +487,12 @@ texture_set_lit <- (scene: u64, texture: i64) -> i64:
 # Append the draw-list entry for a procedural shape kind: kinds 1..3 use the
 # generated wide (32-byte stride) geometry, kind 0 and any fallback use the
 # shared cube buffer and the lit/tinted pipeline.
-append_procedural_draw <- (scene: u64, count: i64, kind: i64, texture: i64) -> nil:
+append_procedural_draw <- (scene: u64, count: i64, kind: i64,
+texture: i64) -> nil:
     if kind >= 1 and kind <= 3:
-        shape_vertices := ptr::load_u64(scene + 1320)
-        shape_indices := ptr::load_u64(scene + 1336)
-        wide_pipeline := ptr::load_u64(scene + 1304)
+        shape_vertices <- ptr::load_u64(scene + 1320)
+        shape_indices <- ptr::load_u64(scene + 1336)
+        wide_pipeline <- ptr::load_u64(scene + 1304)
         if shape_vertices != 0 and shape_indices != 0 and wide_pipeline != 0:
             append_draw(
                 scene,
@@ -463,7 +506,7 @@ append_procedural_draw <- (scene: u64, count: i64, kind: i64, texture: i64) -> n
                 0,
                 ptr::load_u64(scene + 128),
                 1,
-                count * 320,
+                count * 4608,
                 texture_set_lit(scene, texture),
             )
             ret
@@ -475,19 +518,35 @@ append_procedural_draw <- (scene: u64, count: i64, kind: i64, texture: i64) -> n
         pipeline = ptr::load_u64(scene + 160)
         layout = ptr::load_u64(scene + 168)
         set1 = 0
-    append_draw(scene, pipeline, layout, ptr::load_u64(scene + 176), ptr::load_u64(scene + 192), 36, 0, 0, 0, ptr::load_u64(scene + 128), 1, count * 320, set1)
+    append_draw(scene, pipeline, layout, ptr::load_u64(scene + 176),
+        ptr::load_u64(scene + 192), 36, 0, 0, 0, ptr::load_u64(scene + 128), 1,
+        count * 4608, set1)
 
 # Append the draw-list entry for an uploaded OBJ mesh.  Returns 0 when the mesh
 # id is unknown or the wide pipeline is unavailable so callers can fall back to
 # the documented box approximation.
 append_custom_draw <- (scene: u64, count: i64, mesh: u64, texture: i64) -> i64:
-    mesh_count := ptr::load_u32(scene + 1296)
-    pipeline := ptr::load_u64(scene + 1304)
-    if mesh == 0 or (mesh as i64) > mesh_count or pipeline == 0:
+    mesh_count <- ptr::load_u32(scene + 1296)
+    if mesh == 0 or (mesh as i64) > mesh_count:
         ret 0
-    extra := ptr::load_u64(scene + 1280)
-    entry := extra + 66560 + (mesh as i64 - 1) * 48
-    append_draw(scene, pipeline, ptr::load_u64(scene + 1312), ptr::load_u64(entry), ptr::load_u64(entry + 16), ptr::load_u32(entry + 32), 1, 0, 0, ptr::load_u64(scene + 128), 1, count * 320, texture_set_lit(scene, texture))
+    extra <- ptr::load_u64(scene + 1280)
+    if extra == 0:
+        ret 0
+    entry <- extra + 87040 + (mesh as i64 - 1) * 48
+    pipeline := ptr::load_u64(scene + 1304)
+    layout := ptr::load_u64(scene + 1312)
+    if ptr::load_u32(entry + 36) == 1:
+        pipeline = ptr::load_u64(scene + 1392)
+        layout = ptr::load_u64(scene + 1400)
+        palette <- ptr::load_u64(entry + 40)
+        ubo <- ptr::load_u64(scene + 152)
+        if palette == 0 or ubo == 0:
+            ret 0
+        ptr::copy(ubo + count * 4608 + 320, palette, 4096)
+    if pipeline == 0 or ptr::load_u64(entry) == 0:
+        ret 0
+    append_draw(scene, pipeline, layout, ptr::load_u64(entry), ptr::load_u64(entry + 16), ptr::load_u32(entry + 32), 1, 0, 0,
+        ptr::load_u64(scene + 128), 1, count * 4608, texture_set_lit(scene, texture))
     ret 1
 
 # Write the 12 rotation/scale floats (columns 0..2) of the model matrix for the
@@ -505,42 +564,43 @@ append_custom_draw <- (scene: u64, count: i64, mesh: u64, texture: i64) -> i64:
 # Exposed as a separate helper so the rotation parity tests can exercise the
 # matrix directly; write_object_slot fills the translation and tint after it.
 #   out layout: col0 @0, col1 @16, col2 @32, col3 @48 (identity translation).
-object_model_matrix <- (out: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64) -> nil:
-    sx := milli_to_f32(sx_milli)
-    sy := milli_to_f32(sy_milli)
-    sz := milli_to_f32(sz_milli)
-    rx := ((rx_milli) as f32) / ( 1000.0)
-    ry := ((ry_milli) as f32) / ( 1000.0)
-    rz := ((rz_milli) as f32) / ( 1000.0)
-    cx := f32::cos(rx)
-    sin_x := f32::sin(rx)
-    cy := f32::cos(ry)
-    sin_y := f32::sin(ry)
-    cz := f32::cos(rz)
-    sin_z := f32::sin(rz)
+object_model_matrix <- (out: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64,
+rx_milli: i64, ry_milli: i64, rz_milli: i64) -> nil:
+    sx <- milli_to_f32(sx_milli)
+    sy <- milli_to_f32(sy_milli)
+    sz <- milli_to_f32(sz_milli)
+    rx <- ((rx_milli) as f32) / (1000.0)
+    ry <- ((ry_milli) as f32) / (1000.0)
+    rz <- ((rz_milli) as f32) / (1000.0)
+    cx <- f32::cos(rx)
+    sin_x <- f32::sin(rx)
+    cy <- f32::cos(ry)
+    sin_y <- f32::sin(ry)
+    cz <- f32::cos(rz)
+    sin_z <- f32::sin(rz)
     # Column 0 = (R00, R10, R20) * sx.
-    c00 := (cy) * ( cz)
-    c01 := (cy) * ( sin_z)
-    c02 := -(sin_y)
+    c00 <- (cy) * (cz)
+    c01 <- (cy) * (sin_z)
+    c02 <- -(sin_y)
     # Column 1 = (R01, R11, R21) * sy.
-    c10 := (((sin_y) * ( sin_x)) * ( cz)) - ( (cx) * ( sin_z))
-    c11 := (((sin_y) * ( sin_x)) * ( sin_z)) + ( (cx) * ( cz))
-    c12 := (cy) * ( sin_x)
+    c10 <- (((sin_y) * (sin_x)) * (cz)) - ((cx) * (sin_z))
+    c11 <- (((sin_y) * (sin_x)) * (sin_z)) + ((cx) * (cz))
+    c12 <- (cy) * (sin_x)
     # Column 2 = (R02, R12, R22) * sz.
-    c20 := (((sin_y) * ( cx)) * ( cz)) + ( (sin_x) * ( sin_z))
-    c21 := (((sin_y) * ( cx)) * ( sin_z)) - ( (sin_x) * ( cz))
-    c22 := (cy) * ( cx)
-    ptr::store_f32(out, (c00) * ( sx))
-    ptr::store_f32(out + 4, (c01) * ( sx))
-    ptr::store_f32(out + 8, (c02) * ( sx))
+    c20 <- (((sin_y) * (cx)) * (cz)) + ((sin_x) * (sin_z))
+    c21 <- (((sin_y) * (cx)) * (sin_z)) - ((sin_x) * (cz))
+    c22 <- (cy) * (cx)
+    ptr::store_f32(out, (c00) * (sx))
+    ptr::store_f32(out + 4, (c01) * (sx))
+    ptr::store_f32(out + 8, (c02) * (sx))
     ptr::store_f32(out + 12, 0.0)
-    ptr::store_f32(out + 16, (c10) * ( sy))
-    ptr::store_f32(out + 20, (c11) * ( sy))
-    ptr::store_f32(out + 24, (c12) * ( sy))
+    ptr::store_f32(out + 16, (c10) * (sy))
+    ptr::store_f32(out + 20, (c11) * (sy))
+    ptr::store_f32(out + 24, (c12) * (sy))
     ptr::store_f32(out + 28, 0.0)
-    ptr::store_f32(out + 32, (c20) * ( sz))
-    ptr::store_f32(out + 36, (c21) * ( sz))
-    ptr::store_f32(out + 40, (c22) * ( sz))
+    ptr::store_f32(out + 32, (c20) * (sz))
+    ptr::store_f32(out + 36, (c21) * (sz))
+    ptr::store_f32(out + 40, (c22) * (sz))
     ptr::store_f32(out + 44, 0.0)
     ptr::store_f32(out + 48, 0.0)
     ptr::store_f32(out + 52, 0.0)
@@ -567,10 +627,10 @@ object_model_matrix_quat <- (
     qz: f32,
     qw: f32,
 ) -> nil:
-    sx := milli_to_f32(sx_milli)
-    sy := milli_to_f32(sy_milli)
-    sz := milli_to_f32(sz_milli)
-    length := f32::sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    sx <- milli_to_f32(sx_milli)
+    sy <- milli_to_f32(sy_milli)
+    sz <- milli_to_f32(sz_milli)
+    length <- f32::sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
     nx := 0.0
     ny := 0.0
     nz := 0.0
@@ -580,21 +640,21 @@ object_model_matrix_quat <- (
         ny = qy / length
         nz = qz / length
         nw = qw / length
-    xx := nx * nx
-    yy := ny * ny
-    zz := nz * nz
+    xx <- nx * nx
+    yy <- ny * ny
+    zz <- nz * nz
     # Column 0 = (R00, R10, R20) * sx.
-    c00 := 1.0 - 2.0 * (yy + zz)
-    c01 := 2.0 * (nx * ny + nw * nz)
-    c02 := 2.0 * (nx * nz - nw * ny)
+    c00 <- 1.0 - 2.0 * (yy + zz)
+    c01 <- 2.0 * (nx * ny + nw * nz)
+    c02 <- 2.0 * (nx * nz - nw * ny)
     # Column 1 = (R01, R11, R21) * sy.
-    c10 := 2.0 * (nx * ny - nw * nz)
-    c11 := 1.0 - 2.0 * (xx + zz)
-    c12 := 2.0 * (ny * nz + nw * nx)
+    c10 <- 2.0 * (nx * ny - nw * nz)
+    c11 <- 1.0 - 2.0 * (xx + zz)
+    c12 <- 2.0 * (ny * nz + nw * nx)
     # Column 2 = (R02, R12, R22) * sz.
-    c20 := 2.0 * (nx * nz + nw * ny)
-    c21 := 2.0 * (ny * nz - nw * nx)
-    c22 := 1.0 - 2.0 * (xx + yy)
+    c20 <- 2.0 * (nx * nz + nw * ny)
+    c21 <- 2.0 * (ny * nz - nw * nx)
+    c22 <- 1.0 - 2.0 * (xx + yy)
     ptr::store_f32(out, c00 * sx)
     ptr::store_f32(out + 4, c01 * sx)
     ptr::store_f32(out + 8, c02 * sx)
@@ -616,21 +676,24 @@ object_model_matrix_quat <- (
 # material tint).  Slot 0's frame block (view/proj/camera/light) is copied from
 # the previous slot; scene_set_camera/scene_set_light write it before the frame
 # is recorded.
-write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64, ry_milli: i64, rz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64) -> nil:
-    ubo := ptr::load_u64(scene + 152)
+write_object_slot <- (scene: u64, slot_index: i64, x_milli: i64, y_milli: i64,
+z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, rx_milli: i64,
+ry_milli: i64, rz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64) -> nil:
+    ubo <- ptr::load_u64(scene + 152)
     if ubo == 0:
         ret
-    slot := ubo + slot_index * 320
+    slot <- ubo + slot_index * 4608
     if slot_index > 0:
         ptr::copy(slot, ubo, 320)
-    object_model_matrix(slot, sx_milli, sy_milli, sz_milli, rx_milli, ry_milli, rz_milli)
+    object_model_matrix(slot, sx_milli, sy_milli, sz_milli, rx_milli, ry_milli,
+        rz_milli)
     ptr::store_f32(slot + 48, milli_to_f32(x_milli))
     ptr::store_f32(slot + 52, milli_to_f32(y_milli))
     ptr::store_f32(slot + 56, milli_to_f32(z_milli))
     ptr::store_f32(slot + 60, 1.0)
-    ptr::store_f32(slot + 256, ((r_milli) as f32) / ( 1000.0))
-    ptr::store_f32(slot + 260, ((g_milli) as f32) / ( 1000.0))
-    ptr::store_f32(slot + 264, ((b_milli) as f32) / ( 1000.0))
+    ptr::store_f32(slot + 256, ((r_milli) as f32) / (1000.0))
+    ptr::store_f32(slot + 260, ((g_milli) as f32) / (1000.0))
+    ptr::store_f32(slot + 264, ((b_milli) as f32) / (1000.0))
     ptr::store_f32(slot + 268, 1.0)
 
 
@@ -653,10 +716,10 @@ write_object_slot_quat <- (
     g_milli: i64,
     b_milli: i64,
 ) -> nil:
-    ubo := ptr::load_u64(scene + 152)
+    ubo <- ptr::load_u64(scene + 152)
     if ubo == 0:
         ret
-    slot := ubo + slot_index * 320
+    slot <- ubo + slot_index * 4608
     if slot_index > 0:
         ptr::copy(slot, ubo, 320)
     object_model_matrix_quat(slot, sx_milli, sy_milli, sz_milli, qx, qy, qz, qw)
@@ -664,9 +727,9 @@ write_object_slot_quat <- (
     ptr::store_f32(slot + 52, milli_to_f32(y_milli))
     ptr::store_f32(slot + 56, milli_to_f32(z_milli))
     ptr::store_f32(slot + 60, 1.0)
-    ptr::store_f32(slot + 256, ((r_milli) as f32) / ( 1000.0))
-    ptr::store_f32(slot + 260, ((g_milli) as f32) / ( 1000.0))
-    ptr::store_f32(slot + 264, ((b_milli) as f32) / ( 1000.0))
+    ptr::store_f32(slot + 256, ((r_milli) as f32) / (1000.0))
+    ptr::store_f32(slot + 260, ((g_milli) as f32) / (1000.0))
+    ptr::store_f32(slot + 264, ((b_milli) as f32) / (1000.0))
     ptr::store_f32(slot + 268, 1.0)
 
 # ---------------------------------------------------------------------------
@@ -688,16 +751,17 @@ write_object_slot_quat <- (
 # 1360 + kind * 8 first index (u32) + index count.
 # ---------------------------------------------------------------------------
 
-shape_write_vertex <- (vertices: u64, index: i64, x: f32, y: f32, z: f32) -> nil:
-    offset := vertices + (index * 32) as u64
+shape_write_vertex <- (vertices: u64, index: i64, x: f32, y: f32,
+z: f32) -> nil:
+    offset <- vertices + (index * 32) as u64
     ptr::store_f32(offset, x)
     ptr::store_f32(offset + 4, y)
     ptr::store_f32(offset + 8, z)
     ptr::store_f32(offset + 12, 1.0)
     ptr::store_f32(offset + 16, 1.0)
     ptr::store_f32(offset + 20, 1.0)
-    ptr::store_f32(offset + 24, 0.0)
-    ptr::store_f32(offset + 28, 0.0)
+    ptr::store_f32(offset + 24, x + 0.5)
+    ptr::store_f32(offset + 28, y + 0.5)
 
 shape_write_index <- (indices: u64, at: i64, vertex: i64) -> nil:
     ptr::store_u16(indices + (at * 2) as u64, vertex)
@@ -707,23 +771,23 @@ shape_write_index <- (indices: u64, at: i64, vertex: i64) -> nil:
 # loop bodies also put this function under the LLVM instcombine fixed-point
 # attribute that loop-heavy stack-machine IR needs on LLVM 23.
 shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
-    stacks := 16
-    slices := 24
-    radius: f32 := 1.0
-    row_stride := slices + 1
+    stacks <- 16
+    slices <- 24
+    radius: f32 <- 1.0
+    row_stride <- slices + 1
     stack := 0
     slice := 0
     at := 0
     while stack <= stacks:
-        theta := (((stack) as f32) / ( (stacks) as f32)) * ( 3.141592653589793)
-        sin_theta := f32::sin(theta)
-        cos_theta := f32::cos(theta)
+        theta <- (((stack) as f32) / ((stacks) as f32)) * (3.141592653589793)
+        sin_theta <- f32::sin(theta)
+        cos_theta <- f32::cos(theta)
         slice = 0
         while slice <= slices:
-            phi := (((slice) as f32) / ( (slices) as f32)) * ( 6.283185307179586)
-            x := ((sin_theta) * ( f32::cos(phi))) * ( radius)
-            y := (cos_theta) * ( radius)
-            z := ((sin_theta) * ( f32::sin(phi))) * ( radius)
+            phi <- (((slice) as f32) / ((slices) as f32)) * (6.283185307179586)
+            x <- ((sin_theta) * (f32::cos(phi))) * (radius)
+            y <- (cos_theta) * (radius)
+            z <- ((sin_theta) * (f32::sin(phi))) * (radius)
             shape_write_vertex(vertices, stack * row_stride + slice, x, y, z)
             slice = slice + 1
         stack = stack + 1
@@ -731,10 +795,10 @@ shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
     while stack < stacks:
         slice = 0
         while slice < slices:
-            a := stack * row_stride + slice
-            b := a + 1
-            below := a + row_stride
-            below_right := below + 1
+            a <- stack * row_stride + slice
+            b <- a + 1
+            below <- a + row_stride
+            below_right <- below + 1
             shape_write_index(indices, at, a)
             shape_write_index(indices, at + 1, below)
             shape_write_index(indices, at + 2, b)
@@ -748,31 +812,35 @@ shape_generate_sphere <- (vertices: u64, indices: u64) -> nil:
 # Capsule along Y: radius 1, hemispherical caps centred at y=+/-1 (rings at
 # y=+/-1, poles at y=+/-2) and a closed cylinder band between the two rings,
 # matching the old renderer's capsule mesh.
-shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
-    slices := 24
-    cap_stacks := 8
-    rows := cap_stacks + 1
-    row_stride := slices + 1
-    radius: f32 := 1.0
-    cap_center: f32 := 1.0
-    bottom_base := rows * row_stride
+shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64,
+base_index: i64) -> nil:
+    slices <- 24
+    cap_stacks <- 8
+    rows <- cap_stacks + 1
+    row_stride <- slices + 1
+    radius: f32 <- 1.0
+    cap_center: f32 <- 1.0
+    bottom_base <- rows * row_stride
     stack := 0
     slice := 0
     at := base_index
     cap_base := base_vertex
     cap := 0
     while stack <= cap_stacks:
-        theta := (((stack) as f32) / ( (cap_stacks) as f32)) * ( 1.5707963267948966)
-        sin_theta := f32::sin(theta)
-        cos_theta := f32::cos(theta)
-        cap_y := (cos_theta) * ( radius)
+        theta <- (((stack) as f32) / ((cap_stacks) as f32)) * (
+            1.5707963267948966)
+        sin_theta <- f32::sin(theta)
+        cos_theta <- f32::cos(theta)
+        cap_y <- (cos_theta) * (radius)
         slice = 0
         while slice <= slices:
-            phi := (((slice) as f32) / ( (slices) as f32)) * ( 6.283185307179586)
-            x := ((sin_theta) * ( f32::cos(phi))) * ( radius)
-            z := ((sin_theta) * ( f32::sin(phi))) * ( radius)
-            shape_write_vertex(vertices, base_vertex + stack * row_stride + slice, x, (cap_center) + ( cap_y), z)
-            shape_write_vertex(vertices, base_vertex + bottom_base + stack * row_stride + slice, x, (0.0 - cap_center) - ( cap_y), z)
+            phi <- (((slice) as f32) / ((slices) as f32)) * (6.283185307179586)
+            x <- ((sin_theta) * (f32::cos(phi))) * (radius)
+            z <- ((sin_theta) * (f32::sin(phi))) * (radius)
+            shape_write_vertex(vertices, base_vertex + stack * row_stride +
+                slice, x, (cap_center) + (cap_y), z)
+            shape_write_vertex(vertices, base_vertex + bottom_base + stack *
+                row_stride + slice, x, (0.0 - cap_center) - (cap_y), z)
             slice = slice + 1
         stack = stack + 1
     while cap < 2:
@@ -780,10 +848,10 @@ shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_i
         while stack < cap_stacks:
             slice = 0
             while slice < slices:
-                a := cap_base + stack * row_stride + slice
-                b := a + 1
-                below := a + row_stride
-                below_right := below + 1
+                a <- cap_base + stack * row_stride + slice
+                b <- a + 1
+                below <- a + row_stride
+                below_right <- below + 1
                 shape_write_index(indices, at, a)
                 shape_write_index(indices, at + 1, below)
                 shape_write_index(indices, at + 2, b)
@@ -795,14 +863,14 @@ shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_i
             stack = stack + 1
         cap_base = cap_base + bottom_base
         cap = cap + 1
-    top_ring := base_vertex + (rows - 1) * row_stride
-    bottom_ring := base_vertex + bottom_base + (rows - 1) * row_stride
+    top_ring <- base_vertex + (rows - 1) * row_stride
+    bottom_ring <- base_vertex + bottom_base + (rows - 1) * row_stride
     slice = 0
     while slice < slices:
-        a := top_ring + slice
-        b := a + 1
-        below := bottom_ring + slice
-        below_right := below + 1
+        a <- top_ring + slice
+        b <- a + 1
+        below <- bottom_ring + slice
+        below_right <- below + 1
         shape_write_index(indices, at, a)
         shape_write_index(indices, at + 1, below)
         shape_write_index(indices, at + 2, b)
@@ -813,7 +881,8 @@ shape_generate_capsule <- (vertices: u64, indices: u64, base_vertex: i64, base_i
         slice = slice + 1
 
 # Flat XZ plane spanning [-1, 1] with a +Y facing quad at y=0.
-shape_generate_plane <- (vertices: u64, indices: u64, base_vertex: i64, base_index: i64) -> nil:
+shape_generate_plane <- (vertices: u64, indices: u64, base_vertex: i64,
+base_index: i64) -> nil:
     shape_write_vertex(vertices, base_vertex, 0.0 - 1.0, 0.0, 0.0 - 1.0)
     shape_write_vertex(vertices, base_vertex + 1, 1.0, 0.0, 0.0 - 1.0)
     shape_write_vertex(vertices, base_vertex + 2, 1.0, 0.0, 1.0)
@@ -828,15 +897,16 @@ shape_generate_plane <- (vertices: u64, indices: u64, base_vertex: i64, base_ind
 # Allocate and fill the procedural shape meshes.  Returns 0 when the mapped
 # buffers cannot be created; draws then keep the former cube fallback.
 shape_geometry_create <- (scene: u64) -> i64:
-    device := ptr::load_u64(scene + 32)
-    physical := ptr::load_u64(scene + 24)
-    vertex_buffer_out := ptr::alloc(8) as u64
-    vertex_memory_out := ptr::alloc(8) as u64
-    vertex_mapped_out := ptr::alloc(8) as u64
-    index_buffer_out := ptr::alloc(8) as u64
-    index_memory_out := ptr::alloc(8) as u64
-    index_mapped_out := ptr::alloc(8) as u64
-    if vulkan_dynamic_buffer(device, physical, 28128, 128, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+    device <- ptr::load_u64(scene + 32)
+    physical <- ptr::load_u64(scene + 24)
+    vertex_buffer_out <- ptr::alloc(8) as u64
+    vertex_memory_out <- ptr::alloc(8) as u64
+    vertex_mapped_out <- ptr::alloc(8) as u64
+    index_buffer_out <- ptr::alloc(8) as u64
+    index_memory_out <- ptr::alloc(8) as u64
+    index_mapped_out <- ptr::alloc(8) as u64
+    if vulkan_dynamic_buffer(device, physical, 28128, 128, vertex_buffer_out,
+        vertex_memory_out, vertex_mapped_out) == 0:
         ptr::free(vertex_buffer_out)
         ptr::free(vertex_memory_out)
         ptr::free(vertex_mapped_out)
@@ -844,8 +914,10 @@ shape_geometry_create <- (scene: u64) -> i64:
         ptr::free(index_memory_out)
         ptr::free(index_mapped_out)
         ret 0
-    if vulkan_dynamic_buffer(device, physical, 9516, 64, index_buffer_out, index_memory_out, index_mapped_out) == 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(vertex_buffer_out), ptr::load_u64(vertex_memory_out))
+    if vulkan_dynamic_buffer(device, physical, 9516, 64, index_buffer_out,
+        index_memory_out, index_mapped_out) == 0:
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(vertex_buffer_out),
+            ptr::load_u64(vertex_memory_out))
         ptr::free(vertex_buffer_out)
         ptr::free(vertex_memory_out)
         ptr::free(vertex_mapped_out)
@@ -853,8 +925,8 @@ shape_geometry_create <- (scene: u64) -> i64:
         ptr::free(index_memory_out)
         ptr::free(index_mapped_out)
         ret 0
-    vertices := ptr::load_u64(vertex_mapped_out) as u64
-    indices := ptr::load_u64(index_mapped_out) as u64
+    vertices <- ptr::load_u64(vertex_mapped_out) as u64
+    indices <- ptr::load_u64(index_mapped_out) as u64
     shape_generate_sphere(vertices, indices)
     shape_generate_capsule(vertices, indices, 425, 2304)
     shape_generate_plane(vertices, indices, 875, 4752)
@@ -882,17 +954,23 @@ shape_geometry_create <- (scene: u64) -> i64:
 # creation.  The transform, full XYZ Euler rotation, tint and texture id are
 # honored for every kind; an unknown kind or unavailable procedural buffers
 # fall back to the cube.
-scene_draw_shape_rot <- (scene: u64, shape: i32, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
+scene_draw_shape_rot <- (scene: u64, shape: i32, x: i64, y: i64, z: i64,
+sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64,
+texture: u64) -> nil:
     if scene == 0:
         ret
-    count := ptr::load_u32(scene + 1300)
-    if count >= 256:
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 512:
         ret
     write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
     append_procedural_draw(scene, count, shape as i64, texture as i64)
 
-scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, angle_milli: i64) -> nil:
-    scene_draw_shape_rot(scene, 0, x_milli, y_milli, z_milli, sx_milli, sy_milli, sz_milli, 0, angle_milli, 0, r_milli, g_milli, b_milli, 0 as u64)
+scene_draw_box <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64,
+sx_milli: i64, sy_milli: i64, sz_milli: i64, r_milli: i64, g_milli: i64,
+b_milli: i64, angle_milli: i64) -> nil:
+    scene_draw_shape_rot(scene, 0, x_milli, y_milli, z_milli, sx_milli,
+        sy_milli, sz_milli, 0, angle_milli, 0, r_milli, g_milli, b_milli,
+        0 as u64)
 # Quaternion procedural draw: the rotation comes from a unit quaternion and is
 # converted straight to the model matrix by write_object_slot_quat.
 scene_draw_shape_quat <- (
@@ -915,21 +993,24 @@ scene_draw_shape_quat <- (
 ) -> nil:
     if scene == 0:
         ret
-    count := ptr::load_u32(scene + 1300)
-    if count >= 256:
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 512:
         ret
-    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b)
+    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r,
+        g, b)
     append_procedural_draw(scene, count, shape as i64, texture as i64)
 
 
 # Record a draw of an uploaded OBJ mesh.  Mesh layout 0 is the engine OBJ
 # interleaved format (position xyz, normal xyz, uv xy -> 32-byte stride) with
 # 32-bit indices, consumed by the wide lit pipeline.
-scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64, sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64, texture: u64) -> nil:
+scene_draw_custom <- (scene: u64, mesh: u64, x: i64, y: i64, z: i64, sx: i64,
+sy: i64, sz: i64, rx: i64, ry: i64, rz: i64, r: i64, g: i64, b: i64,
+texture: u64) -> nil:
     if scene == 0:
         ret
-    count := ptr::load_u32(scene + 1300)
-    if count >= 256:
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 512:
         ret
     write_object_slot(scene, count, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b)
     if append_custom_draw(scene, count, mesh, texture as i64) == 0:
@@ -957,10 +1038,11 @@ scene_draw_custom_quat <- (
 ) -> nil:
     if scene == 0:
         ret
-    count := ptr::load_u32(scene + 1300)
-    if count >= 256:
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 512:
         ret
-    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r, g, b)
+    write_object_slot_quat(scene, count, x, y, z, sx, sy, sz, qx, qy, qz, qw, r,
+        g, b)
     if append_custom_draw(scene, count, mesh, texture as i64) == 0:
         # Unknown mesh or missing pipeline: documented box approximation.
         append_procedural_draw(scene, count, 0, texture as i64)
@@ -969,9 +1051,10 @@ scene_draw_custom_quat <- (
 # object and UI draws live in the extension list so each keeps its own pipeline,
 # material texture and dynamic UBO slot.  A non-zero `present` additionally
 # presents the acquired swapchain image for desktop windows.
-scene_draw_with_present <- (scene: u64, out_pixels: u64, out_size: u64, present: i64) -> i64:
-    extra := ptr::load_u64(scene + 1280)
-    count := ptr::load_u32(scene + 1300)
+scene_draw_with_present <- (scene: u64, out_pixels: u64, out_size: u64,
+present: i64) -> i64:
+    extra <- ptr::load_u64(scene + 1280)
+    count <- ptr::load_u32(scene + 1300)
     pipeline := ptr::load_u64(scene + 1256)
     layout := ptr::load_u64(scene + 1264)
     texture := ptr::load_u64(scene + 1072)
@@ -1125,32 +1208,38 @@ scene_draw_lit <- (scene: u64, out_pixels: u64, out_size: u64) -> i64:
 
 # Replace the UI quad texture with tightly packed RGBA8 pixels (text/image
 # raster output) and repoint the static UI descriptor set.
-scene_set_ui_texture <- (scene: u64, pixels: u64, width: i64, height: i64) -> i64:
-    device := ptr::load_u64(scene + 32)
-    physical := ptr::load_u64(scene + 24)
-    image_out := ptr::alloc(8) as u64
-    memory_out := ptr::alloc(8) as u64
-    view_out := ptr::alloc(8) as u64
-    sampler_out := ptr::alloc(8) as u64
-    if vulkan_texture_empty(device, physical, width, height, image_out, memory_out, view_out, sampler_out) == 0:
+scene_set_ui_texture <- (scene: u64, pixels: u64, width: i64,
+height: i64) -> i64:
+    device <- ptr::load_u64(scene + 32)
+    physical <- ptr::load_u64(scene + 24)
+    image_out <- ptr::alloc(8) as u64
+    memory_out <- ptr::alloc(8) as u64
+    view_out <- ptr::alloc(8) as u64
+    sampler_out <- ptr::alloc(8) as u64
+    if vulkan_texture_empty(device, physical, width, height, image_out,
+        memory_out, view_out, sampler_out) == 0:
         ptr::free(image_out)
         ptr::free(memory_out)
         ptr::free(view_out)
         ptr::free(sampler_out)
         ret 0
-    image := ptr::load_u64(image_out)
-    memory := ptr::load_u64(memory_out)
-    view := ptr::load_u64(view_out)
-    sampler := ptr::load_u64(sampler_out)
-    if vulkan_texture_upload(device, ptr::load_u64(scene + 40), ptr::load_u32(scene + 48), physical, image, pixels, width, height) == 0:
+    image <- ptr::load_u64(image_out)
+    memory <- ptr::load_u64(memory_out)
+    view <- ptr::load_u64(view_out)
+    sampler <- ptr::load_u64(sampler_out)
+    if vulkan_texture_upload(device, ptr::load_u64(scene + 40), ptr::load_u32(
+        scene + 48), physical, image, pixels, width, height) == 0:
         vulkan_texture_empty_destroy(device, image, memory, view, sampler)
         ptr::free(image_out)
         ptr::free(memory_out)
         ptr::free(view_out)
         ptr::free(sampler_out)
         ret 0
-    vulkan_texture_descriptor_write(device, ptr::load_u64(scene + 1152), view, sampler)
-    vulkan_texture_empty_destroy(device, ptr::load_u64(scene + 1024), ptr::load_u64(scene + 1032), ptr::load_u64(scene + 1040), ptr::load_u64(scene + 1048))
+    vulkan_texture_descriptor_write(device, ptr::load_u64(scene + 1152), view,
+        sampler)
+    vulkan_texture_empty_destroy(device, ptr::load_u64(scene + 1024),
+        ptr::load_u64(scene + 1032), ptr::load_u64(scene + 1040), ptr::load_u64(
+        scene + 1048))
     ptr::store_u64(scene + 1024, image)
     ptr::store_u64(scene + 1032, memory)
     ptr::store_u64(scene + 1040, view)
@@ -1166,13 +1255,13 @@ scene_set_ui_texture <- (scene: u64, pixels: u64, width: i64, height: i64) -> i6
 # ---------------------------------------------------------------------------
 
 push_texture_free <- (scene: u64, index: i64) -> nil:
-    extra := ptr::load_u64(scene + 1280)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret
-    free_count := ptr::load_u32(scene + 1292)
+    free_count <- ptr::load_u32(scene + 1292)
     if free_count >= 256:
         ret
-    ptr::store_u32(extra + 65536 + free_count * 4, index)
+    ptr::store_u32(extra + 86016 + free_count * 4, index)
     ptr::store_u32(scene + 1292, free_count + 1)
 
 # Upload an e7 image (text glyph or material image) as a sampled texture with
@@ -1181,59 +1270,64 @@ push_texture_free <- (scene: u64, index: i64) -> nil:
 scene_texture_create <- (scene: u64, image: u64) -> i64:
     if scene == 0 or image == 0:
         ret 0
-    width := image::width(image)
-    height := image::height(image)
+    width <- image::width(image)
+    height <- image::height(image)
     if width <= 0 or height <= 0:
         ret 0
-    pixels := image::pixels(image)
-    pixels_ptr := str::data(pixels) as u64
+    pixels <- image::pixels(image)
+    pixels_ptr <- str::data(pixels) as u64
     if pixels_ptr == 0:
         ret 0
-    extra := ptr::load_u64(scene + 1280)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret 0
     free_count := ptr::load_u32(scene + 1292)
     index := -1
     if free_count > 0:
         free_count = free_count - 1
-        index = ptr::load_u32(extra + 65536 + free_count * 4)
+        index = ptr::load_u32(extra + 86016 + free_count * 4)
         ptr::store_u32(scene + 1292, free_count)
     else:
-        count := ptr::load_u32(scene + 1288)
+        count <- ptr::load_u32(scene + 1288)
         if count >= 256:
             ret 0
         index = count
         ptr::store_u32(scene + 1288, count + 1)
-    device := ptr::load_u64(scene + 32)
-    physical := ptr::load_u64(scene + 24)
-    image_out := ptr::alloc(8) as u64
-    memory_out := ptr::alloc(8) as u64
-    view_out := ptr::alloc(8) as u64
-    sampler_out := ptr::alloc(8) as u64
-    if vulkan_texture_empty(device, physical, width, height, image_out, memory_out, view_out, sampler_out) == 0:
+    device <- ptr::load_u64(scene + 32)
+    physical <- ptr::load_u64(scene + 24)
+    image_out <- ptr::alloc(8) as u64
+    memory_out <- ptr::alloc(8) as u64
+    view_out <- ptr::alloc(8) as u64
+    sampler_out <- ptr::alloc(8) as u64
+    if vulkan_texture_empty(device, physical, width, height, image_out,
+        memory_out, view_out, sampler_out) == 0:
         push_texture_free(scene, index)
         ptr::free(image_out)
         ptr::free(memory_out)
         ptr::free(view_out)
         ptr::free(sampler_out)
         ret 0
-    texture_image := ptr::load_u64(image_out)
-    texture_memory := ptr::load_u64(memory_out)
-    texture_view := ptr::load_u64(view_out)
-    texture_sampler := ptr::load_u64(sampler_out)
-    if vulkan_texture_upload(device, ptr::load_u64(scene + 40), ptr::load_u32(scene + 48), physical, texture_image, pixels_ptr, width, height) == 0:
-        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
+    texture_image <- ptr::load_u64(image_out)
+    texture_memory <- ptr::load_u64(memory_out)
+    texture_view <- ptr::load_u64(view_out)
+    texture_sampler <- ptr::load_u64(sampler_out)
+    if vulkan_texture_upload(device, ptr::load_u64(scene + 40), ptr::load_u32(
+        scene + 48), physical, texture_image, pixels_ptr, width, height) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory,
+            texture_view, texture_sampler)
         push_texture_free(scene, index)
         ptr::free(image_out)
         ptr::free(memory_out)
         ptr::free(view_out)
         ptr::free(sampler_out)
         ret 0
-    layout_out := ptr::alloc(8) as u64
-    pool_out := ptr::alloc(8) as u64
-    set_out := ptr::alloc(8) as u64
-    if vulkan_texture_descriptor_static(device, texture_view, texture_sampler, layout_out, pool_out, set_out) == 0:
-        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
+    layout_out <- ptr::alloc(8) as u64
+    pool_out <- ptr::alloc(8) as u64
+    set_out <- ptr::alloc(8) as u64
+    if vulkan_texture_descriptor_static(device, texture_view, texture_sampler,
+        layout_out, pool_out, set_out) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory,
+            texture_view, texture_sampler)
         push_texture_free(scene, index)
         ptr::free(image_out)
         ptr::free(memory_out)
@@ -1243,12 +1337,15 @@ scene_texture_create <- (scene: u64, image: u64) -> i64:
         ptr::free(pool_out)
         ptr::free(set_out)
         ret 0
-    lit_layout_out := ptr::alloc(8) as u64
-    lit_pool_out := ptr::alloc(8) as u64
-    lit_set_out := ptr::alloc(8) as u64
-    if vulkan_texture_descriptor_one(device, texture_view, texture_sampler, lit_layout_out, lit_pool_out, lit_set_out) == 0:
-        vulkan_texture_empty_destroy(device, texture_image, texture_memory, texture_view, texture_sampler)
-        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(layout_out), ptr::load_u64(pool_out))
+    lit_layout_out <- ptr::alloc(8) as u64
+    lit_pool_out <- ptr::alloc(8) as u64
+    lit_set_out <- ptr::alloc(8) as u64
+    if vulkan_texture_descriptor_one(device, texture_view, texture_sampler,
+        lit_layout_out, lit_pool_out, lit_set_out) == 0:
+        vulkan_texture_empty_destroy(device, texture_image, texture_memory,
+            texture_view, texture_sampler)
+        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(layout_out),
+            ptr::load_u64(pool_out))
         push_texture_free(scene, index)
         ptr::free(image_out)
         ptr::free(memory_out)
@@ -1261,7 +1358,7 @@ scene_texture_create <- (scene: u64, image: u64) -> i64:
         ptr::free(lit_pool_out)
         ptr::free(lit_set_out)
         ret 0
-    entry := extra + 40960 + index * 96
+    entry <- extra + 61440 + index * 96
     ptr::store_u64(entry, texture_image)
     ptr::store_u64(entry + 8, texture_memory)
     ptr::store_u64(entry + 16, texture_view)
@@ -1287,19 +1384,22 @@ scene_texture_create <- (scene: u64, image: u64) -> i64:
     ret index + 1
 
 release_texture <- (scene: u64, index: i64) -> nil:
-    extra := ptr::load_u64(scene + 1280)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret
-    entry := extra + 40960 + index * 96
-    image := ptr::load_u64(entry)
+    entry <- extra + 61440 + index * 96
+    image <- ptr::load_u64(entry)
     if image == 0:
         ret
-    device := ptr::load_u64(scene + 32)
-    vulkan_texture_empty_destroy(device, image, ptr::load_u64(entry + 8), ptr::load_u64(entry + 16), ptr::load_u64(entry + 24))
+    device <- ptr::load_u64(scene + 32)
+    vulkan_texture_empty_destroy(device, image, ptr::load_u64(entry + 8),
+        ptr::load_u64(entry + 16), ptr::load_u64(entry + 24))
     if ptr::load_u64(entry + 40) != 0:
-        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(entry + 40), ptr::load_u64(entry + 48))
+        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(entry + 40),
+            ptr::load_u64(entry + 48))
     if ptr::load_u64(entry + 64) != 0:
-        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(entry + 64), ptr::load_u64(entry + 72))
+        vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(entry + 64),
+            ptr::load_u64(entry + 72))
     ptr::store_u64(entry, 0)
     ptr::store_u64(entry + 8, 0)
     ptr::store_u64(entry + 16, 0)
@@ -1316,14 +1416,14 @@ release_texture <- (scene: u64, index: i64) -> nil:
 scene_texture_destroy <- (scene: u64, texture: u64) -> nil:
     if scene == 0 or texture == 0:
         ret
-    count := ptr::load_u32(scene + 1288)
+    count <- ptr::load_u32(scene + 1288)
     if (texture as i64) > count:
         ret
-    index := (texture as i64) - 1
-    extra := ptr::load_u64(scene + 1280)
+    index <- (texture as i64) - 1
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret
-    entry := extra + 40960 + index * 96
+    entry <- extra + 61440 + index * 96
     if ptr::load_u64(entry) == 0:
         ret
     release_texture(scene, index)
@@ -1332,36 +1432,67 @@ scene_texture_destroy <- (scene: u64, texture: u64) -> nil:
 # Upload OBJ vertex/index data.  Layout 0 is the engine OBJ interleaved 8-float
 # vertex format (32-byte stride) plus 32-bit indices; the wide lit pipeline
 # consumes it directly.  Returns a stable non-zero mesh id.
-scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) -> i64:
+scene_mesh_upload_data <- (scene: u64, vertices: [f32], indices: [i32],
+layout: i32, joints: [i64], weights: [f32]) -> i64:
     if scene == 0:
         ret 0
-    vertex_floats := vertices.len() as i64
-    index_count := indices.len() as i64
+    vertex_floats <- vertices.len() as i64
+    index_count <- indices.len() as i64
     if vertex_floats <= 0 or index_count <= 0:
         ret 0
-    count := ptr::load_u32(scene + 1296)
-    if count >= 8:
-        ret 0
-    extra := ptr::load_u64(scene + 1280)
+    total <- ptr::load_u32(scene + 1296)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret 0
-    vertex_bytes := vertex_floats * 4
-    index_bytes := index_count * 4
-    device := ptr::load_u64(scene + 32)
-    physical := ptr::load_u64(scene + 24)
-    vertex_buffer_out := ptr::alloc(8) as u64
-    vertex_memory_out := ptr::alloc(8) as u64
-    vertex_mapped_out := ptr::alloc(8) as u64
-    if vulkan_dynamic_buffer(device, physical, vertex_bytes, 128, vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
+    count := 0
+    while count < total and ptr::load_u64(extra + 87040 + count*48) != 0:
+        count = count + 1
+    if count >= 256:
+        ret 0
+    if extra == 0:
+        ret 0
+    source_stride <- 8
+    if (layout != 0 and layout != 1) or vertex_floats % source_stride != 0:
+        ret 0
+    vertex_records <- vertex_floats / source_stride
+    if layout == 1 and (joints.len() as i64 != vertex_records*4 or weights.len() as i64 != vertex_records*4):
+        ret 0
+    # Skin indices are consumed directly by the vertex shader, so reject bad
+    # data before allocating GPU buffers rather than indexing outside the UBO.
+    if layout == 1:
+        for vertex in 0..vertex_records:
+            total: f32 := 0.0
+            for influence in 0..4:
+                joint <- joints[(vertex*4+influence) as usize]
+                weight <- weights[(vertex*4+influence) as usize]
+                if joint < 0 or joint >= 64 or weight != weight or weight < 0.0 or weight > 1.0:
+                    ret 0
+                total = total + weight
+            if total < 0.999 or total > 1.001:
+                ret 0
+    vertex_stride := 32
+    if layout == 1:
+        vertex_stride = 64
+    vertex_bytes <- vertex_records * vertex_stride
+    index_bytes <- index_count * 4
+    device <- ptr::load_u64(scene + 32)
+    physical <- ptr::load_u64(scene + 24)
+    vertex_buffer_out <- ptr::alloc(8) as u64
+    vertex_memory_out <- ptr::alloc(8) as u64
+    vertex_mapped_out <- ptr::alloc(8) as u64
+    if vulkan_dynamic_buffer(device, physical, vertex_bytes, 128,
+        vertex_buffer_out, vertex_memory_out, vertex_mapped_out) == 0:
         ptr::free(vertex_buffer_out)
         ptr::free(vertex_memory_out)
         ptr::free(vertex_mapped_out)
         ret 0
-    index_buffer_out := ptr::alloc(8) as u64
-    index_memory_out := ptr::alloc(8) as u64
-    index_mapped_out := ptr::alloc(8) as u64
-    if vulkan_dynamic_buffer(device, physical, index_bytes, 64, index_buffer_out, index_memory_out, index_mapped_out) == 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(vertex_buffer_out), ptr::load_u64(vertex_memory_out))
+    index_buffer_out <- ptr::alloc(8) as u64
+    index_memory_out <- ptr::alloc(8) as u64
+    index_mapped_out <- ptr::alloc(8) as u64
+    if vulkan_dynamic_buffer(device, physical, index_bytes, 64,
+        index_buffer_out, index_memory_out, index_mapped_out) == 0:
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(vertex_buffer_out),
+            ptr::load_u64(vertex_memory_out))
         ptr::free(vertex_buffer_out)
         ptr::free(vertex_memory_out)
         ptr::free(vertex_mapped_out)
@@ -1374,14 +1505,13 @@ scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) 
     # values (indexing also gives this loop the JIT fixpoint attribute).  The
     # OBJ 8-float vertex (position, normal, uv) is uploaded as the lit
     # pipeline's 32-byte layout: position xyz, white vertex colour, uv.  The
-    # lit vertex stage derives its uv from position.xy, so the normal slot is
-    # repurposed as neutral colour and the material tint/texture drive shading.
-    vertex_mapped := ptr::load_u64(vertex_mapped_out)
-    vertex_records := vertex_floats / 8
+    # wide shader reads the supplied UVs; normal slots become neutral colour.
+    # Skinned vertices append four uint joints and four float weights.
+    vertex_mapped <- ptr::load_u64(vertex_mapped_out)
     vertex_index := 0
     while vertex_index < vertex_records:
-        source := vertex_index * 8
-        destination := vertex_mapped + vertex_index * 32
+        source <- vertex_index * source_stride
+        destination <- vertex_mapped + vertex_index * vertex_stride
         ptr::store_f32(destination, vertices[source as usize])
         ptr::store_f32(destination + 4, vertices[(source + 1) as usize])
         ptr::store_f32(destination + 8, vertices[(source + 2) as usize])
@@ -1390,21 +1520,33 @@ scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) 
         ptr::store_f32(destination + 20, 1.0)
         ptr::store_f32(destination + 24, vertices[(source + 6) as usize])
         ptr::store_f32(destination + 28, vertices[(source + 7) as usize])
+        if layout == 1:
+            for influence in 0..4:
+                ptr::store_u32(destination + 32 + influence*4, joints[(vertex_index*4+influence) as usize])
+                ptr::store_f32(destination + 48 + influence*4, weights[(vertex_index*4+influence) as usize])
         vertex_index = vertex_index + 1
-    index_mapped := ptr::load_u64(index_mapped_out)
+    index_mapped <- ptr::load_u64(index_mapped_out)
     index_position := 0
     while index_position < index_count:
-        ptr::store_u32(index_mapped + index_position * 4, indices[index_position as usize])
+        ptr::store_u32(index_mapped + index_position * 4, indices[
+            index_position as usize])
         index_position = index_position + 1
-    entry := extra + 66560 + count * 48
+    entry <- extra + 87040 + count * 48
     ptr::store_u64(entry, ptr::load_u64(vertex_buffer_out))
     ptr::store_u64(entry + 8, ptr::load_u64(vertex_memory_out))
     ptr::store_u64(entry + 16, ptr::load_u64(index_buffer_out))
     ptr::store_u64(entry + 24, ptr::load_u64(index_memory_out))
     ptr::store_u32(entry + 32, index_count)
-    ptr::store_u32(entry + 36, 0)
+    ptr::store_u32(entry + 36, layout)
     ptr::store_u64(entry + 40, 0)
-    ptr::store_u32(scene + 1296, count + 1)
+    if layout == 1:
+        palette <- ptr::alloc(4096) as u64
+        for joint in 0..64:
+            for diagonal in 0..4:
+                ptr::store_f32(palette + joint*64 + diagonal*20, 1.0)
+        ptr::store_u64(entry + 40, palette)
+    if count >= total:
+        ptr::store_u32(scene + 1296, count + 1)
     ptr::free(vertex_buffer_out)
     ptr::free(vertex_memory_out)
     ptr::free(vertex_mapped_out)
@@ -1413,25 +1555,38 @@ scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) 
     ptr::free(index_mapped_out)
     ret count + 1
 
+scene_mesh_upload <- (scene: u64, vertices: [f32], indices: [i32], layout: i32) -> i64:
+    ret scene_mesh_upload_data(scene, vertices, indices, layout, [], [])
+
+scene_mesh_upload_skinned <- (scene: u64, vertices: [f32], indices: [i32], joints: [i64], weights: [f32]) -> i64:
+    ret scene_mesh_upload_data(scene, vertices, indices, 1, joints, weights)
+
 release_mesh <- (scene: u64, index: i64) -> nil:
-    device := ptr::load_u64(scene + 32)
-    extra := ptr::load_u64(scene + 1280)
+    device <- ptr::load_u64(scene + 32)
+    extra <- ptr::load_u64(scene + 1280)
     if extra == 0:
         ret
-    entry := extra + 66560 + index * 48
+    entry <- extra + 87040 + index * 48
     if ptr::load_u64(entry) != 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(entry), ptr::load_u64(entry + 8))
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(entry),
+            ptr::load_u64(entry + 8))
     if ptr::load_u64(entry + 16) != 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(entry + 16), ptr::load_u64(entry + 24))
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(entry + 16),
+            ptr::load_u64(entry + 24))
     ptr::store_u64(entry, 0)
     ptr::store_u64(entry + 8, 0)
     ptr::store_u64(entry + 16, 0)
     ptr::store_u64(entry + 24, 0)
     ptr::store_u32(entry + 32, 0)
+    if ptr::load_u32(entry + 36) == 1 and ptr::load_u64(entry + 40) != 0:
+        ptr::free(ptr::load_u64(entry + 40))
+    ptr::store_u32(entry + 36, 0)
+    ptr::store_u64(entry + 40, 0)
 
 # One UI vertex: position/uv in clip/texture space plus straight-alpha RGBA.
-ui_vertex <- (mapped: i64, index: i64, px: f32, py: f32, u: f32, v: f32, cr: f32, cg: f32, cb: f32, ca: f32) -> nil:
-    base := mapped + index * 32
+ui_vertex <- (mapped: i64, index: i64, px: f32, py: f32, u: f32, v: f32,
+cr: f32, cg: f32, cb: f32, ca: f32) -> nil:
+    base <- mapped + index * 32
     ptr::store_f32(base, px)
     ptr::store_f32(base + 4, py)
     ptr::store_f32(base + 8, u)
@@ -1445,47 +1600,50 @@ ui_vertex <- (mapped: i64, index: i64, px: f32, py: f32, u: f32, v: f32, cr: f32
 # vertices are converted to Vulkan clip space here.  The quad samples its own
 # texture descriptor (0 = built-in white) through the blended UI pipeline and
 # is drawn after the 3D draws in record order.
-scene_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i64, g: i64, b: i64, a: i64) -> nil:
+scene_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64,
+r: i64, g: i64, b: i64, a: i64) -> nil:
     if scene == 0:
         ret
-    mapped := ptr::load_u64(scene + 1224)
-    pipeline := ptr::load_u64(scene + 1192)
+    mapped <- ptr::load_u64(scene + 1224)
+    pipeline <- ptr::load_u64(scene + 1192)
     if mapped == 0 or pipeline == 0:
         ret
-    quad := ptr::load_u32(scene + 1232)
-    count := ptr::load_u32(scene + 1300)
-    if quad >= 256 or count >= 512:
+    quad <- ptr::load_u32(scene + 1232)
+    count <- ptr::load_u32(scene + 1300)
+    if quad >= 256 or count >= 768:
         ret
-    width := (ptr::load_u32(scene + 88)) as f32
-    height := (ptr::load_u32(scene + 92)) as f32
-    if (width) <= ( 0.0):
+    width <- (ptr::load_u32(scene + 88)) as f32
+    height <- (ptr::load_u32(scene + 92)) as f32
+    if (width) <= (0.0):
         ret
-    if (height) <= ( 0.0):
+    if (height) <= (0.0):
         ret
-    x0 := (x) as f32
-    x1 := (x0) + ( (w) as f32)
-    y0 := (y) as f32
-    y1 := (y0) + ( (h) as f32)
-    inv_w := (2.0) / ( width)
-    inv_h := (2.0) / ( height)
-    cx0 := ((x0) * ( inv_w)) - ( 1.0)
-    cx1 := ((x1) * ( inv_w)) - ( 1.0)
+    x0 <- (x) as f32
+    x1 <- (x0) + ((w) as f32)
+    y0 <- (y) as f32
+    y1 <- (y0) + ((h) as f32)
+    inv_w <- (2.0) / (width)
+    inv_h <- (2.0) / (height)
+    cx0 <- ((x0) * (inv_w)) - (1.0)
+    cx1 <- ((x1) * (inv_w)) - (1.0)
     # Vulkan NDC y = -1 is the top of the framebuffer, so top-left pixel
     # coordinates map directly (y * 2 / height - 1).
-    cy0 := ((y0) * ( inv_h)) - ( 1.0)
-    cy1 := ((y1) * ( inv_h)) - ( 1.0)
-    cr := f32::abs(((r) as f32) / ( 255.0))
-    cg := f32::abs(((g) as f32) / ( 255.0))
-    cb := f32::abs(((b) as f32) / ( 255.0))
-    ca := f32::abs(((a) as f32) / ( 255.0))
-    base := quad * 6
+    cy0 <- ((y0) * (inv_h)) - (1.0)
+    cy1 <- ((y1) * (inv_h)) - (1.0)
+    cr <- f32::abs(((r) as f32) / (255.0))
+    cg <- f32::abs(((g) as f32) / (255.0))
+    cb <- f32::abs(((b) as f32) / (255.0))
+    ca <- f32::abs(((a) as f32) / (255.0))
+    base <- quad * 6
     ui_vertex(mapped, base, cx0, cy0, 0.0, 0.0, cr, cg, cb, ca)
     ui_vertex(mapped, base + 1, cx1, cy0, 1.0, 0.0, cr, cg, cb, ca)
     ui_vertex(mapped, base + 2, cx1, cy1, 1.0, 1.0, cr, cg, cb, ca)
     ui_vertex(mapped, base + 3, cx0, cy0, 0.0, 0.0, cr, cg, cb, ca)
     ui_vertex(mapped, base + 4, cx1, cy1, 1.0, 1.0, cr, cg, cb, ca)
     ui_vertex(mapped, base + 5, cx0, cy1, 0.0, 1.0, cr, cg, cb, ca)
-    append_draw(scene, pipeline, ptr::load_u64(scene + 1200), ptr::load_u64(scene + 1208), 0, 6, 0, base, 1, texture_set(scene, texture as i64), 0, 0, 0)
+    append_draw(scene, pipeline, ptr::load_u64(scene + 1200), ptr::load_u64(
+        scene + 1208), 0, 6, 0, base, 1, texture_set(scene, texture as i64), 0,
+        0, 0)
     ptr::store_u32(scene + 1232, quad + 1)
 
 # Recreate the swapchain, depth attachment, image views, and framebuffers after
@@ -1494,24 +1652,28 @@ scene_ui_quad <- (scene: u64, texture: u64, x: i64, y: i64, w: i64, h: i64, r: i
 scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
     if scene == 0 or width <= 0 or height <= 0:
         ret
-    device := ptr::load_u64(scene + 32)
-    physical := ptr::load_u64(scene + 24)
-    surface := ptr::load_u64(scene + 16)
+    device <- ptr::load_u64(scene + 32)
+    physical <- ptr::load_u64(scene + 24)
+    surface <- ptr::load_u64(scene + 16)
     vulkan_device_wait_idle(device)
-    image_count := ptr::load_u32(scene + 52)
-    render_pass := ptr::load_u64(scene + 64)
-    vulkan_render_targets_views_destroy(device, ptr::load_u64(scene + 96), ptr::load_u64(scene + 80), image_count)
-    vulkan_depth_target_destroy(device, ptr::load_u64(scene + 208), ptr::load_u64(scene + 216), ptr::load_u64(scene + 224))
+    image_count <- ptr::load_u32(scene + 52)
+    render_pass <- ptr::load_u64(scene + 64)
+    vulkan_render_targets_views_destroy(device, ptr::load_u64(scene + 96),
+        ptr::load_u64(scene + 80), image_count)
+    vulkan_depth_target_destroy(device, ptr::load_u64(scene + 208),
+        ptr::load_u64(scene + 216), ptr::load_u64(scene + 224))
     vulkan_swapchain_destroy(device, ptr::load_u64(scene + 56))
 
-    swapchain_out := ptr::alloc(8) as u64
-    format_out := ptr::alloc(4) as u64
-    width_out := ptr::alloc(4) as u64
-    height_out := ptr::alloc(4) as u64
-    images_out := ptr::alloc(8) as u64
-    image_count_out := ptr::alloc(4) as u64
-    window_state := ptr::load_u64(scene) as u64
-    if vulkan_swapchain_create(device, physical, surface, window_state, swapchain_out, format_out, width_out, height_out, images_out, image_count_out) == 0:
+    swapchain_out <- ptr::alloc(8) as u64
+    format_out <- ptr::alloc(4) as u64
+    width_out <- ptr::alloc(4) as u64
+    height_out <- ptr::alloc(4) as u64
+    images_out <- ptr::alloc(8) as u64
+    image_count_out <- ptr::alloc(4) as u64
+    window_state <- ptr::load_u64(scene) as u64
+    if vulkan_swapchain_create(device, physical, surface, window_state,
+        swapchain_out, format_out, width_out, height_out, images_out,
+        image_count_out) == 0:
         ptr::free(swapchain_out)
         ptr::free(format_out)
         ptr::free(width_out)
@@ -1519,21 +1681,22 @@ scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
         ptr::free(images_out)
         ptr::free(image_count_out)
         ret
-    new_swapchain := ptr::load_u64(swapchain_out)
-    new_format := ptr::load_u32(format_out)
-    new_width := ptr::load_u32(width_out)
-    new_height := ptr::load_u32(height_out)
-    images := ptr::load_u64(images_out)
-    new_image_count := ptr::load_u32(image_count_out)
+    new_swapchain <- ptr::load_u64(swapchain_out)
+    new_format <- ptr::load_u32(format_out)
+    new_width <- ptr::load_u32(width_out)
+    new_height <- ptr::load_u32(height_out)
+    images <- ptr::load_u64(images_out)
+    new_image_count <- ptr::load_u32(image_count_out)
     ptr::store_u64(scene + 56, new_swapchain)
     ptr::store_u32(scene + 52, new_image_count)
     ptr::store_u32(scene + 88, new_width)
     ptr::store_u32(scene + 92, new_height)
 
-    depth_image_out := ptr::alloc(8) as u64
-    depth_memory_out := ptr::alloc(8) as u64
-    depth_view_out := ptr::alloc(8) as u64
-    if vulkan_depth_target(device, physical, new_width, new_height, depth_image_out, depth_memory_out, depth_view_out) == 0:
+    depth_image_out <- ptr::alloc(8) as u64
+    depth_memory_out <- ptr::alloc(8) as u64
+    depth_view_out <- ptr::alloc(8) as u64
+    if vulkan_depth_target(device, physical, new_width, new_height,
+        depth_image_out, depth_memory_out, depth_view_out) == 0:
         ptr::free(depth_image_out)
         ptr::free(depth_memory_out)
         ptr::free(depth_view_out)
@@ -1544,14 +1707,16 @@ scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
         ptr::free(images_out)
         ptr::free(image_count_out)
         ret
-    depth_view := ptr::load_u64(depth_view_out)
+    depth_view <- ptr::load_u64(depth_view_out)
     ptr::store_u64(scene + 208, ptr::load_u64(depth_image_out))
     ptr::store_u64(scene + 216, ptr::load_u64(depth_memory_out))
     ptr::store_u64(scene + 224, depth_view)
 
-    views_out := ptr::alloc(8) as u64
-    framebuffers_out := ptr::alloc(8) as u64
-    vulkan_render_targets_views(device, images, new_image_count, new_format, new_width, new_height, depth_view, render_pass, views_out, framebuffers_out)
+    views_out <- ptr::alloc(8) as u64
+    framebuffers_out <- ptr::alloc(8) as u64
+    vulkan_render_targets_views(device, images, new_image_count, new_format,
+        new_width, new_height, depth_view, render_pass, views_out,
+        framebuffers_out)
     ptr::store_u64(scene + 96, ptr::load_u64(views_out))
     ptr::store_u64(scene + 80, ptr::load_u64(framebuffers_out))
 
@@ -1569,65 +1734,59 @@ scene_resize <- (scene: u64, width: i64, height: i64) -> nil:
     ptr::free(images)
 
 scene_destroy <- (scene: u64) -> nil:
-    device := ptr::load_u64(scene + 32)
-    instance := ptr::load_u64(scene + 8)
-    surface := ptr::load_u64(scene + 16)
-    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 72), ptr::load_u64(scene + 104))
-    vulkan_depth_target_destroy(device, ptr::load_u64(scene + 208), ptr::load_u64(scene + 216), ptr::load_u64(scene + 224))
-    vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(scene + 1056), ptr::load_u64(scene + 1064))
-    vulkan_texture_empty_destroy(device, ptr::load_u64(scene + 1024), ptr::load_u64(scene + 1032), ptr::load_u64(scene + 1040), ptr::load_u64(scene + 1048))
-    vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(scene + 1136), ptr::load_u64(scene + 1144))
-    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 160), ptr::load_u64(scene + 168))
+    device <- ptr::load_u64(scene + 32)
+    instance <- ptr::load_u64(scene + 8)
+    surface <- ptr::load_u64(scene + 16)
+    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 72),
+        ptr::load_u64(scene + 104))
+    vulkan_depth_target_destroy(device, ptr::load_u64(scene + 208),
+        ptr::load_u64(scene + 216), ptr::load_u64(scene + 224))
+    vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(scene + 1056),
+        ptr::load_u64(scene + 1064))
+    vulkan_texture_empty_destroy(device, ptr::load_u64(scene + 1024),
+        ptr::load_u64(scene + 1032), ptr::load_u64(scene + 1040), ptr::load_u64(
+        scene + 1048))
+    vulkan_texture_descriptor_one_destroy(device, ptr::load_u64(scene + 1136),
+        ptr::load_u64(scene + 1144))
+    vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 160),
+        ptr::load_u64(scene + 168))
     if ptr::load_u64(scene + 1192) != 0:
-        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1192), ptr::load_u64(scene + 1200))
+        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1192),
+            ptr::load_u64(scene + 1200))
     if ptr::load_u64(scene + 1256) != 0:
-        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1256), ptr::load_u64(scene + 1264))
+        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1256),
+            ptr::load_u64(scene + 1264))
     if ptr::load_u64(scene + 1304) != 0:
-        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1304), ptr::load_u64(scene + 1312))
+        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1304),
+            ptr::load_u64(scene + 1312))
+    if ptr::load_u64(scene + 1392) != 0:
+        vulkan_graphics_pipeline_destroy(device, ptr::load_u64(scene + 1392),
+            ptr::load_u64(scene + 1400))
     if ptr::load_u64(scene + 1208) != 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1208), ptr::load_u64(scene + 1216))
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1208),
+            ptr::load_u64(scene + 1216))
     if ptr::load_u64(scene + 1280) != 0:
-        release_texture(scene, 0)
-        release_texture(scene, 1)
-        release_texture(scene, 2)
-        release_texture(scene, 3)
-        release_texture(scene, 4)
-        release_texture(scene, 5)
-        release_texture(scene, 6)
-        release_texture(scene, 7)
-        release_texture(scene, 8)
-        release_texture(scene, 9)
-        release_texture(scene, 10)
-        release_texture(scene, 11)
-        release_texture(scene, 12)
-        release_texture(scene, 13)
-        release_texture(scene, 14)
-        release_texture(scene, 15)
-        release_texture(scene, 16)
-        release_texture(scene, 17)
-        release_texture(scene, 18)
-        release_texture(scene, 19)
-        release_texture(scene, 20)
-        release_texture(scene, 21)
-        release_texture(scene, 22)
-        release_texture(scene, 23)
-        release_mesh(scene, 0)
-        release_mesh(scene, 1)
-        release_mesh(scene, 2)
-        release_mesh(scene, 3)
-        release_mesh(scene, 4)
-        release_mesh(scene, 5)
-        release_mesh(scene, 6)
-        release_mesh(scene, 7)
+        for texture_index in 0..ptr::load_u32(scene + 1288) as i64:
+            release_texture(scene, texture_index)
+        for mesh_index in 0..ptr::load_u32(scene + 1296) as i64:
+            release_mesh(scene, mesh_index)
         ptr::free(ptr::load_u64(scene + 1280))
-    vulkan_uniform_resources_destroy(device, ptr::load_u64(scene + 112), ptr::load_u64(scene + 120), ptr::load_u64(scene + 136), ptr::load_u64(scene + 144))
-    vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 176), ptr::load_u64(scene + 184))
-    vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 192), ptr::load_u64(scene + 200))
+    vulkan_uniform_resources_destroy(device, ptr::load_u64(scene + 112),
+        ptr::load_u64(scene + 120), ptr::load_u64(scene + 136), ptr::load_u64(
+        scene + 144))
+    vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 176),
+        ptr::load_u64(scene + 184))
+    vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 192),
+        ptr::load_u64(scene + 200))
     if ptr::load_u64(scene + 1320) != 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1320), ptr::load_u64(scene + 1328))
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1320),
+            ptr::load_u64(scene + 1328))
     if ptr::load_u64(scene + 1336) != 0:
-        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1336), ptr::load_u64(scene + 1344))
-    vulkan_render_targets_destroy(device, ptr::load_u64(scene + 64), ptr::load_u64(scene + 96), ptr::load_u64(scene + 80), ptr::load_u32(scene + 52))
+        vulkan_vertex_buffer_destroy(device, ptr::load_u64(scene + 1336),
+            ptr::load_u64(scene + 1344))
+    vulkan_render_targets_destroy(device, ptr::load_u64(scene + 64),
+        ptr::load_u64(scene + 96), ptr::load_u64(scene + 80), ptr::load_u32(
+        scene + 52))
     vulkan_swapchain_destroy(device, ptr::load_u64(scene + 56))
     vulkan_device_destroy(device)
     vulkan_surface_destroy(instance, surface)
@@ -1640,49 +1799,51 @@ scene_destroy <- (scene: u64) -> nil:
 # Create a scene on a native `SDL_Window*` owned by the caller.  The scene
 # creates its own Vulkan surface/swapchain but leaves window destruction to the
 # owner.
-scene_create_borrowed <- (native_window: u64, requested_width: i64, requested_height: i64) -> u64:
-    state := ptr::alloc(256) as u64
+scene_create_borrowed <- (native_window: u64, requested_width: i64,
+requested_height: i64) -> u64:
+    state <- ptr::alloc(256) as u64
     ptr::store_u64(state, native_window)
-    scene := scene_create(state, requested_width, requested_height)
+    scene <- scene_create(state, requested_width, requested_height)
     if scene == 0:
         ptr::free(state)
         ret 0
     ptr::store_u32(scene + 1272, 1)
     ret scene
 
-scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli: i64, yaw_milli: i64, pitch_milli: i64) -> nil:
-    ubo := ptr::load_u64(scene + 152)
+scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64,
+eye_z_milli: i64, yaw_milli: i64, pitch_milli: i64) -> nil:
+    ubo <- ptr::load_u64(scene + 152)
     if ubo == 0:
         ret
-    degree := 0.000017453292519943295
-    yaw := ((yaw_milli) as f32) * ( degree)
-    pitch := ((pitch_milli) as f32) * ( degree)
-    cos_p := f32::cos(pitch)
-    sin_p := f32::sin(pitch)
-    sin_y := f32::sin(yaw)
-    cos_y := f32::cos(yaw)
-    fx := (sin_y) * ( cos_p)
-    fy := sin_p
-    fz := -((cos_y) * ( cos_p))
+    degree <- 0.000017453292519943295
+    yaw <- ((yaw_milli) as f32) * (degree)
+    pitch <- ((pitch_milli) as f32) * (degree)
+    cos_p <- f32::cos(pitch)
+    sin_p <- f32::sin(pitch)
+    sin_y <- f32::sin(yaw)
+    cos_y <- f32::cos(yaw)
+    fx <- (sin_y) * (cos_p)
+    fy <- sin_p
+    fz <- -((cos_y) * (cos_p))
     rx := -(fz)
     rz := fx
-    rlen := f32::sqrt(((rx) * ( rx)) + ( (rz) * ( rz)))
-    if (rlen) > ( 0.0):
-        rx = (rx) / ( rlen)
-        rz = (rz) / ( rlen)
-    ux := ((0.0) * ( fz)) - ( (rz) * ( fy))
-    uy := ((rz) * ( fx)) - ( (rx) * ( fz))
-    uz := ((rx) * ( fy)) - ( (0.0) * ( fx))
-    bx := -(fx)
-    by := -(fy)
-    bz := -(fz)
-    ex := ((eye_x_milli) as f32) / ( 1000.0)
-    ey := ((eye_y_milli) as f32) / ( 1000.0)
-    ez := ((eye_z_milli) as f32) / ( 1000.0)
-    dr := ((rx) * ( ex)) + ( ((0.0) * ( ey)) + ( (rz) * ( ez)))
-    du := ((ux) * ( ex)) + ( ((uy) * ( ey)) + ( (uz) * ( ez)))
-    db := ((bx) * ( ex)) + ( ((by) * ( ey)) + ( (bz) * ( ez)))
-    view := ubo + 64
+    rlen <- f32::sqrt(((rx) * (rx)) + ((rz) * (rz)))
+    if (rlen) > (0.0):
+        rx = (rx) / (rlen)
+        rz = (rz) / (rlen)
+    ux <- ((0.0) * (fz)) - ((rz) * (fy))
+    uy <- ((rz) * (fx)) - ((rx) * (fz))
+    uz <- ((rx) * (fy)) - ((0.0) * (fx))
+    bx <- -(fx)
+    by <- -(fy)
+    bz <- -(fz)
+    ex <- ((eye_x_milli) as f32) / (1000.0)
+    ey <- ((eye_y_milli) as f32) / (1000.0)
+    ez <- ((eye_z_milli) as f32) / (1000.0)
+    dr <- ((rx) * (ex)) + (((0.0) * (ey)) + ((rz) * (ez)))
+    du <- ((ux) * (ex)) + (((uy) * (ey)) + ((uz) * (ez)))
+    db <- ((bx) * (ex)) + (((by) * (ey)) + ((bz) * (ez)))
+    view <- ubo + 64
     ptr::store_f32(view, rx)
     ptr::store_f32(view + 4, ux)
     ptr::store_f32(view + 8, bx)
@@ -1699,18 +1860,18 @@ scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli
     ptr::store_f32(view + 52, -(du))
     ptr::store_f32(view + 56, -(db))
     ptr::store_f32(view + 60, 1.0)
-    half_fov := 0.5235987755982988
-    tan_half := (f32::sin(half_fov)) / ( f32::cos(half_fov))
-    f := (1.0) / ( tan_half)
-    width := (ptr::load_u32(scene + 88)) as f32
-    height := (ptr::load_u32(scene + 92)) as f32
+    half_fov <- 0.5235987755982988
+    tan_half <- (f32::sin(half_fov)) / (f32::cos(half_fov))
+    f <- (1.0) / (tan_half)
+    width <- (ptr::load_u32(scene + 88)) as f32
+    height <- (ptr::load_u32(scene + 92)) as f32
     aspect := 1.0
-    if (height) > ( 0.0):
-        aspect = (width) / ( height)
-    near := 0.1
-    far := 100.0
-    proj := ubo + 128
-    ptr::store_f32(proj, (f) / ( aspect))
+    if (height) > (0.0):
+        aspect = (width) / (height)
+    near <- 0.1
+    far <- 100.0
+    proj <- ubo + 128
+    ptr::store_f32(proj, (f) / (aspect))
     ptr::store_f32(proj + 4, 0.0)
     ptr::store_f32(proj + 8, 0.0)
     ptr::store_f32(proj + 12, 0.0)
@@ -1720,11 +1881,11 @@ scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli
     ptr::store_f32(proj + 28, 0.0)
     ptr::store_f32(proj + 32, 0.0)
     ptr::store_f32(proj + 36, 0.0)
-    ptr::store_f32(proj + 40, (far) / ( (near) - ( far)))
+    ptr::store_f32(proj + 40, (far) / ((near) - (far)))
     ptr::store_f32(proj + 44, -1.0)
     ptr::store_f32(proj + 48, 0.0)
     ptr::store_f32(proj + 52, 0.0)
-    ptr::store_f32(proj + 56, ((near) * ( far)) / ( (near) - ( far)))
+    ptr::store_f32(proj + 56, ((near) * (far)) / ((near) - (far)))
     ptr::store_f32(proj + 60, 0.0)
     ptr::store_f32(ubo + 192, ex)
     ptr::store_f32(ubo + 196, ey)
@@ -1735,30 +1896,32 @@ scene_set_camera <- (scene: u64, eye_x_milli: i64, eye_y_milli: i64, eye_z_milli
 # Authored camera projection. View setup keeps its legacy default projection;
 # scene rendering then supplies the Camera component's actual lens settings.
 scene_set_projection <- (scene: u64, fov_y: f32, near: f32, far: f32) -> nil:
-    ubo := ptr::load_u64(scene + 152)
-    width := ptr::load_u32(scene + 88) as f32
-    height := ptr::load_u32(scene + 92) as f32
-    if ubo == 0 or height <= 0.0 or width <= 0.0 or near <= 0.0 or far <= near or fov_y <= 0.0 or fov_y >= 3.14159:
+    ubo <- ptr::load_u64(scene + 152)
+    width <- ptr::load_u32(scene + 88) as f32
+    height <- ptr::load_u32(scene + 92) as f32
+    if (ubo == 0 or height <= 0.0 or width <= 0.0 or near <= 0.0 or far <=
+        near or fov_y <= 0.0 or fov_y >= 3.14159):
         ret
-    focal := f32::cos(fov_y * 0.5) / f32::sin(fov_y * 0.5)
-    projection := ubo + 128
+    focal <- f32::cos(fov_y * 0.5) / f32::sin(fov_y * 0.5)
+    projection <- ubo + 128
     ptr::store_f32(projection, focal * height / width)
     ptr::store_f32(projection + 20, -focal)
     ptr::store_f32(projection + 40, far / (near - far))
     ptr::store_f32(projection + 56, near * far / (near - far))
 
-scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, r_milli: i64, g_milli: i64, b_milli: i64, intensity_milli: i64) -> nil:
-    ubo := ptr::load_u64(scene + 152)
+scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64,
+r_milli: i64, g_milli: i64, b_milli: i64, intensity_milli: i64) -> nil:
+    ubo <- ptr::load_u64(scene + 152)
     if ubo == 0:
         ret
-    ptr::store_f32(ubo + 208, ((x_milli) as f32) / ( 1000.0))
-    ptr::store_f32(ubo + 212, ((y_milli) as f32) / ( 1000.0))
-    ptr::store_f32(ubo + 216, ((z_milli) as f32) / ( 1000.0))
+    ptr::store_f32(ubo + 208, ((x_milli) as f32) / (1000.0))
+    ptr::store_f32(ubo + 212, ((y_milli) as f32) / (1000.0))
+    ptr::store_f32(ubo + 216, ((z_milli) as f32) / (1000.0))
     ptr::store_f32(ubo + 220, 1.0)
-    ptr::store_f32(ubo + 224, ((r_milli) as f32) / ( 1000.0))
-    ptr::store_f32(ubo + 228, ((g_milli) as f32) / ( 1000.0))
-    ptr::store_f32(ubo + 232, ((b_milli) as f32) / ( 1000.0))
-    ptr::store_f32(ubo + 236, ((intensity_milli) as f32) / ( 1000.0))
+    ptr::store_f32(ubo + 224, ((r_milli) as f32) / (1000.0))
+    ptr::store_f32(ubo + 228, ((g_milli) as f32) / (1000.0))
+    ptr::store_f32(ubo + 232, ((b_milli) as f32) / (1000.0))
+    ptr::store_f32(ubo + 236, ((intensity_milli) as f32) / (1000.0))
     ptr::store_f32(ubo + 240, 0.35)
     ptr::store_f32(ubo + 244, 0.35)
     ptr::store_f32(ubo + 248, 0.40)
@@ -1770,28 +1933,72 @@ scene_set_light <- (scene: u64, x_milli: i64, y_milli: i64, z_milli: i64, r_mill
 
 # Engine cube model: RY(angle) * RX(0.35), written to the model slot.
 scene_set_cube_angle <- (scene: u64, angle_milli_radians: i64) -> nil:
-    ubo := ptr::load_u64(scene + 152)
+    ubo <- ptr::load_u64(scene + 152)
     if ubo == 0:
         ret
-    angle := ((angle_milli_radians) as f32) / ( 1000.0)
-    cy := f32::cos(angle)
-    sy := f32::sin(angle)
-    tilt := 0.35
-    cx := f32::cos(tilt)
-    sx := f32::sin(tilt)
+    angle <- ((angle_milli_radians) as f32) / (1000.0)
+    cy <- f32::cos(angle)
+    sy <- f32::sin(angle)
+    tilt <- 0.35
+    cx <- f32::cos(tilt)
+    sx <- f32::sin(tilt)
     ptr::store_f32(ubo, cy)
     ptr::store_f32(ubo + 4, 0.0)
     ptr::store_f32(ubo + 8, -(sy))
     ptr::store_f32(ubo + 12, 0.0)
-    ptr::store_f32(ubo + 16, (sx) * ( sy))
+    ptr::store_f32(ubo + 16, (sx) * (sy))
     ptr::store_f32(ubo + 20, cx)
-    ptr::store_f32(ubo + 24, (sx) * ( cy))
+    ptr::store_f32(ubo + 24, (sx) * (cy))
     ptr::store_f32(ubo + 28, 0.0)
-    ptr::store_f32(ubo + 32, (cx) * ( sy))
+    ptr::store_f32(ubo + 32, (cx) * (sy))
     ptr::store_f32(ubo + 36, -(sx))
-    ptr::store_f32(ubo + 40, (cx) * ( cy))
+    ptr::store_f32(ubo + 40, (cx) * (cy))
     ptr::store_f32(ubo + 44, 0.0)
     ptr::store_f32(ubo + 48, 0.0)
     ptr::store_f32(ubo + 52, 0.0)
     ptr::store_f32(ubo + 56, 0.0)
     ptr::store_f32(ubo + 60, 1.0)
+
+# Full affine matrix submission for transform hierarchies, without lossy
+# decomposition or milli-unit rounding.
+scene_draw_matrix <- (scene: u64, mesh: u64, shape: i32, matrix: [f32; 16], tint: [f32; 3], texture: u64) -> nil:
+    if scene == 0:
+        ret
+    count <- ptr::load_u32(scene + 1300)
+    if count >= 512:
+        ret
+    write_object_slot_quat(scene,count,0,0,0,1000,1000,1000,0.0,0.0,0.0,1.0,1000,1000,1000)
+    ubo <- ptr::load_u64(scene + 152)
+    if ubo == 0:
+        ret
+    slot <- ubo + count * 4608
+    for index in 0..16:
+        ptr::store_f32(slot + index*4,matrix[index as usize])
+    for index in 0..3:
+        ptr::store_f32(slot + 256 + index*4,tint[index as usize])
+    if mesh == 0:
+        append_procedural_draw(scene,count,shape as i64,texture as i64)
+    else:
+        appended <- append_custom_draw(scene,count,mesh,texture as i64)
+
+scene_mesh_destroy <- (scene: u64, mesh: u64) -> nil:
+    if scene != 0 and mesh > 0 and mesh <= ptr::load_u32(scene + 1296) as u64:
+        vulkan_device_wait_idle(ptr::load_u64(scene + 32))
+        release_mesh(scene,mesh as i64 - 1)
+
+# Set one mesh-local palette matrix before the draw copies the palette to its
+# dynamic uniform slot. Palettes belong to instances, never shared meshes.
+scene_mesh_set_joint <- (scene: u64, mesh: u64, joint: i64, matrix: [f32;16]) -> nil:
+    if scene == 0 or mesh == 0 or mesh > ptr::load_u32(scene + 1296) as u64 or joint < 0 or joint >= 64:
+        ret
+    extra <- ptr::load_u64(scene + 1280)
+    if extra == 0:
+        ret
+    entry <- extra + 87040 + (mesh as i64 - 1)*48
+    if ptr::load_u32(entry + 36) != 1:
+        ret
+    palette <- ptr::load_u64(entry + 40)
+    if palette == 0:
+        ret
+    for element in 0..16:
+        ptr::store_f32(palette + joint*64 + element*4, matrix[element as usize])

@@ -14,7 +14,8 @@ EditorFieldDefault <- struct
 editor_field_default <- () -> EditorFieldDefault:
     ret EditorFieldDefault {
         text: "", max_len: 0, focused: false, select_all: false,
-        revision: 0, rendered_revision: 0, texture: 0, texture_w: 0, texture_h: 0,
+        revision: 0, rendered_revision: 0, texture: 0, texture_w: 0,
+        texture_h: 0,
     }
 
 test_aggregate_default_initializer <- () -> i64:

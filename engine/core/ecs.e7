@@ -105,7 +105,8 @@ pub CapsuleCollider <- struct
     radius: f32
     half_height: f32
 
-# Infinite plane `dot(normal, p) = offset`.  The demo uses normal (0,1,0), offset 0.
+# Infinite plane `dot(normal, p) = offset`. The demo uses normal (0,1,0), offset
+# 0.
 @Components
 pub PlaneCollider <- struct
     normal: [f32; 3]
@@ -141,3 +142,61 @@ pub BodyFlags <- struct
     # Player body id for Player rows, pickup body id for Pickup rows.
     target_id: i64
     held_by: i64
+
+# Stable scene identity and a parent identity, independent of ECS row ids.
+# Transform remains local. An empty parent denotes a root.
+@Components
+pub Hierarchy <- struct
+    id: str
+    parent: str
+
+# Imported affine transform (including glTF matrix nodes). User Transform
+# values are composed after this matrix, allowing local authoring offsets.
+@Components
+pub LocalMatrix <- struct
+    matrix: [f32; 16]
+
+# Persistent geometry reference; GPU handles are transient and never saved.
+@Components
+pub GltfMesh <- struct
+    path: str
+    mesh: i64
+    primitive: i64
+
+@Components
+pub GeometryBounds <- struct
+    minimum: [f32; 3]
+    maximum: [f32; 3]
+
+# Source image reference; editor/runtime resolves it to a transient GPU texture.
+@Components
+pub GltfTexture <- struct
+    path: str
+    image: i64
+
+# Retained authoring data for an imported node absent from the latest export.
+@Components
+pub GltfMissing <- struct
+    missing: bool
+
+# Flat keyframe channels share `times`; an empty channel leaves that property
+# unchanged. Quaternions are xyzw. Values are local to the parent hierarchy.
+@Components
+pub TransformAnimation <- struct
+    times: [f32]
+    translations: [f32]
+    rotations: [f32]
+    scales: [f32]
+    time: f32
+    speed: f32
+    looping: bool
+    playing: bool
+
+# Bind-pose vertices and four influences per vertex for an imported skin.
+@Components
+pub GltfSkin <- struct
+    joints: [str]
+    inverse_bind: [f32]
+    vertices: [f32]
+    joint_indices: [i64]
+    weights: [f32]
